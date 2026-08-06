@@ -1,0 +1,60 @@
+{
+  "title": "System",
+  "user": {
+    "title": "User",
+    "list": "User List",
+    "name": "Username",
+    "userName": "User Name",
+    "id": "User ID",
+    "dept": "Department",
+    "status": "Status",
+    "remark": "Remark",
+    "createTime": "Created At",
+    "operation": "Actions",
+    "placeholder": "Search dept..."
+  },
+  "dept": {
+    "list": "Dept List",
+    "createTime": "Created At",
+    "deptName": "Dept Name",
+    "name": "Department",
+    "operation": "Actions",
+    "parentDept": "Parent Dept",
+    "remark": "Remark",
+    "status": "Status",
+    "title": "Department"
+  },
+  "menu": {
+    "list": "Menu List",
+    "authCode": "Auth Code",
+    "component": "Component",
+    "icon": "Icon",
+    "menuName": "Menu Name",
+    "menuTitle": "Title",
+    "name": "Menu",
+    "operation": "Actions",
+    "parent": "Parent",
+    "path": "Path",
+    "status": "Status",
+    "title": "Menu",
+    "type": "Type",
+    "typeButton": "Button",
+    "typeCatalog": "Catalog",
+    "typeEmbedded": "Embedded",
+    "typeLink": "Link",
+    "typeMenu": "Menu"
+  },
+  "role": {
+    "title": "Role",
+    "list": "Role List",
+    "name": "Role",
+    "roleName": "Role Name",
+    "id": "Role ID",
+    "status": "Status",
+    "remark": "Remark",
+    "createTime": "Created At",
+    "operation": "Actions",
+    "permissions": "Permissions",
+    "setPermissions": "Authorize"
+  }
+}

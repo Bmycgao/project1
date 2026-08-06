@@ -1,0 +1,60 @@
+{
+  "title": "系统管理",
+  "user": {
+    "title": "用户管理",
+    "list": "用户列表",
+    "name": "用户名",
+    "userName": "用户名称",
+    "id": "用户ID",
+    "dept": "部门",
+    "status": "状态",
+    "remark": "备注",
+    "createTime": "创建时间",
+    "operation": "操作",
+    "placeholder": "搜索部门..."
+  },
+  "dept": {
+    "list": "部门列表",
+    "createTime": "创建时间",
+    "deptName": "部门名称",
+    "name": "部门",
+    "operation": "操作",
+    "parentDept": "上级部门",
+    "remark": "备注",
+    "status": "状态",
+    "title": "部门管理"
+  },
+  "menu": {
+    "list": "菜单列表",
+    "authCode": "权限标识",
+    "component": "页面组件",
+    "icon": "图标",
+    "menuName": "菜单名称",
+    "menuTitle": "标题",
+    "name": "菜单",
+    "operation": "操作",
+    "parent": "上级菜单",
+    "path": "路由地址",
+    "status": "状态",
+    "title": "菜单管理",
+    "type": "类型",
+    "typeButton": "按钮",
+    "typeCatalog": "目录",
+    "typeEmbedded": "内嵌",
+    "typeLink": "外链",
+    "typeMenu": "菜单"
+  },
+  "role": {
+    "title": "角色管理",
+    "list": "角色列表",
+    "name": "角色",
+    "roleName": "角色名称",
+    "id": "角色ID",
+    "status": "状态",
+    "remark": "备注",
+    "createTime": "创建时间",
+    "operation": "操作",
+    "permissions": "权限",
+    "setPermissions": "授权"
+  }
+}
