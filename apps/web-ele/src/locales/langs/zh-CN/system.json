@@ -56,5 +56,11 @@
     "operation": "操作",
     "permissions": "权限",
     "setPermissions": "授权"
+  },
+  "pageSchema": {
+    "title": "页面配置"
+  },
+  "biz": {
+    "title": "业务配置"
   }
 }

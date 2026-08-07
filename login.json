@@ -1,0 +1,8 @@
+[Error Handler] Error: Invalid JSON body
+    at createError (file:///D:/pro/vue-vben-admin-main/node_modules/.pnpm/h3@1.15.11/node_modules/h3/dist/index.mjs:71:15)
+    at _parseJSON (file:///D:/pro/vue-vben-admin-main/node_modules/.pnpm/h3@1.15.11/node_modules/h3/dist/index.mjs:517:11)
+    at readBody (file:///D:/pro/vue-vben-admin-main/node_modules/.pnpm/h3@1.15.11/node_modules/h3/dist/index.mjs:443:14)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async Object.handler (file:///D:/pro/vue-vben-admin-main/apps/backend-mock/.nitro/dev/index.mjs:2409:34)
+    at async Object.handler (file:///D:/pro/vue-vben-admin-main/node_modules/.pnpm/h3@1.15.11/node_modules/h3/dist/index.mjs:2017:19)
+    at async Server.toNodeHandle (file:///D:/pro/vue-vben-admin-main/node_modules/.pnpm/h3@1.15.11/node_modules/h3/dist/index.mjs:2316:7)

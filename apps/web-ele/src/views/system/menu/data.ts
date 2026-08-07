@@ -2,8 +2,68 @@ import type { VbenFormSchema } from '#/adapter/form';
 import type { OnActionClickFn, VxeTableGridColumns } from '#/adapter/vxe-table';
 import type { SystemMenuApi } from '#/api/system/menu';
 
-import { getMenuList } from '#/api/system/menu';
+import { getMenuList, getPageSchemaList } from '#/api/system';
 import { $t } from '#/locales';
+
+/** 通用动态列表页组件路径 */
+export const COMPONENT_DYNAMIC_LIST = '/system/dynamic-list/index';
+/** 协议场景列表页组件路径 */
+export const COMPONENT_AGREE_LIST = '/biz/agreement/list/index';
+
+/** 页面组件下拉选项（方案 A） */
+export function getMenuComponentOptions() {
+  return [
+    {
+      label: '通用动态列表（客户 / 物料 / 抵押等）',
+      value: COMPONENT_DYNAMIC_LIST,
+    },
+    {
+      label: '协议场景列表（电子协议 / 信息查询）',
+      value: COMPONENT_AGREE_LIST,
+    },
+  ];
+}
+
+/**
+ * 判断是否为协议场景列表组件
+ * @param component 组件路径
+ */
+export function isAgreeListComponent(component?: string) {
+  return String(component || '').includes('/biz/agreement/list');
+}
+
+/**
+ * 判断是否为通用动态列表组件
+ * @param component 组件路径
+ */
+export function isDynamicListComponent(component?: string) {
+  return String(component || '').includes('dynamic-list');
+}
+
+/**
+ * 拉取「实体」类页面配置（供动态列表选择）
+ */
+export async function fetchEntityPageSchemas() {
+  const list = await getPageSchemaList();
+  return (list || []).filter(
+    (item) => !item.schemaKind || item.schemaKind === 'entity',
+  );
+}
+
+/**
+ * 拉取「场景」类页面配置（供协议列表选择）
+ * 下拉展示：标题（场景码）
+ */
+export async function fetchScenePageSchemas() {
+  const list = await getPageSchemaList();
+  return (list || [])
+    .filter((item) => item.schemaKind === 'scene' && item.scene)
+    .map((item) => ({
+      ...item,
+      /** 下拉显示文案 */
+      optionLabel: `${item.title}（${item.scene}）`,
+    }));
+}
 
 /** 菜单类型选项（含 Tag 颜色） */
 export function getMenuTypeOptions() {
@@ -80,7 +140,13 @@ export function useFormSchema(): VbenFormSchema[] {
       label: $t('system.menu.path'),
     },
     {
-      component: 'Input',
+      component: 'Select',
+      componentProps: {
+        allowClear: true,
+        class: 'w-full',
+        options: getMenuComponentOptions(),
+        placeholder: '请选择列表模板页',
+      },
       dependencies: {
         show(values) {
           return values.type === 'menu';
@@ -89,6 +155,48 @@ export function useFormSchema(): VbenFormSchema[] {
       },
       fieldName: 'component',
       label: $t('system.menu.component'),
+      help: '通用动态列表挂页面配置；协议场景列表挂协议场景（自动带 sceneId）',
+    },
+    {
+      component: 'ApiSelect',
+      componentProps: {
+        api: fetchEntityPageSchemas,
+        class: 'w-full',
+        clearable: true,
+        labelField: 'title',
+        valueField: 'id',
+      },
+      dependencies: {
+        show(values) {
+          return (
+            values.type === 'menu' && isDynamicListComponent(values.component)
+          );
+        },
+        triggerFields: ['type', 'component'],
+      },
+      fieldName: 'meta.schemaId',
+      label: '页面配置',
+      help: '关联「页面配置」中的实体字段方案（客户/物料/抵押等）',
+    },
+    {
+      component: 'ApiSelect',
+      componentProps: {
+        api: fetchScenePageSchemas,
+        class: 'w-full',
+        clearable: true,
+        labelField: 'optionLabel',
+        valueField: 'id',
+      },
+      dependencies: {
+        show(values) {
+          return values.type === 'menu' && isAgreeListComponent(values.component);
+        },
+        triggerFields: ['type', 'component'],
+      },
+      // 与 meta.schemaId 分开，避免双字段同名冲突；提交时再写入 schemaId+sceneId
+      fieldName: 'meta.sceneSchemaId',
+      label: '协议场景',
+      help: '选择场景后保存时自动写入 sceneId；列表按钮与数据按场景变化',
     },
     {
       component: 'Input',

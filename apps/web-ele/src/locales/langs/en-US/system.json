@@ -56,5 +56,11 @@
     "operation": "Actions",
     "permissions": "Permissions",
     "setPermissions": "Authorize"
+  },
+  "pageSchema": {
+    "title": "Page Schema"
+  },
+  "biz": {
+    "title": "Business"
   }
 }

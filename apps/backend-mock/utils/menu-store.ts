@@ -131,6 +131,10 @@ export function createMenuNode(data: Record<string, any>) {
     ...data,
     id,
     path: typeof data.path === 'string' ? data.path.trim() : data.path,
+    component:
+      typeof data.component === 'string'
+        ? data.component.trim()
+        : data.component,
     status: data.status ?? 1,
     children: data.children || [],
   };
@@ -158,6 +162,10 @@ export function updateMenuNode(id: string | number, data: Record<string, any>) {
       typeof data.path === 'string'
         ? data.path.trim()
         : (data.path ?? existing.path),
+    component:
+      typeof data.component === 'string'
+        ? data.component.trim()
+        : (data.component ?? existing.component),
     type: data.type ?? existing.type,
   };
   assertNavigablePath({ ...existing, ...next });

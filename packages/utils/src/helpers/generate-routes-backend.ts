@@ -80,7 +80,8 @@ function convertRoutes(
       route.component = layoutMap[component];
       // 页面组件转换
     } else if (component) {
-      const normalizePath = normalizeViewPath(component);
+      // 去掉首尾空白/制表符，避免组件映射失败落到 404
+      const normalizePath = normalizeViewPath(String(component).trim());
       const pageKey = normalizePath.endsWith('.vue')
         ? normalizePath
         : `${normalizePath}.vue`;

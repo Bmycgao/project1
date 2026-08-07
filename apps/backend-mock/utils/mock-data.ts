@@ -414,6 +414,197 @@ export const MOCK_MENU_LIST: any[] = [
           },
         ],
       },
+      {
+        id: 206,
+        pid: 2,
+        path: 'page-schema',
+        name: 'SystemPageSchema',
+        authCode: 'System:PageSchema:List',
+        status: 1,
+        type: 'menu',
+        meta: {
+          icon: 'mdi:table-cog',
+          title: 'system.pageSchema.title',
+        },
+        component: '/system/page-schema/list',
+      },
+    ],
+  },
+  {
+    id: 6,
+    name: 'BizConfig',
+    status: 1,
+    type: 'catalog',
+    path: '/biz',
+    meta: {
+      icon: 'mdi:view-dashboard-edit-outline',
+      order: 500,
+      title: 'system.biz.title',
+    },
+    children: [
+      {
+        id: 601,
+        pid: 6,
+        path: 'customer',
+        name: 'BizCustomer',
+        status: 1,
+        type: 'menu',
+        meta: {
+          icon: 'mdi:account-tie',
+          title: '客户列表',
+          /** 关联页面配置 ID，动态列表页按此渲染字段 */
+          schemaId: 'PS1001',
+        },
+        component: '/system/dynamic-list/index',
+      },
+      {
+        id: 602,
+        pid: 6,
+        path: 'material',
+        name: 'BizMaterial',
+        status: 1,
+        type: 'menu',
+        meta: {
+          icon: 'mdi:package-variant-closed',
+          title: '物料列表',
+          schemaId: 'PS1002',
+        },
+        component: '/system/dynamic-list/index',
+      },
+      {
+        id: 603,
+        pid: 6,
+        path: 'mortgage-entry',
+        name: 'BizMortgageEntry',
+        status: 1,
+        type: 'menu',
+        meta: {
+          icon: 'mdi:home-city-outline',
+          title: '抵押信息录入',
+          /** 关联页面配置 PS1100 */
+          schemaId: 'PS1100',
+        },
+        component: '/system/dynamic-list/index',
+      },
+      {
+        id: 604,
+        pid: 6,
+        path: 'mortgage-entry/detail/:agreementNo',
+        name: 'BizMortgageDetail',
+        status: 1,
+        type: 'menu',
+        meta: {
+          hideInMenu: true,
+          activePath: '/biz/mortgage-entry',
+          title: '抵押信息详情',
+        },
+        component: '/biz/mortgage/detail/index',
+      },
+    ],
+  },
+  /** 电子协议：同一列表组件 + 不同 scene（按钮/数据不同） */
+  {
+    id: 7,
+    name: 'EAgreement',
+    status: 1,
+    type: 'catalog',
+    path: '/e-agree',
+    meta: {
+      icon: 'mdi:file-document-edit-outline',
+      order: 480,
+      title: '电子协议',
+    },
+    children: [
+      {
+        id: 701,
+        pid: 7,
+        path: 'entry',
+        name: 'EAgreeEntry',
+        status: 1,
+        type: 'menu',
+        meta: {
+          icon: 'mdi:file-plus-outline',
+          title: '协议信息录入',
+          /** 场景码：决定按钮 + list?scene= */
+          sceneId: 'entry',
+          schemaId: 'PS_AGREE_ENTRY',
+        },
+        component: '/biz/agreement/list/index',
+      },
+      {
+        id: 702,
+        pid: 7,
+        path: 'lawyer-audit',
+        name: 'EAgreeLawyerAudit',
+        status: 1,
+        type: 'menu',
+        meta: {
+          icon: 'mdi:account-tie-outline',
+          title: '小组律师审核',
+          sceneId: 'lawyer_audit',
+          schemaId: 'PS_AGREE_LAWYER',
+        },
+        component: '/biz/agreement/list/index',
+      },
+      {
+        id: 799,
+        pid: 7,
+        path: 'detail/:agreementNo',
+        name: 'BizAgreementDetail',
+        status: 1,
+        type: 'menu',
+        meta: {
+          hideInMenu: true,
+          activePath: '/e-agree/entry',
+          title: '协议详情',
+        },
+        component: '/biz/agreement/detail/index',
+      },
+    ],
+  },
+  /** 信息查询：仍复用同一列表 + 不同 scene */
+  {
+    id: 8,
+    name: 'EQuery',
+    status: 1,
+    type: 'catalog',
+    path: '/e-query',
+    meta: {
+      icon: 'mdi:magnify',
+      order: 470,
+      title: '信息查询',
+    },
+    children: [
+      {
+        id: 801,
+        pid: 8,
+        path: 'preview',
+        name: 'EAgreePreview',
+        status: 1,
+        type: 'menu',
+        meta: {
+          icon: 'mdi:file-eye-outline',
+          title: '协议信息预览',
+          sceneId: 'preview',
+          schemaId: 'PS_AGREE_PREVIEW',
+        },
+        component: '/biz/agreement/list/index',
+      },
+      {
+        id: 802,
+        pid: 8,
+        path: 'view',
+        name: 'EAgreeView',
+        status: 1,
+        type: 'menu',
+        meta: {
+          icon: 'mdi:eye-outline',
+          title: '查看',
+          sceneId: 'view',
+          schemaId: 'PS_AGREE_VIEW',
+        },
+        component: '/biz/agreement/list/index',
+      },
     ],
   },
 ];
@@ -455,7 +646,8 @@ function convertMenuNodeToRoute(node: any): any | null {
     route.component = 'IFrameView';
     meta.link = meta.link || node.linkSrc || path;
   } else if (node.component) {
-    route.component = node.component;
+    // 去掉首尾空白，避免前端组件映射失败变成 404
+    route.component = String(node.component).trim();
   }
 
   if (children.length > 0) {
@@ -476,6 +668,26 @@ function convertMenuNodeToRoute(node: any): any | null {
 }
 
 /**
+ * 清洗菜单树中的 component / path 空白（就地修改，修复历史脏数据）
+ * @param list 菜单树
+ */
+function sanitizeMenuTree(list: any[] = MOCK_MENU_LIST) {
+  for (const node of list) {
+    if (typeof node.component === 'string') {
+      node.component = node.component.trim();
+    }
+    if (typeof node.path === 'string') {
+      node.path = node.path.trim();
+    }
+    if (node.children?.length) {
+      sanitizeMenuTree(node.children);
+    }
+  }
+}
+
+sanitizeMenuTree();
+
+/**
  * 根据菜单列表生成侧栏路由（登录 /menu/all 使用）
  * @param menuList 管理菜单树，默认取 MOCK_MENU_LIST
  * @param allowedNames 可选，仅保留这些顶级 name
@@ -484,6 +696,7 @@ export function buildAccessMenus(
   menuList: any[] = MOCK_MENU_LIST,
   allowedNames?: Set<string>,
 ) {
+  sanitizeMenuTree(menuList);
   return menuList
     .filter((item) => !allowedNames || allowedNames.has(item.name))
     .map((item) => convertMenuNodeToRoute(item))
