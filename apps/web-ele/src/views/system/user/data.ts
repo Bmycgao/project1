@@ -2,17 +2,54 @@ import type { VbenFormSchema } from '#/adapter/form';
 import type { OnActionClickFn, VxeTableGridColumns } from '#/adapter/vxe-table';
 import type { SystemUserApi } from '#/api';
 
-import { getDeptList } from '#/api';
+import { getDeptList, getRoleList } from '#/api';
 import { $t } from '#/locales';
+
+/** 拉取启用中的角色，供用户绑定 */
+async function fetchRoleOptions() {
+  const res = await getRoleList({ page: 1, pageSize: 200, status: 1 });
+  return res?.items || [];
+}
 
 /** 用户新增/编辑表单 schema */
 export function useFormSchema(): VbenFormSchema[] {
   return [
     {
       component: 'Input',
-      fieldName: 'name',
-      label: $t('system.user.name'),
+      fieldName: 'username',
+      label: '登录账号',
       rules: 'required',
+      help: '用于登录；改角色后需重新登录生效',
+    },
+    {
+      component: 'Input',
+      fieldName: 'name',
+      label: '姓名',
+      rules: 'required',
+    },
+    {
+      component: 'Input',
+      componentProps: {
+        type: 'password',
+        placeholder: '新建默认 123456；编辑留空则不改',
+      },
+      fieldName: 'password',
+      label: '密码',
+    },
+    {
+      component: 'ApiSelect',
+      componentProps: {
+        api: fetchRoleOptions,
+        class: 'w-full',
+        labelField: 'name',
+        valueField: 'id',
+        multiple: true,
+        placeholder: '请选择角色',
+      },
+      fieldName: 'roleIds',
+      label: '角色',
+      rules: 'required',
+      help: '权限 = 所绑角色的菜单/按钮并集',
     },
     {
       component: 'ApiTreeSelect',
@@ -25,7 +62,6 @@ export function useFormSchema(): VbenFormSchema[] {
       },
       fieldName: 'deptId',
       label: $t('system.user.dept'),
-      rules: 'required',
     },
     {
       component: 'RadioGroup',
@@ -55,7 +91,7 @@ export function useGridFormSchema(): VbenFormSchema[] {
     {
       component: 'Input',
       fieldName: 'name',
-      label: $t('system.user.name'),
+      label: '姓名/账号',
     },
     {
       component: 'Select',
@@ -75,7 +111,8 @@ export function useGridFormSchema(): VbenFormSchema[] {
 /**
  * 用户表格列配置
  * @param onActionClick 操作列回调
- * @param onStatusChange 状态切换前回调
+ * @param onStatusChange 状态切换前回调；无编辑权限时勿传
+ * @param actionAccess 操作列显隐（按 System:User:*）
  */
 export function useColumns(
   onActionClick: OnActionClickFn<SystemUserApi.SystemUser>,
@@ -83,12 +120,26 @@ export function useColumns(
     newStatus: number,
     row: SystemUserApi.SystemUser,
   ) => PromiseLike<boolean | undefined>,
+  actionAccess?: { canDelete?: boolean; canEdit?: boolean },
 ): VxeTableGridColumns {
+  const canEdit = actionAccess?.canEdit !== false;
+  const canDelete = actionAccess?.canDelete !== false;
   return [
-    { field: 'name', title: $t('system.user.name'), minWidth: 120 },
+    {
+      field: 'username',
+      title: '登录账号',
+      minWidth: 110,
+    },
+    { field: 'name', title: '姓名', minWidth: 100 },
+    {
+      field: 'roleNames',
+      title: '角色',
+      minWidth: 140,
+      formatter: ({ cellValue }) =>
+        Array.isArray(cellValue) ? cellValue.join('、') : cellValue || '-',
+    },
     {
       field: 'id',
-      // 短业务 ID，列宽无需过大
       title: $t('system.user.id'),
       width: 100,
     },
@@ -99,10 +150,9 @@ export function useColumns(
       },
       field: 'status',
       title: $t('system.user.status'),
-      // 开关含「已启用/已禁用」文案，需更宽以免裁切
       width: 180,
     },
-    { field: 'remark', minWidth: 180, title: $t('system.user.remark') },
+    { field: 'remark', minWidth: 160, title: $t('system.user.remark') },
     {
       field: 'createTime',
       title: $t('system.user.createTime'),
@@ -116,6 +166,10 @@ export function useColumns(
           onClick: onActionClick,
         },
         name: 'CellOperation',
+        options: [
+          { code: 'edit', show: canEdit },
+          { code: 'delete', show: canDelete },
+        ],
       },
       field: 'operation',
       fixed: 'right',

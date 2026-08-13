@@ -10,9 +10,12 @@ import { ElButton, ElInput, ElMessage, ElTable, ElTableColumn } from 'element-pl
 
 import SectionCard from '../components/section-card.vue';
 import { cloneJson } from '../clone';
+import { useAgreeFieldAccess } from '../use-field-access';
 
 const props = defineProps<{ detail: AgreementDetail | null }>();
 const emit = defineEmits<{ dirty: [] }>();
+
+const { fieldVisible, fieldEditable } = useAgreeFieldAccess();
 
 const rightHolders = ref<RightHolderRow[]>([]);
 const houses = ref<HouseRow[]>([]);
@@ -98,14 +101,30 @@ defineExpose({ validate, getValues, isDirty });
             <ElInput v-model="row.name" size="small" />
           </template>
         </ElTableColumn>
-        <ElTableColumn label="身份证号/营业执照号" min-width="180">
+        <ElTableColumn
+          v-if="fieldVisible('idNo')"
+          label="身份证号/营业执照号"
+          min-width="180"
+        >
           <template #default="{ row }">
-            <ElInput v-model="row.idNo" size="small" />
+            <ElInput
+              v-model="row.idNo"
+              size="small"
+              :disabled="!fieldEditable('idNo')"
+            />
           </template>
         </ElTableColumn>
-        <ElTableColumn label="联系电话" min-width="120">
+        <ElTableColumn
+          v-if="fieldVisible('phone')"
+          label="联系电话"
+          min-width="120"
+        >
           <template #default="{ row }">
-            <ElInput v-model="row.phone" size="small" />
+            <ElInput
+              v-model="row.phone"
+              size="small"
+              :disabled="!fieldEditable('phone')"
+            />
           </template>
         </ElTableColumn>
       </ElTable>

@@ -37,10 +37,107 @@ export const MOCK_USERS: UserInfo[] = [
     username: 'jack',
     homePath: '/dashboard/analytics',
   },
+  /** 协议演示：录入岗（只看录入菜单 + 录入类按钮） */
+  {
+    id: 3,
+    password: '123456',
+    realName: '录入员',
+    roles: ['entry'],
+    username: 'entry',
+    homePath: '/e-agree/entry',
+  },
+  /** 协议演示：律师审核岗 */
+  {
+    id: 4,
+    password: '123456',
+    realName: '律师审核',
+    roles: ['lawyer'],
+    username: 'lawyer',
+    homePath: '/e-agree/lawyer-audit',
+  },
+  /** 协议演示：查询岗（信息查询菜单） */
+  {
+    id: 5,
+    password: '123456',
+    realName: '查询员',
+    roles: ['viewer'],
+    username: 'viewer',
+    homePath: '/e-query/preview',
+  },
+];
+
+/** 协议动作权限码（与前端 Agree:actionCode 一一对应） */
+const AGREE_ACTION_CODES = [
+  'Agree:add',
+  'Agree:delete',
+  'Agree:edit',
+  'Agree:export',
+  'Agree:submitReview',
+  'Agree:conditionalSign',
+  'Agree:approve',
+  'Agree:reject',
+  'Agree:rejectRecord',
+  'Agree:rejectPrev',
+  'Agree:preview1',
+  'Agree:preview2',
+  'Agree:ticket1',
+  'Agree:ticket2',
+  'Agree:preSave',
+  'Agree:companyAgree',
+  'Agree:unlicensedAgree',
+  'Agree:previewSupply',
+  'Agree:previewChange',
+  'Agree:previewAgree',
+];
+
+/** 协议菜单权限码 */
+const AGREE_MENU_CODES = [
+  'Agree:Menu:Entry',
+  'Agree:Menu:Lawyer',
+  'Agree:Menu:Preview',
+  'Agree:Menu:View',
+  'Agree:Menu:Detail',
+];
+
+/** 录入岗按钮码 */
+const ENTRY_ACTION_CODES = [
+  'Agree:add',
+  'Agree:delete',
+  'Agree:edit',
+  'Agree:export',
+  'Agree:submitReview',
+  'Agree:conditionalSign',
+  'Agree:rejectRecord',
+  'Agree:rejectPrev',
+  'Agree:preview1',
+  'Agree:preview2',
+];
+
+/** 律师岗按钮码 */
+const LAWYER_ACTION_CODES = [
+  'Agree:approve',
+  'Agree:reject',
+  'Agree:rejectRecord',
+  'Agree:preview1',
+  'Agree:preview2',
+  'Agree:ticket1',
+  'Agree:ticket2',
+];
+
+/** 查询岗按钮码（预览/查看场景；含仅可见演示码） */
+const VIEWER_ACTION_CODES = [
+  'Agree:View:edit',
+  'Agree:export',
+  'Agree:preSave',
+  'Agree:companyAgree',
+  'Agree:unlicensedAgree',
+  'Agree:previewSupply',
+  'Agree:previewChange',
+  'Agree:previewAgree',
 ];
 
 export const MOCK_CODES = [
-  // super
+  // super：通配 Agree:*，列表按钮不过滤
   {
     codes: [
       'AC_100100',
@@ -55,8 +152,9 @@ export const MOCK_CODES = [
       'System:Dept:Delete',
       'System:User:Create',
       'System:Role:Edit',
-      'Approval:Approve',
-      'Approval:Reject',
+      'Agree:*',
+      ...AGREE_MENU_CODES,
+      ...AGREE_ACTION_CODES,
     ],
     username: 'vben',
   },
@@ -69,15 +167,33 @@ export const MOCK_CODES = [
       'System:Menu:Create',
       'System:Menu:Edit',
       'System:Dept:Create',
-      'Approval:Approve',
-      'Approval:Reject',
+      'Agree:*',
+      ...AGREE_MENU_CODES,
+      ...AGREE_ACTION_CODES,
     ],
     username: 'admin',
   },
   {
-    // user
-    codes: ['AC_1000001', 'AC_1000002', 'Approval:Approve'],
+    // user：仅看板
+    codes: ['AC_1000001', 'AC_1000002'],
     username: 'jack',
+  },
+  {
+    username: 'entry',
+    codes: ['Agree:Menu:Entry', 'Agree:Menu:Detail', ...ENTRY_ACTION_CODES],
+  },
+  {
+    username: 'lawyer',
+    codes: ['Agree:Menu:Lawyer', 'Agree:Menu:Detail', ...LAWYER_ACTION_CODES],
+  },
+  {
+    username: 'viewer',
+    codes: [
+      'Agree:Menu:Preview',
+      'Agree:Menu:View',
+      'Agree:Menu:Detail',
+      ...VIEWER_ACTION_CODES,
+    ],
   },
 ];
 
@@ -164,81 +280,81 @@ export const MOCK_MENU_LIST: any[] = [
       },
     ],
   },
-  {
-    id: 3,
-    name: 'Approval',
-    status: 1,
-    type: 'catalog',
-    path: '/approval',
-    meta: {
-      icon: 'mdi:clipboard-check-outline',
-      order: 2000,
-      title: 'approval.title',
-    },
-    children: [
-      {
-        id: 301,
-        pid: 3,
-        path: 'todo',
-        name: 'ApprovalTodo',
-        authCode: 'Approval:Todo',
-        status: 1,
-        type: 'menu',
-        meta: {
-          icon: 'mdi:clipboard-list-outline',
-          title: 'approval.todo',
-        },
-        component: '/approval/todo/index',
-        children: [
-          {
-            id: 30_101,
-            pid: 301,
-            name: 'ApprovalApprove',
-            status: 1,
-            type: 'button',
-            authCode: 'Approval:Approve',
-            meta: { title: 'approval.approve' },
-          },
-          {
-            id: 30_102,
-            pid: 301,
-            name: 'ApprovalReject',
-            status: 1,
-            type: 'button',
-            authCode: 'Approval:Reject',
-            meta: { title: 'approval.reject' },
-          },
-        ],
-      },
-      {
-        id: 302,
-        pid: 3,
-        path: 'initiated',
-        name: 'ApprovalInitiated',
-        authCode: 'Approval:Initiated',
-        status: 1,
-        type: 'menu',
-        meta: {
-          icon: 'mdi:send-outline',
-          title: 'approval.initiated',
-        },
-        component: '/approval/initiated/index',
-      },
-      {
-        id: 303,
-        pid: 3,
-        path: 'detail/:id',
-        name: 'ApprovalDetail',
-        status: 1,
-        type: 'menu',
-        meta: {
-          hideInMenu: true,
-          title: 'approval.detail',
-        },
-        component: '/approval/detail/index',
-      },
-    ],
-  },
+  // {
+  //   id: 3,
+  //   name: 'Approval',
+  //   status: 1,
+  //   type: 'catalog',
+  //   path: '/approval',
+  //   meta: {
+  //     icon: 'mdi:clipboard-check-outline',
+  //     order: 2000,
+  //     title: 'approval.title',
+  //   },
+  //   children: [
+  //     {
+  //       id: 301,
+  //       pid: 3,
+  //       path: 'todo',
+  //       name: 'ApprovalTodo',
+  //       authCode: 'Approval:Todo',
+  //       status: 1,
+  //       type: 'menu',
+  //       meta: {
+  //         icon: 'mdi:clipboard-list-outline',
+  //         title: 'approval.todo',
+  //       },
+  //       component: '/approval/todo/index',
+  //       children: [
+  //         {
+  //           id: 30_101,
+  //           pid: 301,
+  //           name: 'ApprovalApprove',
+  //           status: 1,
+  //           type: 'button',
+  //           authCode: 'Approval:Approve',
+  //           meta: { title: 'approval.approve' },
+  //         },
+  //         {
+  //           id: 30_102,
+  //           pid: 301,
+  //           name: 'ApprovalReject',
+  //           status: 1,
+  //           type: 'button',
+  //           authCode: 'Approval:Reject',
+  //           meta: { title: 'approval.reject' },
+  //         },
+  //       ],
+  //     },
+  //     {
+  //       id: 302,
+  //       pid: 3,
+  //       path: 'initiated',
+  //       name: 'ApprovalInitiated',
+  //       authCode: 'Approval:Initiated',
+  //       status: 1,
+  //       type: 'menu',
+  //       meta: {
+  //         icon: 'mdi:send-outline',
+  //         title: 'approval.initiated',
+  //       },
+  //       component: '/approval/initiated/index',
+  //     },
+  //     {
+  //       id: 303,
+  //       pid: 3,
+  //       path: 'detail/:id',
+  //       name: 'ApprovalDetail',
+  //       status: 1,
+  //       type: 'menu',
+  //       meta: {
+  //         hideInMenu: true,
+  //         title: 'approval.detail',
+  //       },
+  //       component: '/approval/detail/index',
+  //     },
+  //   ],
+  // },
   {
     id: 2,
     name: 'System',
@@ -430,78 +546,6 @@ export const MOCK_MENU_LIST: any[] = [
       },
     ],
   },
-  {
-    id: 6,
-    name: 'BizConfig',
-    status: 1,
-    type: 'catalog',
-    path: '/biz',
-    meta: {
-      icon: 'mdi:view-dashboard-edit-outline',
-      order: 500,
-      title: 'system.biz.title',
-    },
-    children: [
-      {
-        id: 601,
-        pid: 6,
-        path: 'customer',
-        name: 'BizCustomer',
-        status: 1,
-        type: 'menu',
-        meta: {
-          icon: 'mdi:account-tie',
-          title: '客户列表',
-          /** 关联页面配置 ID，动态列表页按此渲染字段 */
-          schemaId: 'PS1001',
-        },
-        component: '/system/dynamic-list/index',
-      },
-      {
-        id: 602,
-        pid: 6,
-        path: 'material',
-        name: 'BizMaterial',
-        status: 1,
-        type: 'menu',
-        meta: {
-          icon: 'mdi:package-variant-closed',
-          title: '物料列表',
-          schemaId: 'PS1002',
-        },
-        component: '/system/dynamic-list/index',
-      },
-      {
-        id: 603,
-        pid: 6,
-        path: 'mortgage-entry',
-        name: 'BizMortgageEntry',
-        status: 1,
-        type: 'menu',
-        meta: {
-          icon: 'mdi:home-city-outline',
-          title: '抵押信息录入',
-          /** 关联页面配置 PS1100 */
-          schemaId: 'PS1100',
-        },
-        component: '/system/dynamic-list/index',
-      },
-      {
-        id: 604,
-        pid: 6,
-        path: 'mortgage-entry/detail/:agreementNo',
-        name: 'BizMortgageDetail',
-        status: 1,
-        type: 'menu',
-        meta: {
-          hideInMenu: true,
-          activePath: '/biz/mortgage-entry',
-          title: '抵押信息详情',
-        },
-        component: '/biz/mortgage/detail/index',
-      },
-    ],
-  },
   /** 电子协议：同一列表组件 + 不同 scene（按钮/数据不同） */
   {
     id: 7,
@@ -520,6 +564,7 @@ export const MOCK_MENU_LIST: any[] = [
         pid: 7,
         path: 'entry',
         name: 'EAgreeEntry',
+        authCode: 'Agree:Menu:Entry',
         status: 1,
         type: 'menu',
         meta: {
@@ -530,12 +575,107 @@ export const MOCK_MENU_LIST: any[] = [
           schemaId: 'PS_AGREE_ENTRY',
         },
         component: '/biz/agreement/list/index',
+        /** 按钮资源：角色管理可勾选；列表运行时再按权限码过滤 */
+        children: [
+          {
+            id: 70_101,
+            pid: 701,
+            name: 'AgreeEntryAdd',
+            status: 1,
+            type: 'button',
+            authCode: 'Agree:add',
+            meta: { title: '新增' },
+          },
+          {
+            id: 70_102,
+            pid: 701,
+            name: 'AgreeEntryDelete',
+            status: 1,
+            type: 'button',
+            authCode: 'Agree:delete',
+            meta: { title: '删除' },
+          },
+          {
+            id: 70_103,
+            pid: 701,
+            name: 'AgreeEntryEdit',
+            status: 1,
+            type: 'button',
+            authCode: 'Agree:edit',
+            meta: { title: '修改' },
+          },
+          {
+            id: 70_104,
+            pid: 701,
+            name: 'AgreeEntrySubmit',
+            status: 1,
+            type: 'button',
+            authCode: 'Agree:submitReview',
+            meta: { title: '提交复核' },
+          },
+          {
+            id: 70_105,
+            pid: 701,
+            name: 'AgreeEntryExport',
+            status: 1,
+            type: 'button',
+            authCode: 'Agree:export',
+            meta: { title: '导出' },
+          },
+          /** 字段权限资源（角色勾选 → accessCodes，驱动列表列/详情字段） */
+          {
+            id: 70_111,
+            pid: 701,
+            name: 'AgreeFieldBatchGroup',
+            status: 1,
+            type: 'button',
+            authCode: 'Agree:Field:batchGroup',
+            meta: { title: '字段-批次分组' },
+          },
+          {
+            id: 70_112,
+            pid: 701,
+            name: 'AgreeFieldPhone',
+            status: 1,
+            type: 'button',
+            authCode: 'Agree:Field:phone',
+            meta: { title: '字段-电话' },
+          },
+          {
+            id: 70_113,
+            pid: 701,
+            name: 'AgreeFieldIdNo',
+            status: 1,
+            type: 'button',
+            authCode: 'Agree:Field:idNo',
+            meta: { title: '字段-证件号' },
+          },
+          {
+            id: 70_114,
+            pid: 701,
+            name: 'AgreeFieldAmount',
+            status: 1,
+            type: 'button',
+            authCode: 'Agree:Field:amount',
+            meta: { title: '字段-补偿金额' },
+          },
+          {
+            id: 70_115,
+            pid: 701,
+            name: 'AgreeFieldDebtAmount',
+            status: 1,
+            type: 'button',
+            authCode: 'Agree:Field:debtAmount',
+            meta: { title: '字段-债权金额' },
+          },
+        ],
       },
       {
         id: 702,
         pid: 7,
         path: 'lawyer-audit',
         name: 'EAgreeLawyerAudit',
+        authCode: 'Agree:Menu:Lawyer',
         status: 1,
         type: 'menu',
         meta: {
@@ -545,20 +685,135 @@ export const MOCK_MENU_LIST: any[] = [
           schemaId: 'PS_AGREE_LAWYER',
         },
         component: '/biz/agreement/list/index',
+        children: [
+          {
+            id: 70_201,
+            pid: 702,
+            name: 'AgreeLawyerApprove',
+            status: 1,
+            type: 'button',
+            authCode: 'Agree:approve',
+            meta: { title: '审核通过' },
+          },
+          {
+            id: 70_202,
+            pid: 702,
+            name: 'AgreeLawyerReject',
+            status: 1,
+            type: 'button',
+            authCode: 'Agree:reject',
+            meta: { title: '驳回' },
+          },
+          {
+            id: 70_211,
+            pid: 702,
+            name: 'AgreeLawyerFieldBatchGroup',
+            status: 1,
+            type: 'button',
+            authCode: 'Agree:Field:batchGroup',
+            meta: { title: '字段-批次分组' },
+          },
+          {
+            id: 70_212,
+            pid: 702,
+            name: 'AgreeLawyerFieldPhone',
+            status: 1,
+            type: 'button',
+            authCode: 'Agree:Field:phone',
+            meta: { title: '字段-电话' },
+          },
+          {
+            id: 70_213,
+            pid: 702,
+            name: 'AgreeLawyerFieldIdNo',
+            status: 1,
+            type: 'button',
+            authCode: 'Agree:Field:idNo',
+            meta: { title: '字段-证件号' },
+          },
+          {
+            id: 70_214,
+            pid: 702,
+            name: 'AgreeLawyerFieldAmount',
+            status: 1,
+            type: 'button',
+            authCode: 'Agree:Field:amount',
+            meta: { title: '字段-补偿金额' },
+          },
+          {
+            id: 70_215,
+            pid: 702,
+            name: 'AgreeLawyerFieldDebtAmount',
+            status: 1,
+            type: 'button',
+            authCode: 'Agree:Field:debtAmount',
+            meta: { title: '字段-债权金额' },
+          },
+        ],
       },
       {
         id: 799,
         pid: 7,
         path: 'detail/:agreementNo',
         name: 'BizAgreementDetail',
+        authCode: 'Agree:Menu:Detail',
         status: 1,
         type: 'menu',
         meta: {
           hideInMenu: true,
+          /** 默认兜底；进详情后会按 query.activePath / scene 动态覆盖 */
           activePath: '/e-agree/entry',
           title: '协议详情',
         },
         component: '/biz/agreement/detail/index',
+        /** 详情区域资源：角色勾选 → 控制左侧 Tab 显隐 */
+        children: [
+          {
+            id: 79_901,
+            pid: 799,
+            name: 'AgreeModuleBasic',
+            status: 1,
+            type: 'button',
+            authCode: 'Agree:Module:basic',
+            meta: { title: '区域-基础信息' },
+          },
+          {
+            id: 79_902,
+            pid: 799,
+            name: 'AgreeModuleSigning',
+            status: 1,
+            type: 'button',
+            authCode: 'Agree:Module:signing',
+            meta: { title: '区域-签约信息' },
+          },
+          {
+            id: 79_903,
+            pid: 799,
+            name: 'AgreeModuleSignMaterial',
+            status: 1,
+            type: 'button',
+            authCode: 'Agree:Module:signMaterial',
+            meta: { title: '区域-签约材料' },
+          },
+          {
+            id: 79_904,
+            pid: 799,
+            name: 'AgreeModuleCertifyMaterial',
+            status: 1,
+            type: 'button',
+            authCode: 'Agree:Module:certifyMaterial',
+            meta: { title: '区域-认定材料' },
+          },
+          {
+            id: 79_905,
+            pid: 799,
+            name: 'AgreeModuleCompensation',
+            status: 1,
+            type: 'button',
+            authCode: 'Agree:Module:compensation',
+            meta: { title: '区域-补偿安置' },
+          },
+        ],
       },
     ],
   },
@@ -580,6 +835,7 @@ export const MOCK_MENU_LIST: any[] = [
         pid: 8,
         path: 'preview',
         name: 'EAgreePreview',
+        authCode: 'Agree:Menu:Preview',
         status: 1,
         type: 'menu',
         meta: {
@@ -595,6 +851,7 @@ export const MOCK_MENU_LIST: any[] = [
         pid: 8,
         path: 'view',
         name: 'EAgreeView',
+        authCode: 'Agree:Menu:View',
         status: 1,
         type: 'menu',
         meta: {
@@ -604,13 +861,69 @@ export const MOCK_MENU_LIST: any[] = [
           schemaId: 'PS_AGREE_VIEW',
         },
         component: '/biz/agreement/list/index',
+        children: [
+          {
+            id: 80_201,
+            pid: 802,
+            name: 'AgreeViewEdit',
+            status: 1,
+            type: 'button',
+            /** 仅可见：列表显示「修改」但置灰（文档 2.4 演示） */
+            authCode: 'Agree:View:edit',
+            meta: { title: '修改（仅可见）' },
+          },
+          {
+            id: 80_202,
+            pid: 802,
+            name: 'AgreeViewExport',
+            status: 1,
+            type: 'button',
+            /** 可操作：正常点击 */
+            authCode: 'Agree:export',
+            meta: { title: '导出' },
+          },
+        ],
       },
     ],
   },
 ];
 
-/** 普通用户可见的顶级菜单 name */
-const JACK_MENU_NAMES = new Set(['Dashboard', 'Approval']);
+/**
+ * 按用户限制可见菜单 name（任意层级）
+ * all = 全量菜单；否则只保留名单内节点（父级有子则保留）
+ */
+const USER_MENU_NAME_ACCESS: Record<string, Set<string> | 'all'> = {
+  vben: 'all',
+  admin: 'all',
+  jack: new Set(['Dashboard', 'Analytics', 'Workspace']),
+  entry: new Set([
+    'Dashboard',
+    'Analytics',
+    'Workspace',
+    'EAgreement',
+    'EAgreeEntry',
+    'BizAgreementDetail',
+  ]),
+  lawyer: new Set([
+    'Dashboard',
+    'Analytics',
+    'Workspace',
+    'EAgreement',
+    'EAgreeLawyerAudit',
+    'BizAgreementDetail',
+  ]),
+  viewer: new Set([
+    'Dashboard',
+    'Analytics',
+    'Workspace',
+    'EQuery',
+    'EAgreePreview',
+    'EAgreeView',
+    // 详情路由挂在电子协议下，查询岗也需注册该隐藏路由
+    'EAgreement',
+    'BizAgreementDetail',
+  ]),
+};
 
 /**
  * 将管理端菜单节点转为侧栏路由节点（过滤 button / 禁用项 / 无 path 的非法项）
@@ -652,6 +965,13 @@ function convertMenuNodeToRoute(node: any): any | null {
 
   if (children.length > 0) {
     route.children = children;
+    // 目录下若没有可展示子菜单（仅隐藏详情等），侧栏也隐藏该目录
+    if (node.type === 'catalog') {
+      const visibleChild = children.find((c: any) => !c.meta?.hideInMenu);
+      if (!visibleChild) {
+        meta.hideInMenu = true;
+      }
+    }
     // 目录默认跳到第一个可访问子路由
     if (node.type === 'catalog' && !route.redirect) {
       const first = children.find((c: any) => !c.meta?.hideInMenu);
@@ -688,19 +1008,50 @@ function sanitizeMenuTree(list: any[] = MOCK_MENU_LIST) {
 sanitizeMenuTree();
 
 /**
+ * 按允许的菜单 name 过滤管理菜单树
+ * - 父菜单在名单内时，保留其 button 子节点（供权限码/角色树）
+ * - 父不在名单但有子菜单保留时，只带可访问的子菜单
+ * @param list 菜单树
+ * @param allowedNames 允许的 name 集合
+ */
+function filterMenusByAllowedNames(list: any[], allowedNames: Set<string>): any[] {
+  const result: any[] = [];
+  for (const node of list) {
+    const rawChildren: any[] = node.children || [];
+    const buttonChildren = rawChildren.filter((c) => c.type === 'button');
+    const nonButtonChildren = rawChildren.filter((c) => c.type !== 'button');
+    const filteredChildren = filterMenusByAllowedNames(
+      nonButtonChildren,
+      allowedNames,
+    );
+    const selfAllowed = allowedNames.has(node.name);
+    if (!selfAllowed && filteredChildren.length === 0) {
+      continue;
+    }
+    result.push({
+      ...node,
+      children: selfAllowed
+        ? [...filteredChildren, ...buttonChildren]
+        : filteredChildren,
+    });
+  }
+  return result;
+}
+
+/**
  * 根据菜单列表生成侧栏路由（登录 /menu/all 使用）
  * @param menuList 管理菜单树，默认取 MOCK_MENU_LIST
- * @param allowedNames 可选，仅保留这些顶级 name
+ * @param allowedNames 可选，仅保留这些菜单 name（任意层级）
  */
 export function buildAccessMenus(
   menuList: any[] = MOCK_MENU_LIST,
   allowedNames?: Set<string>,
 ) {
   sanitizeMenuTree(menuList);
-  return menuList
-    .filter((item) => !allowedNames || allowedNames.has(item.name))
-    .map((item) => convertMenuNodeToRoute(item))
-    .filter(Boolean);
+  const source = allowedNames
+    ? filterMenusByAllowedNames(menuList, allowedNames)
+    : menuList;
+  return source.map((item) => convertMenuNodeToRoute(item)).filter(Boolean);
 }
 
 /**
@@ -708,10 +1059,11 @@ export function buildAccessMenus(
  * @param username 用户名
  */
 export function buildAccessMenusForUser(username: string) {
-  if (username === 'jack') {
-    return buildAccessMenus(MOCK_MENU_LIST, JACK_MENU_NAMES);
+  const access = USER_MENU_NAME_ACCESS[username];
+  if (!access || access === 'all') {
+    return buildAccessMenus(MOCK_MENU_LIST);
   }
-  return buildAccessMenus(MOCK_MENU_LIST);
+  return buildAccessMenus(MOCK_MENU_LIST, access);
 }
 
 /** @deprecated 兼容旧引用；请优先用 buildAccessMenusForUser */
@@ -725,8 +1077,20 @@ export const MOCK_MENUS = [
     username: 'admin',
   },
   {
-    menus: buildAccessMenus(MOCK_MENU_LIST, JACK_MENU_NAMES),
+    menus: buildAccessMenusForUser('jack'),
     username: 'jack',
+  },
+  {
+    menus: buildAccessMenusForUser('entry'),
+    username: 'entry',
+  },
+  {
+    menus: buildAccessMenusForUser('lawyer'),
+    username: 'lawyer',
+  },
+  {
+    menus: buildAccessMenusForUser('viewer'),
+    username: 'viewer',
   },
 ];
 

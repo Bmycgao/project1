@@ -1,6 +1,7 @@
 /**
  * 协议列表全量数据 + 按 scene 过滤（模拟同一张表、同一接口）
  * 优先：页面配置里该 scene 的 statusIn；其次：内置 SCENE_STATUS_MAP
+ * 列表写操作会改本数组，保证提交/删除后列表与详情状态一致
  */
 import { pageSchemaStore } from './mock-page-schema';
 
@@ -15,7 +16,7 @@ export interface AgreeListRow {
   batchGroup: string;
 }
 
-/** 全量协议池 */
+/** 全量协议池（可变，供列表写操作同步） */
 export const AGREE_ALL_ROWS: AgreeListRow[] = [
   {
     id: 'A001',
@@ -151,4 +152,72 @@ export function queryAgreeListByScene(options: {
   }
 
   return list;
+}
+
+/**
+ * 按协议编号查找列表行
+ * @param agreementNo 协议编号
+ */
+export function findAgreeListRow(agreementNo: string) {
+  return AGREE_ALL_ROWS.find((r) => r.agreementNo === String(agreementNo));
+}
+
+/**
+ * 同步列表行状态（提交复核 / 审核等）
+ * @param agreementNo 协议编号
+ * @param patch 要合并的字段
+ */
+export function patchAgreeListRow(
+  agreementNo: string,
+  patch: Partial<AgreeListRow>,
+) {
+  const row = findAgreeListRow(agreementNo);
+  if (!row) return null;
+  // 忽略 undefined，避免误清空列表字段
+  for (const [k, v] of Object.entries(patch)) {
+    if (v !== undefined) {
+      (row as Record<string, any>)[k] = v;
+    }
+  }
+  return { ...row };
+}
+
+/**
+ * 批量删除列表行
+ * @param agreementNos 协议编号列表
+ */
+export function removeAgreeListRows(agreementNos: string[]) {
+  const set = new Set(agreementNos.map(String));
+  let removed = 0;
+  for (let i = AGREE_ALL_ROWS.length - 1; i >= 0; i--) {
+    if (set.has(AGREE_ALL_ROWS[i]!.agreementNo)) {
+      AGREE_ALL_ROWS.splice(i, 1);
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
+/**
+ * 新建草稿协议行
+ * @param input 可选字段
+ */
+export function createAgreeListRow(input: {
+  compensatee?: string;
+  houseAddress?: string;
+} = {}) {
+  const seq = String(AGREE_ALL_ROWS.length + 1).padStart(3, '0');
+  const agreementNo = `LL-NEW-${Date.now().toString().slice(-6)}`;
+  const row: AgreeListRow = {
+    id: `A-NEW-${seq}`,
+    agreementNo,
+    compensatee: input.compensatee || '新建被补偿人',
+    houseAddress: input.houseAddress || '待填写地址',
+    statusValue: '草稿',
+    signType: '正常签约',
+    isSigned: '未签约',
+    batchGroup: '-',
+  };
+  AGREE_ALL_ROWS.unshift(row);
+  return { ...row };
 }

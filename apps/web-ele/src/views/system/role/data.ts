@@ -69,6 +69,7 @@ export function useGridFormSchema(): VbenFormSchema[] {
  * 角色表格列
  * @param onActionClick 操作回调
  * @param onStatusChange 状态切换回调
+ * @param actionAccess 按 System:Role:* 控制操作列
  */
 export function useColumns(
   onActionClick: OnActionClickFn<SystemRoleApi.SystemRole>,
@@ -76,7 +77,11 @@ export function useColumns(
     newStatus: number,
     row: SystemRoleApi.SystemRole,
   ) => PromiseLike<boolean | undefined>,
+  actionAccess?: { canDelete?: boolean; canEdit?: boolean },
 ): VxeTableGridColumns {
+  const canEdit = actionAccess?.canEdit !== false;
+  // 菜单未单独挂 Delete 码时，删除与编辑共用 Edit
+  const canDelete = actionAccess?.canDelete !== false;
   return [
     { field: 'name', title: $t('system.role.roleName'), minWidth: 140 },
     {
@@ -105,6 +110,10 @@ export function useColumns(
       cellRender: {
         attrs: { nameField: 'name', onClick: onActionClick },
         name: 'CellOperation',
+        options: [
+          { code: 'edit', show: canEdit },
+          { code: 'delete', show: canDelete },
+        ],
       },
       field: 'operation',
       fixed: 'right',

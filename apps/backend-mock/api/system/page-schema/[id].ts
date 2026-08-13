@@ -1,18 +1,16 @@
 import { eventHandler, getRouterParam } from 'h3';
 import { findPageSchema } from '~/utils/mock-page-schema';
-import { verifyAccessToken } from '~/utils/jwt-utils';
-import {
-  unAuthorizedResponse,
-  useResponseError,
-  useResponseSuccess,
-} from '~/utils/response';
+import { assertPageSchemaReadAccess } from '~/utils/system-api-auth';
+import { useResponseError, useResponseSuccess } from '~/utils/response';
 
-/** 获取单个页面配置详情 */
+/**
+ * GET /api/system/page-schema/:id
+ * 业务读：协议岗可拉场景配置；管理端有 PageSchema:List 也可
+ */
 export default eventHandler(async (event) => {
-  const userinfo = verifyAccessToken(event);
-  if (!userinfo) {
-    return unAuthorizedResponse(event);
-  }
+  const auth = assertPageSchemaReadAccess(event);
+  if (!auth.ok) return auth.response;
+
   const id = getRouterParam(event, 'id') || '';
   const node = findPageSchema(id);
   if (!node) {

@@ -5,7 +5,10 @@ import {
   setRefreshTokenCookie,
 } from '~/utils/cookie-utils';
 import { generateAccessToken, verifyRefreshToken } from '~/utils/jwt-utils';
-import { MOCK_USERS } from '~/utils/mock-data';
+import {
+  findRbacUserByUsername,
+  toAuthUserInfo,
+} from '~/utils/rbac-store';
 import { forbiddenResponse } from '~/utils/response';
 
 export default defineEventHandler(async (event) => {
@@ -21,13 +24,11 @@ export default defineEventHandler(async (event) => {
     return forbiddenResponse(event);
   }
 
-  const findUser = MOCK_USERS.find(
-    (item) => item.username === userinfo.username,
-  );
-  if (!findUser) {
+  const found = findRbacUserByUsername(userinfo.username);
+  if (!found) {
     return forbiddenResponse(event);
   }
-  const accessToken = generateAccessToken(findUser);
+  const accessToken = generateAccessToken(toAuthUserInfo(found));
 
   setRefreshTokenCookie(event, refreshToken);
 

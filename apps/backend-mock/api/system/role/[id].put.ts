@@ -1,17 +1,25 @@
-import { eventHandler } from 'h3';
-import { verifyAccessToken } from '~/utils/jwt-utils';
+import { eventHandler, getRouterParam, readBody } from 'h3';
 import {
-  sleep,
-  unAuthorizedResponse,
-  useResponseSuccess,
-} from '~/utils/response';
+  assertSystemAccess,
+  SYSTEM_AUTH,
+} from '~/utils/system-api-auth';
+import { updateRoleRecord } from '~/utils/rbac-store';
+import { useResponseError, useResponseSuccess } from '~/utils/response';
 
-/** 更新角色及菜单授权（Mock 成功） */
+/** PUT /api/system/role/:id 更新角色及菜单授权 */
 export default eventHandler(async (event) => {
-  const userinfo = verifyAccessToken(event);
-  if (!userinfo) {
-    return unAuthorizedResponse(event);
+  const auth = assertSystemAccess(event, SYSTEM_AUTH.roleEdit);
+  if (!auth.ok) return auth.response;
+
+  const id = getRouterParam(event, 'id');
+  if (!id) {
+    return useResponseError('缺少角色 ID');
   }
-  await sleep(400);
-  return useResponseSuccess(null);
+  try {
+    const body = await readBody(event);
+    const row = updateRoleRecord(id, body || {});
+    return useResponseSuccess(row);
+  } catch (error: any) {
+    return useResponseError(error?.message || '更新失败');
+  }
 });

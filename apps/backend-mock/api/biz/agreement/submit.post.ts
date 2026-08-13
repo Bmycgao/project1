@@ -1,18 +1,12 @@
 import { eventHandler, readBody } from 'h3';
+import { assertAgreeAction } from '~/utils/agree-api-auth';
 import { submitAgreementDetail } from '~/utils/mock-agreement-detail';
-import { verifyAccessToken } from '~/utils/jwt-utils';
-import {
-  unAuthorizedResponse,
-  useResponseError,
-  useResponseSuccess,
-} from '~/utils/response';
+import { useResponseError, useResponseSuccess } from '~/utils/response';
 
 /** POST /api/biz/agreement/submit 提交复核 */
 export default eventHandler(async (event) => {
-  const userinfo = verifyAccessToken(event);
-  if (!userinfo) {
-    return unAuthorizedResponse(event);
-  }
+  const auth = assertAgreeAction(event, 'submitReview');
+  if (!auth.ok) return auth.response;
 
   const body = await readBody(event);
   try {

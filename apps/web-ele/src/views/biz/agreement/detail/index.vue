@@ -21,18 +21,34 @@ import {
 
 import { buildAgreementDetail } from '../mock-data';
 import { cloneJson } from '../clone';
+import { getAgreeListPathByScene } from '../scene-paths';
+import {
+  resolveAgreeModulesForPage,
+  type AgreeModuleLayoutItem,
+  type AgreeModuleMount,
+} from '../module-access';
+import { loadAgreeDetailModules } from '../resolve-runtime';
+import { useProvideAgreeFieldRules } from '../use-field-access';
 import BasicModule from '../modules/basic-module.vue';
 import CompensationModule from '../modules/compensation-module.vue';
 import MaterialModule from '../modules/material-module.vue';
 import SigningModule from '../modules/signing-module.vue';
 
+import { useAccessStore } from '@vben/stores';
+
 const route = useRoute();
 const router = useRouter();
+const accessStore = useAccessStore();
+
+/** 加载列模板 fieldRules 并注入给子模块 */
+useProvideAgreeFieldRules('PS_AGREE_COLS');
 
 const active = ref<AgreementModuleKey>('basic');
 const loading = ref(false);
 const saving = ref(false);
 const detail = ref<AgreementDetail | null>(null);
+/** 场景挂载的模块配置（来自 page-schema.modules） */
+const moduleMounts = ref<AgreeModuleMount[] | null>(null);
 /** 各模块未保存标记 */
 const dirtyMap = ref<Record<AgreementModuleKey, boolean>>({
   basic: false,
@@ -53,18 +69,32 @@ const agreementNo = computed(() =>
   decodeURIComponent(String(route.params.agreementNo || '')),
 );
 
-/** 模块导航配置 */
-const modules: {
-  key: AgreementModuleKey;
-  label: string;
-  desc: string;
-}[] = [
-  { key: 'basic', label: '基础信息', desc: '权利人 / 房屋' },
-  { key: 'signing', label: '签约信息', desc: '签约要素 / 通讯' },
-  { key: 'signMaterial', label: '签约材料', desc: '材料清单' },
-  { key: 'certifyMaterial', label: '认定材料', desc: '资格认定' },
-  { key: 'compensation', label: '补偿安置', desc: '安置与金额' },
-];
+/**
+ * 当前可见区域 = 场景挂载 ∩ 角色 Agree:Module:*
+ */
+const visibleModules = computed(() =>
+  resolveAgreeModulesForPage(
+    moduleMounts.value,
+    accessStore.accessCodes,
+  ),
+);
+
+/** 模块是否在当前页展示（挂载+权限） */
+function isModuleShown(key: AgreementModuleKey) {
+  return visibleModules.value.some((m) => m.key === key);
+}
+
+/** 确保 active 落在可见模块上 */
+watch(
+  visibleModules,
+  (list) => {
+    if (!list.length) return;
+    if (!list.some((m) => m.key === active.value)) {
+      active.value = list[0]!.key;
+    }
+  },
+  { immediate: true },
+);
 
 /** 取某模块组件 ref */
 function moduleApi(key: AgreementModuleKey) {
@@ -117,6 +147,12 @@ async function loadDetail() {
   }
   loading.value = true;
   try {
+    // 先拉场景模块挂载（schemaId / scene）
+    moduleMounts.value = await loadAgreeDetailModules({
+      schemaId: String(route.query.schemaId || ''),
+      scene: String(route.query.scene || 'entry'),
+    });
+
     try {
       detail.value = await getAgreementDetail(agreementNo.value, {
         id: String(route.query.id || ''),
@@ -132,7 +168,8 @@ async function loadDetail() {
       });
       ElMessage.warning('详情接口暂不可用，已使用本地演示数据');
     }
-    active.value = 'basic';
+    const first = visibleModules.value[0]?.key || 'basic';
+    active.value = first;
     clearDirty();
   } catch (error: any) {
     detail.value = null;
@@ -143,15 +180,29 @@ async function loadDetail() {
 }
 
 /**
- * 切换模块
+ * 切换模块：高亮并滚动到对应区块
  * @param key 目标模块
  */
 function switchModule(key: AgreementModuleKey) {
-  if (key === active.value) return;
-  if (moduleDirty(active.value)) {
+  if (!isModuleShown(key)) {
+    ElMessage.warning('当前场景未挂载或无权限查看该区域');
+    return;
+  }
+  if (key !== active.value && moduleDirty(active.value)) {
     ElMessage.info('当前模块有未保存修改，可点「保存本模块」或稍后「全部保存」');
   }
   active.value = key;
+  // 滚动到栅格中的对应模块
+  requestAnimationFrame(() => {
+    document
+      .getElementById(`agree-mod-${key}`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+}
+
+/** 取模块布局项（span） */
+function moduleLayout(key: AgreementModuleKey): AgreeModuleLayoutItem | undefined {
+  return visibleModules.value.find((m) => m.key === key);
 }
 
 /** 汇总全部模块当前值 */
@@ -178,6 +229,10 @@ function collectAll(): AgreementDetail | null {
  * @param key 模块
  */
 async function saveModule(key: AgreementModuleKey) {
+  if (!isModuleShown(key)) {
+    ElMessage.error('当前场景未挂载或无权限操作该区域');
+    return;
+  }
   const api = moduleApi(key);
   if (!api) return;
   if (!(await api.validate())) {
@@ -204,7 +259,9 @@ async function saveModule(key: AgreementModuleKey) {
       return;
     }
     clearDirty(key);
-    ElMessage.success(`「${modules.find((m) => m.key === key)?.label}」已保存`);
+    const label =
+      visibleModules.value.find((m) => m.key === key)?.label || key;
+    ElMessage.success(`「${label}」已保存`);
   } catch (error: any) {
     ElMessage.error(error?.message || '保存失败');
   } finally {
@@ -212,9 +269,9 @@ async function saveModule(key: AgreementModuleKey) {
   }
 }
 
-/** 全部保存 */
+/** 全部保存（仅校验/保存当前可见区域） */
 async function saveAll() {
-  for (const m of modules) {
+  for (const m of visibleModules.value) {
     const ok = await moduleApi(m.key)?.validate();
     if (!ok) {
       active.value = m.key;
@@ -244,7 +301,7 @@ async function saveAll() {
 
 /** 提交复核 */
 async function submitReview() {
-  for (const m of modules) {
+  for (const m of visibleModules.value) {
     const ok = await moduleApi(m.key)?.validate();
     if (!ok) {
       active.value = m.key;
@@ -278,18 +335,42 @@ async function submitReview() {
 
 /** 返回列表（按来源场景回电子协议/信息查询） */
 function onBack() {
+  const activePath = String(route.query.activePath || '').trim();
   const scene = String(route.query.scene || 'entry');
-  const pathMap: Record<string, string> = {
-    entry: '/e-agree/entry',
-    lawyer_audit: '/e-agree/lawyer-audit',
-    preview: '/e-query/preview',
-    view: '/e-query/view',
-  };
-  router.push({ path: pathMap[scene] || '/e-agree/entry' });
+  router.push({
+    path: activePath || getAgreeListPathByScene(scene),
+  });
 }
 
-// 协议号变化时立即加载（避免只依赖 onMounted 导致空白）
-watch(agreementNo, () => loadDetail(), { immediate: true });
+/**
+ * 按来源列表同步侧栏高亮（兜底；主逻辑在 router/guard.ts）
+ */
+function syncMenuActivePath() {
+  const fromQuery = String(route.query.activePath || '').trim();
+  const scene = String(route.query.scene || 'entry');
+  const activePath = fromQuery || getAgreeListPathByScene(scene);
+  if (route.meta.activePath !== activePath) {
+    (route.meta as Record<string, any>).activePath = activePath;
+  }
+}
+
+watch(
+  () => [route.query.scene, route.query.activePath, route.fullPath] as const,
+  () => syncMenuActivePath(),
+  { immediate: true },
+);
+
+// 协议号或场景配置变化时重新加载
+watch(
+  () =>
+    [
+      agreementNo.value,
+      route.query.schemaId,
+      route.query.scene,
+    ] as const,
+  () => loadDetail(),
+  { immediate: true },
+);
 </script>
 
 <template>
@@ -328,11 +409,14 @@ watch(agreementNo, () => loadDetail(), { immediate: true });
           class="w-full shrink-0 overflow-hidden rounded-lg border border-gray-200/80 bg-white lg:w-48"
         >
           <div class="border-b border-gray-100 px-3 py-2 text-xs text-gray-400">
-            信息模块
+            信息模块（按配置顺序）
           </div>
-          <div class="flex gap-1 overflow-x-auto p-2 lg:block lg:overflow-visible lg:p-0">
+          <div
+            v-if="visibleModules.length"
+            class="flex gap-1 overflow-x-auto p-2 lg:block lg:overflow-visible lg:p-0"
+          >
             <button
-              v-for="m in modules"
+              v-for="m in visibleModules"
               :key="m.key"
               type="button"
               class="module-nav-item"
@@ -348,89 +432,156 @@ watch(agreementNo, () => loadDetail(), { immediate: true });
               </span>
             </button>
           </div>
+          <div v-else class="p-3 text-xs text-gray-400">暂无可见区域</div>
         </aside>
 
-        <!-- 右侧内容 -->
+        <!-- 右侧：按 order 排列、按 span 占比的模块栅格 -->
         <div
           class="min-w-0 flex-1 overflow-hidden rounded-lg border border-gray-200/80 bg-white"
         >
           <div class="p-4">
-            <div v-show="active === 'basic'">
-              <BasicModule
-                ref="basicRef"
-                :detail="detail"
-                @dirty="onModuleDirty('basic')"
-              />
-              <ElButton
-                type="primary"
-                :loading="saving"
-                @click="saveModule('basic')"
-              >
-                保存本模块
-              </ElButton>
-            </div>
-            <div v-show="active === 'signing'">
-              <SigningModule
-                ref="signingRef"
-                :detail="detail"
-                @dirty="onModuleDirty('signing')"
-              />
-              <ElButton
-                type="primary"
-                :loading="saving"
-                @click="saveModule('signing')"
-              >
-                保存本模块
-              </ElButton>
-            </div>
-            <div v-show="active === 'signMaterial'">
-              <MaterialModule
-                ref="signMatRef"
-                :detail="detail"
-                field="signMaterials"
-                title="签约材料"
-                subtitle="签约所需材料清单"
-                @dirty="onModuleDirty('signMaterial')"
-              />
-              <ElButton
-                type="primary"
-                :loading="saving"
-                @click="saveModule('signMaterial')"
-              >
-                保存本模块
-              </ElButton>
-            </div>
-            <div v-show="active === 'certifyMaterial'">
-              <MaterialModule
-                ref="certifyMatRef"
-                :detail="detail"
-                field="certifyMaterials"
-                title="认定材料"
-                subtitle="资格认定相关材料"
-                @dirty="onModuleDirty('certifyMaterial')"
-              />
-              <ElButton
-                type="primary"
-                :loading="saving"
-                @click="saveModule('certifyMaterial')"
-              >
-                保存本模块
-              </ElButton>
-            </div>
-            <div v-show="active === 'compensation'">
-              <CompensationModule
-                ref="compensationRef"
-                :detail="detail"
-                @dirty="onModuleDirty('compensation')"
-              />
-              <ElButton
-                type="primary"
-                :loading="saving"
-                @click="saveModule('compensation')"
-              >
-                保存本模块
-              </ElButton>
-            </div>
+            <ElEmpty
+              v-if="!visibleModules.length"
+              description="当前角色无权查看任何详情区域，请在角色管理勾选「区域-*」权限"
+            />
+            <template v-else>
+              <p class="mb-3 text-xs text-gray-400">
+                模块按页面配置的顺序排列；宽度为占比（24 栅格）。点击左侧可定位。
+              </p>
+              <div class="module-grid">
+                <div
+                  v-if="isModuleShown('basic')"
+                  id="agree-mod-basic"
+                  class="module-grid__item"
+                  :class="{ 'is-active': active === 'basic' }"
+                  :style="{
+                    gridColumn: `span ${moduleLayout('basic')?.span || 24}`,
+                    order: moduleLayout('basic')?.order ?? 0,
+                  }"
+                  @click="active = 'basic'"
+                >
+                  <BasicModule
+                    ref="basicRef"
+                    :detail="detail"
+                    @dirty="onModuleDirty('basic')"
+                  />
+                  <ElButton
+                    type="primary"
+                    size="small"
+                    :loading="saving"
+                    @click.stop="saveModule('basic')"
+                  >
+                    保存本模块
+                  </ElButton>
+                </div>
+                <div
+                  v-if="isModuleShown('signing')"
+                  id="agree-mod-signing"
+                  class="module-grid__item"
+                  :class="{ 'is-active': active === 'signing' }"
+                  :style="{
+                    gridColumn: `span ${moduleLayout('signing')?.span || 24}`,
+                    order: moduleLayout('signing')?.order ?? 0,
+                  }"
+                  @click="active = 'signing'"
+                >
+                  <SigningModule
+                    ref="signingRef"
+                    :detail="detail"
+                    @dirty="onModuleDirty('signing')"
+                  />
+                  <ElButton
+                    type="primary"
+                    size="small"
+                    :loading="saving"
+                    @click.stop="saveModule('signing')"
+                  >
+                    保存本模块
+                  </ElButton>
+                </div>
+                <div
+                  v-if="isModuleShown('signMaterial')"
+                  id="agree-mod-signMaterial"
+                  class="module-grid__item"
+                  :class="{ 'is-active': active === 'signMaterial' }"
+                  :style="{
+                    gridColumn: `span ${moduleLayout('signMaterial')?.span || 24}`,
+                    order: moduleLayout('signMaterial')?.order ?? 0,
+                  }"
+                  @click="active = 'signMaterial'"
+                >
+                  <MaterialModule
+                    ref="signMatRef"
+                    :detail="detail"
+                    field="signMaterials"
+                    title="签约材料"
+                    subtitle="签约所需材料清单"
+                    @dirty="onModuleDirty('signMaterial')"
+                  />
+                  <ElButton
+                    type="primary"
+                    size="small"
+                    :loading="saving"
+                    @click.stop="saveModule('signMaterial')"
+                  >
+                    保存本模块
+                  </ElButton>
+                </div>
+                <div
+                  v-if="isModuleShown('certifyMaterial')"
+                  id="agree-mod-certifyMaterial"
+                  class="module-grid__item"
+                  :class="{ 'is-active': active === 'certifyMaterial' }"
+                  :style="{
+                    gridColumn: `span ${moduleLayout('certifyMaterial')?.span || 24}`,
+                    order: moduleLayout('certifyMaterial')?.order ?? 0,
+                  }"
+                  @click="active = 'certifyMaterial'"
+                >
+                  <MaterialModule
+                    ref="certifyMatRef"
+                    :detail="detail"
+                    field="certifyMaterials"
+                    title="认定材料"
+                    subtitle="资格认定相关材料"
+                    @dirty="onModuleDirty('certifyMaterial')"
+                  />
+                  <ElButton
+                    type="primary"
+                    size="small"
+                    :loading="saving"
+                    @click.stop="saveModule('certifyMaterial')"
+                  >
+                    保存本模块
+                  </ElButton>
+                </div>
+                <div
+                  v-if="isModuleShown('compensation')"
+                  id="agree-mod-compensation"
+                  class="module-grid__item"
+                  :class="{ 'is-active': active === 'compensation' }"
+                  :style="{
+                    gridColumn: `span ${moduleLayout('compensation')?.span || 24}`,
+                    order: moduleLayout('compensation')?.order ?? 0,
+                  }"
+                  @click="active = 'compensation'"
+                >
+                  <CompensationModule
+                    ref="compensationRef"
+                    :detail="detail"
+                    @dirty="onModuleDirty('compensation')"
+                  />
+                  <ElButton
+                    type="primary"
+                    size="small"
+                    :loading="saving"
+                    @click.stop="saveModule('compensation')"
+                  >
+                    保存本模块
+                  </ElButton>
+                </div>
+              </div>
+            </template>
           </div>
 
           <div
@@ -451,6 +602,34 @@ watch(agreementNo, () => loadDetail(), { immediate: true });
 </template>
 
 <style scoped>
+.module-grid {
+  display: grid;
+  grid-template-columns: repeat(24, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.module-grid__item {
+  min-width: 0;
+  padding: 12px;
+  background: #fafafa;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.module-grid__item.is-active {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.25);
+}
+
+@media (max-width: 1023px) {
+  .module-grid__item {
+    /* 窄屏强制整行，避免半宽过挤 */
+    grid-column: 1 / -1 !important;
+  }
+}
+
 .module-nav-item {
   display: flex;
   flex-direction: column;

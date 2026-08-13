@@ -3,6 +3,7 @@ import type { OnActionClickParams, VxeTableGridOptions } from '#/adapter/vxe-tab
 import type { SystemDeptApi } from '#/api/system/dept';
 
 import { Page, useVbenModal } from '@vben/common-ui';
+import { AccessControl, useAccess } from '@vben/access';
 import { Plus } from '@vben/icons';
 
 import { ElButton, ElMessage } from 'element-plus';
@@ -13,6 +14,12 @@ import { $t } from '#/locales';
 
 import { useColumns } from './data';
 import Form from './modules/form.vue';
+
+const { hasAccessByCodes } = useAccess();
+
+const canCreate = hasAccessByCodes(['System:Dept:Create']);
+const canEdit = hasAccessByCodes(['System:Dept:Edit']);
+const canDelete = hasAccessByCodes(['System:Dept:Delete']);
 
 const [FormModal, formModalApi] = useVbenModal({
   connectedComponent: Form,
@@ -55,7 +62,11 @@ function onCreate() {
 
 const [Grid, gridApi] = useVbenVxeGrid({
   gridOptions: {
-    columns: useColumns(onActionClick),
+    columns: useColumns(onActionClick, {
+      canCreate,
+      canEdit,
+      canDelete,
+    }),
     height: 'auto',
     keepSource: true,
     pagerConfig: { enabled: false },
@@ -83,10 +94,12 @@ const [Grid, gridApi] = useVbenVxeGrid({
     <FormModal @success="refreshGrid" />
     <Grid :table-title="$t('system.dept.list')">
       <template #toolbar-tools>
-        <ElButton type="primary" @click="onCreate">
-          <Plus class="mr-1 size-4" />
-          {{ $t('ui.actionTitle.create', [$t('system.dept.name')]) }}
-        </ElButton>
+        <AccessControl :codes="['System:Dept:Create']" type="code">
+          <ElButton type="primary" @click="onCreate">
+            <Plus class="mr-1 size-4" />
+            {{ $t('ui.actionTitle.create', [$t('system.dept.name')]) }}
+          </ElButton>
+        </AccessControl>
       </template>
     </Grid>
   </Page>

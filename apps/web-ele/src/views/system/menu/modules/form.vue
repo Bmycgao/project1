@@ -23,7 +23,10 @@ import {
   useFormSchema,
 } from '../data';
 
-const emits = defineEmits<{ success: [] }>();
+/** created=true 时列表页应刷新动态侧栏 */
+const emits = defineEmits<{
+  success: [payload?: { created?: boolean }];
+}>();
 
 const formData = ref<SystemMenuApi.SystemMenu>();
 const id = ref<string>();
@@ -110,14 +113,15 @@ const [Drawer, drawerApi] = useVbenDrawer({
       const { ElMessage } = await import('element-plus');
       ElMessage.warning('请选择协议场景（决定按钮与数据范围）');
       return;
-    }    drawerApi.lock();
+    }    const isCreate = !id.value;
+    drawerApi.lock();
     try {
       if (id.value) {
         await updateMenu(id.value, payload as any);
       } else {
         await createMenu(payload as any);
       }
-      emits('success');
+      emits('success', { created: isCreate });
       drawerApi.close();
     } catch {
       drawerApi.unlock();

@@ -4,13 +4,17 @@ import {
   setRefreshTokenCookie,
 } from '~/utils/cookie-utils';
 import { generateAccessToken, generateRefreshToken } from '~/utils/jwt-utils';
-import { MOCK_USERS } from '~/utils/mock-data';
+import {
+  findRbacUserByUsername,
+  toAuthUserInfo,
+} from '~/utils/rbac-store';
 import {
   forbiddenResponse,
   useResponseError,
   useResponseSuccess,
 } from '~/utils/response';
 
+/** 登录：校验 rbac-store 用户（角色权限由此用户绑定） */
 export default defineEventHandler(async (event) => {
   const { password, username } = await readBody(event);
   if (!password || !username) {
@@ -21,22 +25,20 @@ export default defineEventHandler(async (event) => {
     );
   }
 
-  const findUser = MOCK_USERS.find(
-    (item) => item.username === username && item.password === password,
-  );
-
-  if (!findUser) {
+  const found = findRbacUserByUsername(String(username));
+  if (!found || found.password !== String(password)) {
     clearRefreshTokenCookie(event);
     return forbiddenResponse(event, 'Username or password is incorrect.');
   }
 
-  const accessToken = generateAccessToken(findUser);
-  const refreshToken = generateRefreshToken(findUser);
+  const authUser = toAuthUserInfo(found);
+  const accessToken = generateAccessToken(authUser);
+  const refreshToken = generateRefreshToken(authUser);
 
   setRefreshTokenCookie(event, refreshToken);
 
   return useResponseSuccess({
-    ...findUser,
+    ...authUser,
     accessToken,
   });
 });

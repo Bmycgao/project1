@@ -55,12 +55,17 @@
     "createTime": "Created At",
     "operation": "Actions",
     "permissions": "Permissions",
-    "setPermissions": "Authorize"
+    "setPermissions": "Authorize",
+    "permTabsHint": "Authorize by resource tabs: Menu, Button, Field, Module (spec 2.6). Users get updates after refresh.",
+    "permTabMenu": "Menu",
+    "permTabButton": "Button",
+    "permTabField": "Field",
+    "permTabModule": "Module",
+    "permTabButtonTip": "Action buttons and view-only codes (Agree:View:*).",
+    "permTabFieldTip": "Field codes Agree:Field:* for column/detail visibility.",
+    "permTabModuleTip": "Detail module codes Agree:Module:*."
   },
   "pageSchema": {
     "title": "Page Schema"
-  },
-  "biz": {
-    "title": "Business"
   }
 }

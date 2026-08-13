@@ -9,9 +9,14 @@ export namespace SystemUserApi {
     /** 部门 ID */
     deptId?: string;
     id: string;
+    /** 展示名称 */
     name: string;
-    /** 角色权限菜单 ID 列表 */
-    permissions?: string[];
+    /** 登录账号 */
+    username?: string;
+    /** 绑定的角色 ID 列表 */
+    roleIds?: string[];
+    /** 角色名称（列表展示） */
+    roleNames?: string[];
     remark?: string;
     status: 0 | 1;
   }

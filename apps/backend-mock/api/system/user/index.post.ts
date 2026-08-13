@@ -1,17 +1,21 @@
-import { eventHandler } from 'h3';
-import { verifyAccessToken } from '~/utils/jwt-utils';
+import { eventHandler, readBody } from 'h3';
 import {
-  sleep,
-  unAuthorizedResponse,
-  useResponseSuccess,
-} from '~/utils/response';
+  assertSystemAccess,
+  SYSTEM_AUTH,
+} from '~/utils/system-api-auth';
+import { createUserRecord } from '~/utils/rbac-store';
+import { useResponseError, useResponseSuccess } from '~/utils/response';
 
-/** 创建用户（Mock 成功） */
+/** POST /api/system/user 创建用户（可绑角色） */
 export default eventHandler(async (event) => {
-  const userinfo = verifyAccessToken(event);
-  if (!userinfo) {
-    return unAuthorizedResponse(event);
+  const auth = assertSystemAccess(event, SYSTEM_AUTH.userCreate);
+  if (!auth.ok) return auth.response;
+
+  try {
+    const body = await readBody(event);
+    const row = createUserRecord(body || {});
+    return useResponseSuccess(row);
+  } catch (error: any) {
+    return useResponseError(error?.message || '创建失败');
   }
-  await sleep(400);
-  return useResponseSuccess(null);
 });

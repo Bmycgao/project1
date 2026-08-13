@@ -3,6 +3,7 @@ import type { OnActionClickParams, VxeTableGridOptions } from '#/adapter/vxe-tab
 import type { SystemRoleApi } from '#/api';
 
 import { Page, useVbenDrawer } from '@vben/common-ui';
+import { AccessControl, useAccess } from '@vben/access';
 import { Plus } from '@vben/icons';
 
 import { ElButton, ElMessage, ElMessageBox } from 'element-plus';
@@ -13,6 +14,13 @@ import { $t } from '#/locales';
 
 import { useColumns, useGridFormSchema } from './data';
 import Form from './modules/form.vue';
+
+const { hasAccessByCodes } = useAccess();
+
+/** 角色新建 */
+const canCreate = hasAccessByCodes(['System:Role:Create']);
+/** 角色编辑（删除菜单未挂独立码，与编辑共用） */
+const canEdit = hasAccessByCodes(['System:Role:Edit']);
 
 const [FormDrawer, formDrawerApi] = useVbenDrawer({
   connectedComponent: Form,
@@ -72,7 +80,11 @@ const [Grid, gridApi] = useVbenVxeGrid({
     submitOnChange: true,
   },
   gridOptions: {
-    columns: useColumns(onActionClick, onStatusChange),
+    columns: useColumns(
+      onActionClick,
+      canEdit ? onStatusChange : undefined,
+      { canEdit, canDelete: canEdit },
+    ),
     height: 'auto',
     keepSource: true,
     proxyConfig: {
@@ -102,10 +114,12 @@ const [Grid, gridApi] = useVbenVxeGrid({
     <FormDrawer @success="onRefresh" />
     <Grid :table-title="$t('system.role.list')">
       <template #toolbar-tools>
-        <ElButton type="primary" @click="onCreate">
-          <Plus class="mr-1 size-4" />
-          {{ $t('ui.actionTitle.create', [$t('system.role.name')]) }}
-        </ElButton>
+        <AccessControl :codes="['System:Role:Create']" type="code">
+          <ElButton type="primary" @click="onCreate">
+            <Plus class="mr-1 size-4" />
+            {{ $t('ui.actionTitle.create', [$t('system.role.name')]) }}
+          </ElButton>
+        </AccessControl>
       </template>
     </Grid>
   </Page>

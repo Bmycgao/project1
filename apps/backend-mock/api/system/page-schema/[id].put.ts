@@ -3,19 +3,17 @@ import {
   invalidateDynamicData,
   updatePageSchema,
 } from '~/utils/mock-page-schema';
-import { verifyAccessToken } from '~/utils/jwt-utils';
 import {
-  unAuthorizedResponse,
-  useResponseError,
-  useResponseSuccess,
-} from '~/utils/response';
+  assertSystemAccess,
+  SYSTEM_AUTH,
+} from '~/utils/system-api-auth';
+import { useResponseError, useResponseSuccess } from '~/utils/response';
 
-/** 更新页面字段配置 */
+/** 更新页面字段配置（无独立 Edit 码，用 List） */
 export default eventHandler(async (event) => {
-  const userinfo = verifyAccessToken(event);
-  if (!userinfo) {
-    return unAuthorizedResponse(event);
-  }
+  const auth = assertSystemAccess(event, SYSTEM_AUTH.pageSchemaList);
+  if (!auth.ok) return auth.response;
+
   const id = getRouterParam(event, 'id') || '';
   const body = await readBody(event);
   const node = updatePageSchema(id, body || {});

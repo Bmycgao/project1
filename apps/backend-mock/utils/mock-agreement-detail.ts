@@ -6,7 +6,11 @@ import type {
   AgreementDetail,
   AgreementModuleKey,
 } from './agreement-detail-types';
-import { AGREE_ALL_ROWS } from './mock-agreement-list';
+import {
+  AGREE_ALL_ROWS,
+  patchAgreeListRow,
+  removeAgreeListRows,
+} from './mock-agreement-list';
 
 const detailCache = new Map<string, AgreementDetail>();
 
@@ -54,9 +58,10 @@ export function createDefaultAgreementDetail(
       decorateEval: '否',
       hasMortgage: '否',
       mortgagee: '',
-      debtAmount: 0,
+      debtAmount: 1280000.5,
       hasSeal: '否',
       sealCourt: '',
+      signDate: '2026-03-15',
     },
     contact: {
       address: '',
@@ -92,7 +97,7 @@ export function createDefaultAgreementDetail(
     compensation: {
       settleType: '产权调换',
       settleAddress: '',
-      amount: 0,
+      amount: 2568000,
       remark: '',
     },
   };
@@ -139,6 +144,14 @@ export function saveAgreementDetailAll(payload: Partial<AgreementDetail>) {
     compensation: payload.compensation ?? current.compensation,
   };
   detailCache.set(agreementNo, next);
+  // 详情保存时同步列表展示字段
+  patchAgreeListRow(agreementNo, {
+    statusValue: next.statusValue,
+    compensatee: next.rightHolders?.[0]?.name,
+    houseAddress: next.signing?.houseAddress || next.houses?.[0]?.address,
+    signType: next.signType,
+    isSigned: next.isSigned,
+  });
   return structuredClone(next);
 }
 
@@ -175,13 +188,103 @@ export function saveAgreementDetailModule(
 }
 
 /**
- * 提交复核（先全量保存再改状态）
+ * 提交复核（先全量保存再改状态，并同步列表行）
  * @param payload 详情
  */
 export function submitAgreementDetail(payload: Partial<AgreementDetail>) {
-  return saveAgreementDetailAll({
+  const saved = saveAgreementDetailAll({
     ...payload,
     status: 'review',
     statusValue: '待复核',
   });
+  patchAgreeListRow(saved.agreementNo, {
+    statusValue: '待复核',
+    compensatee:
+      saved.rightHolders?.[0]?.name ||
+      findListCompensatee(saved.agreementNo),
+    houseAddress:
+      saved.signing?.houseAddress ||
+      saved.houses?.[0]?.address ||
+      undefined,
+  });
+  return saved;
+}
+
+/**
+ * 仅按协议编号提交复核（列表批量用，无需完整详情体）
+ * @param agreementNos 协议编号列表
+ */
+export function submitAgreementByNos(agreementNos: string[]) {
+  const results = [];
+  for (const no of agreementNos) {
+    const detail = getOrCreateAgreementDetail(no);
+    results.push(
+      submitAgreementDetail({
+        ...detail,
+        agreementNo: no,
+      }),
+    );
+  }
+  return results;
+}
+
+/**
+ * 列表审核通过：组长已复核 → 项目经理已审核
+ * @param agreementNos 协议编号列表
+ */
+export function approveAgreementByNos(agreementNos: string[]) {
+  const results = [];
+  for (const no of agreementNos) {
+    const detail = getOrCreateAgreementDetail(no);
+    const next = saveAgreementDetailAll({
+      ...detail,
+      status: 'approved',
+      statusValue: '项目经理已审核',
+    });
+    patchAgreeListRow(no, { statusValue: '项目经理已审核' });
+    results.push(next);
+  }
+  return results;
+}
+
+/**
+ * 列表驳回：回到告知单
+ * @param agreementNos 协议编号列表
+ * @param remark 驳回原因（写入详情备注位，演示用）
+ */
+export function rejectAgreementByNos(agreementNos: string[], remark?: string) {
+  const results = [];
+  for (const no of agreementNos) {
+    const detail = getOrCreateAgreementDetail(no);
+    const next = saveAgreementDetailAll({
+      ...detail,
+      status: 'draft',
+      statusValue: '告知单',
+      compensation: {
+        ...detail.compensation,
+        remark: remark
+          ? `驳回：${remark}`
+          : detail.compensation?.remark || '',
+      },
+    });
+    patchAgreeListRow(no, { statusValue: '告知单' });
+    results.push(next);
+  }
+  return results;
+}
+
+/**
+ * 删除协议（详情缓存 + 列表行）
+ * @param agreementNos 协议编号列表
+ */
+export function deleteAgreementByNos(agreementNos: string[]) {
+  for (const no of agreementNos) {
+    detailCache.delete(String(no));
+  }
+  return removeAgreeListRows(agreementNos);
+}
+
+/** 从列表池取被补偿人（兜底） */
+function findListCompensatee(agreementNo: string) {
+  return AGREE_ALL_ROWS.find((r) => r.agreementNo === agreementNo)?.compensatee;
 }

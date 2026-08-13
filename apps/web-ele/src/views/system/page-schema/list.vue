@@ -84,8 +84,8 @@ const [Grid, gridApi] = useVbenVxeGrid({
       type="info"
       show-icon
       :closable="false"
-      title="怎么用（给不懂代码的同事）"
-      description="① 业务场景：勾选「已开通按钮」和「能看哪些状态的数据」；② 菜单里新建子菜单，组件选协议列表，挂上这个场景；③ 列表上的按钮和数据会按这里配置显示。共用表头一般不用动；普通列表用于客户/物料等自己配列的页面。"
+      title="可视化配置台怎么用"
+      description="① 业务场景：勾选已开通按钮与数据状态；② 菜单挂协议列表 + 本场景；③ 编辑底部可「按角色预览」列/按钮/字段；④ 每次保存会留历史，可一键回滚。角色/用户与页面配置会落盘到 mock data 目录，重启一般不丢。"
     />
     <Grid table-title="页面与场景配置">
       <template #toolbar-tools>

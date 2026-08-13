@@ -55,12 +55,17 @@
     "createTime": "创建时间",
     "operation": "操作",
     "permissions": "权限",
-    "setPermissions": "授权"
+    "setPermissions": "授权",
+    "permTabsHint": "按资源类型分 Tab 勾选：菜单、按钮、字段、模块（对应需求方案 2.6）。保存后用户刷新页面即可生效。",
+    "permTabMenu": "菜单",
+    "permTabButton": "按钮",
+    "permTabField": "字段",
+    "permTabModule": "模块",
+    "permTabButtonTip": "含操作按钮与「仅可见」按钮（Agree:View:*）。勾选后对应列表按钮可显示/可点。",
+    "permTabFieldTip": "字段权限 Agree:Field:*，控制列表列与详情字段显隐/可编辑。",
+    "permTabModuleTip": "详情区域 Agree:Module:*，控制协议详情挂载模块是否可见。"
   },
   "pageSchema": {
     "title": "页面配置"
-  },
-  "biz": {
-    "title": "业务配置"
   }
 }

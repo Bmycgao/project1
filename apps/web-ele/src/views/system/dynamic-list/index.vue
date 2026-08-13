@@ -1,24 +1,22 @@
 <script lang="ts" setup>
 /**
  * 通用动态列表页：同一套壳子，按 route.meta.schemaId 加载字段配置并渲染
- * 抵押信息录入：点击协议编号跳转详情页（三模块可分存 / 总提）
  */
 import type { VbenFormSchema } from '#/adapter/form';
 import type { VxeTableGridColumns, VxeTableGridOptions } from '#/adapter/vxe-table';
 import type { PageSchemaApi } from '#/api';
 
 import { computed, nextTick, ref, watch } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { useRoute } from 'vue-router';
 
 import { Page } from '@vben/common-ui';
 
-import { ElAlert, ElEmpty, ElLink, ElMessage, ElTag } from 'element-plus';
+import { ElAlert, ElEmpty, ElMessage, ElTag } from 'element-plus';
 
 import { useVbenVxeGrid } from '#/adapter/vxe-table';
 import { getDynamicDataList, getPageSchema } from '#/api';
 
 const route = useRoute();
-const router = useRouter();
 const loading = ref(false);
 const schema = ref<PageSchemaApi.PageSchema | null>(null);
 const loadError = ref('');
@@ -33,34 +31,6 @@ const schemaId = computed(
         '',
     ),
 );
-
-/** 是否抵押信息录入页（协议编号跳转详情） */
-const isMortgagePage = computed(
-  () =>
-    schemaId.value === 'PS1100' ||
-    schema.value?.columns?.some((c) => c.field === 'agreementNo'),
-);
-
-/**
- * 点击协议编号进入抵押详情页
- * @param row 当前列表行
- */
-function openMortgageDetail(row: Record<string, any>) {
-  const no = String(row.agreementNo || '').trim();
-  if (!no) {
-    ElMessage.warning('协议编号为空');
-    return;
-  }
-  router.push({
-    name: 'BizMortgageDetail',
-    params: { agreementNo: no },
-    query: {
-      id: row.id,
-      compensatee: row.compensatee,
-      houseAddress: row.houseAddress,
-    },
-  });
-}
 
 /**
  * 按配置生成搜索表单
@@ -104,9 +74,7 @@ function buildColumns(columns: PageSchemaApi.Column[]): VxeTableGridColumns {
       };
       if (col.width) base.width = col.width;
 
-      if (col.field === 'agreementNo' && isMortgagePage.value) {
-        base.slots = { default: 'agreementNoCell' };
-      } else if (col.cellType === 'status') {
+      if (col.cellType === 'status') {
         base.cellRender = { name: 'CellTag' };
         base.width = col.width || 100;
       } else if (col.cellType === 'tag') {
@@ -170,7 +138,7 @@ async function loadSchemaAndGrid() {
 
   if (!schemaId.value) {
     loadError.value =
-      '未绑定页面配置。请在菜单 meta.schemaId 填写配置 ID（如 PS1001），组件填写 /system/dynamic-list/index';
+      '未绑定页面配置。请在菜单 meta.schemaId 填写实体类配置 ID，组件填写 /system/dynamic-list/index';
     return;
   }
 
@@ -224,15 +192,6 @@ watch(schemaId, () => loadSchemaAndGrid(), { immediate: true });
         <span v-if="schema.remark">· {{ schema.remark }}</span>
       </div>
       <Grid v-if="ready" :table-title="schema.title">
-        <template #agreementNoCell="{ row }">
-          <ElLink
-            type="primary"
-            :underline="'never'"
-            @click="openMortgageDetail(row)"
-          >
-            {{ row.agreementNo }}
-          </ElLink>
-        </template>
         <template #tagCell="{ row, column }">
           <ElTag size="small">{{ row[column.field] }}</ElTag>
         </template>

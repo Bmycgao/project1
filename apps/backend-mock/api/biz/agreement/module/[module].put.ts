@@ -1,32 +1,22 @@
 import { eventHandler, getRouterParam, readBody } from 'h3';
+import {
+  AGREE_MODULE_AUTH,
+  assertAgreeAccess,
+} from '~/utils/agree-api-auth';
 import { saveAgreementDetailModule } from '~/utils/mock-agreement-detail';
 import type { AgreementModuleKey } from '~/utils/agreement-detail-types';
-import { verifyAccessToken } from '~/utils/jwt-utils';
-import {
-  unAuthorizedResponse,
-  useResponseError,
-  useResponseSuccess,
-} from '~/utils/response';
-
-const MODULES = new Set([
-  'basic',
-  'signing',
-  'signMaterial',
-  'certifyMaterial',
-  'compensation',
-]);
+import { useResponseError, useResponseSuccess } from '~/utils/response';
 
 /** PUT /api/biz/agreement/module/:module 按模块保存 */
 export default eventHandler(async (event) => {
-  const userinfo = verifyAccessToken(event);
-  if (!userinfo) {
-    return unAuthorizedResponse(event);
-  }
-
   const module = String(getRouterParam(event, 'module') || '');
-  if (!MODULES.has(module)) {
+  const need = AGREE_MODULE_AUTH[module];
+  if (!need) {
     return useResponseError('未知模块');
   }
+
+  const auth = assertAgreeAccess(event, need);
+  if (!auth.ok) return auth.response;
 
   const body = await readBody(event);
   const agreementNo = String(body?.agreementNo || '');

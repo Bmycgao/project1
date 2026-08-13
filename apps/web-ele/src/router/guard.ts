@@ -7,8 +7,57 @@ import { startProgress, stopProgress } from '@vben/utils';
 
 import { accessRoutes, coreRouteNames } from '#/router/routes';
 import { useAuthStore } from '#/store';
+import { getAgreeListPathByScene } from '#/views/biz/agreement/scene-paths';
 
 import { generateAccess } from './access';
+
+/**
+ * 是否协议详情路由（隐藏菜单，需动态 activePath）
+ * @param to 目标路由
+ */
+function isAgreeDetailRoute(to: { name?: unknown; path: string }) {
+  if (to.name === 'BizAgreementDetail') return true;
+  // 兼容 path 匹配（后端菜单可能改 name）
+  return /\/e-agree\/detail(?:\/|$)/.test(to.path);
+}
+
+/**
+ * 进入详情前按来源列表改写侧栏高亮路径
+ * （须在守卫里改 to.meta / matched.meta；页面内改无响应式）
+ * @param to 目标路由
+ */
+function applyAgreeDetailActivePath(to: {
+  name?: unknown;
+  path: string;
+  meta: Record<string, any>;
+  query: Record<string, unknown>;
+  matched?: { name?: unknown; path: string; meta: Record<string, any> }[];
+}) {
+  if (!isAgreeDetailRoute(to)) return;
+
+  const rawActive = to.query.activePath;
+  const fromQuery = String(
+    Array.isArray(rawActive) ? rawActive[0] : rawActive || '',
+  ).trim();
+
+  const rawScene = to.query.scene;
+  const scene = String(
+    Array.isArray(rawScene) ? rawScene[0] : rawScene || '',
+  ).trim();
+
+  const activePath = fromQuery || getAgreeListPathByScene(scene || 'entry');
+
+  to.meta.activePath = activePath;
+  // 同步写到匹配记录，避免布局读到种子里写死的 /e-agree/entry
+  to.matched?.forEach((record) => {
+    if (
+      record.name === 'BizAgreementDetail' ||
+      /\/e-agree\/detail/.test(record.path)
+    ) {
+      record.meta.activePath = activePath;
+    }
+  });
+}
 
 /**
  * 通用守卫配置
@@ -20,6 +69,9 @@ function setupCommonGuard(router: Router) {
 
   router.beforeEach((to) => {
     to.meta.loaded = loadedPaths.has(to.path);
+
+    // 协议详情：按来源菜单高亮侧栏
+    applyAgreeDetailActivePath(to);
 
     // 页面加载进度条
     if (!to.meta.loaded && preferences.transition.progress) {
@@ -87,15 +139,17 @@ function setupAccessGuard(router: Router) {
 
     // 是否已经生成过动态路由
     if (accessStore.isAccessChecked) {
+      // 动态路由已就绪时再补一次（避免首屏竞态）
+      applyAgreeDetailActivePath(to);
       return true;
     }
 
-    // 生成路由表
-    // 当前登录用户拥有的角色标识列表
-    const userInfo = userStore.userInfo || (await authStore.fetchUserInfo());
+    // 刷新页 / 首次进入：重新拉用户信息与权限码（文档 3.3：无需重登）
+    // accessCodes 虽会持久化，但此处以服务端最新结果覆盖，避免改角色后仍用旧码
+    const userInfo = await authStore.refreshAccessSession();
     const userRoles = userInfo.roles ?? [];
 
-    // 生成菜单和路由
+    // 生成菜单和路由（/menu/all 按最新角色权限过滤）
     const { accessibleMenus, accessibleRoutes } = await generateAccess({
       roles: userRoles,
       router,

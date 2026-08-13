@@ -31,6 +31,7 @@ export interface SigningInfo {
   debtAmount: string | number;
   hasSeal: string;
   sealCourt: string;
+  signDate?: string;
 }
 
 export interface ContactInfo {

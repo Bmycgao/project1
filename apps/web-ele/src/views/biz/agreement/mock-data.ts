@@ -118,9 +118,10 @@ export function buildAgreementDetail(
       decorateEval: '否',
       hasMortgage: '否',
       mortgagee: '',
-      debtAmount: 0,
+      debtAmount: 1280000.5,
       hasSeal: '否',
       sealCourt: '',
+      signDate: '2026-03-15',
     },
     contact: {
       address: '',
@@ -156,7 +157,7 @@ export function buildAgreementDetail(
     compensation: {
       settleType: '产权调换',
       settleAddress: '',
-      amount: 0,
+      amount: 2568000,
       remark: '',
     },
   };

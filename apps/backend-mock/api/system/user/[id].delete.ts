@@ -1,17 +1,23 @@
-import { eventHandler } from 'h3';
-import { verifyAccessToken } from '~/utils/jwt-utils';
+import { eventHandler, getRouterParam } from 'h3';
 import {
-  sleep,
-  unAuthorizedResponse,
-  useResponseSuccess,
-} from '~/utils/response';
+  assertSystemAccess,
+  SYSTEM_AUTH,
+} from '~/utils/system-api-auth';
+import { removeUserRecord } from '~/utils/rbac-store';
+import { useResponseError, useResponseSuccess } from '~/utils/response';
 
-/** 删除用户（Mock 成功） */
+/** DELETE /api/system/user/:id */
 export default eventHandler(async (event) => {
-  const userinfo = verifyAccessToken(event);
-  if (!userinfo) {
-    return unAuthorizedResponse(event);
+  const auth = assertSystemAccess(event, SYSTEM_AUTH.userDelete);
+  if (!auth.ok) return auth.response;
+
+  const id = getRouterParam(event, 'id');
+  if (!id) {
+    return useResponseError('缺少用户 ID');
   }
-  await sleep(400);
+  const ok = removeUserRecord(id);
+  if (!ok) {
+    return useResponseError('用户不存在');
+  }
   return useResponseSuccess(null);
 });

@@ -1,18 +1,12 @@
 import { eventHandler, getQuery } from 'h3';
+import { assertAnyAgreeAccess } from '~/utils/agree-api-auth';
 import { getOrCreateAgreementDetail } from '~/utils/mock-agreement-detail';
-import { verifyAccessToken } from '~/utils/jwt-utils';
-import {
-  unAuthorizedResponse,
-  useResponseError,
-  useResponseSuccess,
-} from '~/utils/response';
+import { useResponseError, useResponseSuccess } from '~/utils/response';
 
 /** GET /api/biz/agreement/detail?agreementNo=xxx */
 export default eventHandler(async (event) => {
-  const userinfo = verifyAccessToken(event);
-  if (!userinfo) {
-    return unAuthorizedResponse(event);
-  }
+  const auth = assertAnyAgreeAccess(event);
+  if (!auth.ok) return auth.response;
 
   const query = getQuery(event);
   const agreementNo = String(query.agreementNo || '').trim();

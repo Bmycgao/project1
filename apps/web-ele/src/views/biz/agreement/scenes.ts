@@ -71,6 +71,7 @@ export const AGREE_SCENES: Record<string, AgreeSceneConfig> = {
       'delete',
       'edit',
       'submitReview',
+      'export',
       'conditionalSign',
       'rejectRecord',
       'rejectPrev',
@@ -118,7 +119,7 @@ export const AGREE_SCENES: Record<string, AgreeSceneConfig> = {
     remark: '信息查询 · 查看',
     detailMode: 'view',
     statusIn: undefined,
-    buttonCodes: ['edit'],
+    buttonCodes: ['edit', 'export'],
   },
 };
 

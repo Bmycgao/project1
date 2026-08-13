@@ -3,19 +3,17 @@ import {
   invalidateDynamicData,
   removePageSchema,
 } from '~/utils/mock-page-schema';
-import { verifyAccessToken } from '~/utils/jwt-utils';
 import {
-  unAuthorizedResponse,
-  useResponseError,
-  useResponseSuccess,
-} from '~/utils/response';
+  assertSystemAccess,
+  SYSTEM_AUTH,
+} from '~/utils/system-api-auth';
+import { useResponseError, useResponseSuccess } from '~/utils/response';
 
-/** 删除页面配置 */
+/** 删除页面配置（无独立 Delete 码，用 List） */
 export default eventHandler(async (event) => {
-  const userinfo = verifyAccessToken(event);
-  if (!userinfo) {
-    return unAuthorizedResponse(event);
-  }
+  const auth = assertSystemAccess(event, SYSTEM_AUTH.pageSchemaList);
+  if (!auth.ok) return auth.response;
+
   const id = getRouterParam(event, 'id') || '';
   const ok = removePageSchema(id);
   if (!ok) {

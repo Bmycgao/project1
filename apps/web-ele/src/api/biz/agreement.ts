@@ -1,5 +1,5 @@
 /**
- * 协议业务 API：列表（按 scene）+ 详情分模块/全部保存
+ * 协议业务 API：列表（按 scene）+ 详情分模块/全部保存 + 列表批量动作
  */
 import type { Recordable } from '@vben/types';
 
@@ -68,7 +68,7 @@ async function saveAgreementAll(payload: Recordable<any>) {
 }
 
 /**
- * 提交复核（保存并标记待复核）
+ * 提交复核（详情页：保存并标记待复核）
  * @param payload 完整详情
  */
 async function submitAgreement(payload: Recordable<any>) {
@@ -78,10 +78,70 @@ async function submitAgreement(payload: Recordable<any>) {
   );
 }
 
+/**
+ * 列表批量提交复核（只需协议编号）
+ * @param agreementNos 协议编号列表
+ */
+async function submitAgreementBatch(agreementNos: string[]) {
+  return requestClient.post<{ items: AgreementDetail[]; total: number }>(
+    '/biz/agreement/batch-submit',
+    { agreementNos },
+  );
+}
+
+/**
+ * 批量删除协议
+ * @param agreementNos 协议编号列表
+ */
+async function deleteAgreements(agreementNos: string[]) {
+  return requestClient.post<{ removed: number }>('/biz/agreement/delete', {
+    agreementNos,
+  });
+}
+
+/**
+ * 列表审核通过
+ * @param agreementNos 协议编号列表
+ */
+async function approveAgreements(agreementNos: string[]) {
+  return requestClient.post<{ items: AgreementDetail[]; total: number }>(
+    '/biz/agreement/approve',
+    { agreementNos },
+  );
+}
+
+/**
+ * 列表驳回
+ * @param agreementNos 协议编号列表
+ * @param remark 驳回原因
+ */
+async function rejectAgreements(agreementNos: string[], remark?: string) {
+  return requestClient.post<{ items: AgreementDetail[]; total: number }>(
+    '/biz/agreement/reject',
+    { agreementNos, remark },
+  );
+}
+
+/**
+ * 新建草稿协议
+ * @param input 可选被补偿人 / 地址
+ */
+async function createAgreement(input?: {
+  compensatee?: string;
+  houseAddress?: string;
+}) {
+  return requestClient.post<AgreementListItem>('/biz/agreement/create', input || {});
+}
+
 export {
+  approveAgreements,
+  createAgreement,
+  deleteAgreements,
   getAgreementDetail,
   getAgreementList,
+  rejectAgreements,
   saveAgreementAll,
   saveAgreementModule,
   submitAgreement,
+  submitAgreementBatch,
 };

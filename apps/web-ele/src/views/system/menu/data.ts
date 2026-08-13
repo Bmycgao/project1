@@ -14,7 +14,7 @@ export const COMPONENT_AGREE_LIST = '/biz/agreement/list/index';
 export function getMenuComponentOptions() {
   return [
     {
-      label: '通用动态列表（客户 / 物料 / 抵押等）',
+      label: '通用动态列表（按页面配置渲染列）',
       value: COMPONENT_DYNAMIC_LIST,
     },
     {
@@ -176,7 +176,7 @@ export function useFormSchema(): VbenFormSchema[] {
       },
       fieldName: 'meta.schemaId',
       label: '页面配置',
-      help: '关联「页面配置」中的实体字段方案（客户/物料/抵押等）',
+      help: '关联「页面配置」中的实体字段方案（schemaKind=entity）',
     },
     {
       component: 'ApiSelect',
@@ -227,10 +227,19 @@ export function useFormSchema(): VbenFormSchema[] {
 /**
  * 菜单树表格列
  * @param onActionClick 操作回调
+ * @param actionAccess 按 System:Menu:* 控制
  */
 export function useColumns(
   onActionClick: OnActionClickFn<SystemMenuApi.SystemMenu>,
+  actionAccess?: {
+    canCreate?: boolean;
+    canDelete?: boolean;
+    canEdit?: boolean;
+  },
 ): VxeTableGridColumns<SystemMenuApi.SystemMenu> {
+  const canCreate = actionAccess?.canCreate !== false;
+  const canEdit = actionAccess?.canEdit !== false;
+  const canDelete = actionAccess?.canDelete !== false;
   return [
     {
       align: 'left',
@@ -272,9 +281,9 @@ export function useColumns(
         attrs: { nameField: 'name', onClick: onActionClick },
         name: 'CellOperation',
         options: [
-          { code: 'append', text: '新增下级' },
-          'edit',
-          'delete',
+          { code: 'append', text: '新增下级', show: canCreate },
+          { code: 'edit', show: canEdit },
+          { code: 'delete', show: canDelete },
         ],
       },
       field: 'operation',

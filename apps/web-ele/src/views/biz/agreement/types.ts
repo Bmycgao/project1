@@ -45,6 +45,8 @@ export interface SigningInfo {
   debtAmount: string | number;
   hasSeal: string;
   sealCourt: string;
+  /** 签约日期（展示格式由 fieldRules.displayFormat 控制） */
+  signDate?: string;
 }
 
 /** 通讯信息 */

@@ -13,6 +13,7 @@ import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import { Page } from '@vben/common-ui';
+import { useAccessStore } from '@vben/stores';
 
 import {
   ElButton,
@@ -32,11 +33,18 @@ import {
 
 import { getAgreementList } from '#/api';
 
-import { isAgreeActionRegistered, runAgreeAction } from '../actions';
+import {
+  filterButtonsByAccessCodes,
+  filterButtonsByShowWhen,
+  isAgreeActionRegistered,
+  runAgreeAction,
+} from '../actions';
+import { filterColumnsByFieldRules } from '../field-access';
 import { loadAgreeListRuntime } from '../resolve-runtime';
 
 const route = useRoute();
 const router = useRouter();
+const accessStore = useAccessStore();
 
 const schemaLoading = ref(false);
 const loading = ref(false);
@@ -52,31 +60,36 @@ const metaKey = computed(() => {
   return `${m?.schemaId || ''}|${m?.sceneId || ''}|${route.fullPath}`;
 });
 
+/** 场景按钮 ∩ 权限码 ∩ showWhen（按勾选行状态） */
+const permittedButtons = computed(() => {
+  const byAccess = filterButtonsByAccessCodes(
+    runtime.value?.buttons || [],
+    accessStore.accessCodes,
+  );
+  return filterButtonsByShowWhen(byAccess, selected.value);
+});
+
 const mainButtons = computed(() =>
-  (runtime.value?.buttons || []).filter((b) => (b.group || 'main') === 'main'),
+  permittedButtons.value.filter((b) => (b.group || 'main') === 'main'),
 );
 const moreButtons = computed(() =>
-  (runtime.value?.buttons || []).filter((b) => b.group === 'more'),
+  permittedButtons.value.filter((b) => b.group === 'more'),
 );
 
 const pageTitle = computed(() => runtime.value?.title || '协议列表');
 
+/** 列配置 ∩ 字段权限码 */
 const tableColumns = computed(() =>
-  (runtime.value?.columns || []).filter((c) => c.visible !== false),
+  filterColumnsByFieldRules(
+    runtime.value?.columns || [],
+    runtime.value?.fieldRules,
+    accessStore.accessCodes,
+  ),
 );
 
 const statusOptions = computed(() => {
   if (runtime.value?.statusIn?.length) return runtime.value.statusIn;
   return ['告知单', '待复核', '组长已复核', '签约已确认', '草稿'];
-});
-
-const sourceLabel = computed(() => {
-  const map = {
-    'page-schema': '页面配置',
-    'local-scene': '本地场景兜底',
-    fallback: '兜底',
-  } as const;
-  return runtime.value ? map[runtime.value.source] : '';
 });
 
 /**
@@ -147,7 +160,7 @@ async function loadList() {
 }
 
 /**
- * 进入详情
+ * 进入详情（带上来源菜单 path，供侧栏高亮）
  * @param row 行数据
  */
 function goDetail(row: AgreementListItem) {
@@ -160,7 +173,10 @@ function goDetail(row: AgreementListItem) {
       houseAddress: row.houseAddress,
       mode: runtime.value?.detailMode || 'view',
       scene: runtime.value?.scene,
+      schemaId: runtime.value?.schemaId || '',
       from: runtime.value?.title,
+      // 当前列表菜单路径，详情页据此高亮侧栏（优先于写死的 activePath）
+      activePath: route.path,
     },
   });
 }
@@ -169,8 +185,11 @@ function onSelectionChange(rows: AgreementListItem[]) {
   selected.value = rows;
 }
 
-/** 构建动作上下文 */
-function buildActionCtx() {
+/**
+ * 构建动作上下文
+ * @param btn 当前点击的按钮（带 bind）
+ */
+function buildActionCtx(btn?: AgreeToolbarButton) {
   return {
     scene: runtime.value?.scene || '',
     selected: selected.value,
@@ -178,11 +197,13 @@ function buildActionCtx() {
     reload: loadList,
     openDetail: goDetail,
     router,
+    accessCodes: accessStore.accessCodes,
+    buttonBind: btn?.bind,
   };
 }
 
 /**
- * 工具栏点击：统一走动作注册表
+ * 工具栏点击：统一走动作注册表 + 页面绑定
  * @param btn 已解析的按钮
  */
 async function onToolbar(btn: AgreeToolbarButton) {
@@ -190,7 +211,11 @@ async function onToolbar(btn: AgreeToolbarButton) {
     ElMessage.warning(`动作「${btn.label}」未开通（未在动作库注册）`);
     return;
   }
-  await runAgreeAction(btn.code, buildActionCtx());
+  if (btn.disabled) {
+    ElMessage.warning(`「${btn.label}」仅可见，无操作权限`);
+    return;
+  }
+  await runAgreeAction(btn.code, buildActionCtx(btn));
 }
 
 /**
@@ -236,29 +261,6 @@ watch(
 
 <template>
   <Page auto-content-height :title="pageTitle">
-    <div
-      v-if="runtime"
-      class="mb-3 rounded-lg border border-blue-100 bg-blue-50/80 px-4 py-2 text-sm text-gray-600"
-    >
-      配置来源
-      <code class="mx-1 rounded bg-white px-1.5 text-blue-700">{{
-        sourceLabel
-      }}</code>
-      <template v-if="runtime.schemaId">
-        · schema
-        <code class="mx-1 rounded bg-white px-1.5">{{ runtime.schemaId }}</code>
-      </template>
-      · 场景
-      <code class="mx-1 rounded bg-white px-1.5 text-blue-700">{{
-        runtime.scene
-      }}</code>
-      ·
-      <code class="mx-1 rounded bg-white px-1.5"
-        >/biz/agreement/list?scene={{ runtime.scene }}</code
-      >
-      <span v-if="runtime.remark"> · {{ runtime.remark }}</span>
-    </div>
-
     <div
       class="mb-4 flex flex-wrap items-end justify-between gap-3 rounded-lg border border-gray-200/80 bg-white p-4"
     >
@@ -306,10 +308,23 @@ watch(
           :key="btn.code"
           :type="btn.type === 'default' ? undefined : btn.type"
           :plain="btn.plain"
-          :disabled="!isAgreeActionRegistered(btn.code)"
+          :disabled="
+            btn.disabled || !isAgreeActionRegistered(btn.code)
+          "
+          :title="
+            btn.disabled
+              ? '仅可见，无操作权限（Agree:View:*）'
+              : undefined
+          "
           @click="onToolbar(btn)"
         >
           {{ btn.label }}
+          <span
+            v-if="btn.disabled"
+            class="ml-1 text-xs opacity-70"
+          >
+            (只读)
+          </span>
         </ElButton>
         <ElDropdown v-if="moreButtons.length" @command="onMoreCommand">
           <ElButton>
@@ -322,11 +337,19 @@ watch(
                 v-for="btn in moreButtons"
                 :key="btn.code"
                 :command="btn"
-                :disabled="!isAgreeActionRegistered(btn.code)"
+                :disabled="
+                  btn.disabled || !isAgreeActionRegistered(btn.code)
+                "
               >
                 {{ btn.label }}
                 <span
-                  v-if="!isAgreeActionRegistered(btn.code)"
+                  v-if="btn.disabled"
+                  class="ml-1 text-xs text-gray-400"
+                >
+                  （只读）
+                </span>
+                <span
+                  v-else-if="!isAgreeActionRegistered(btn.code)"
                   class="ml-1 text-xs text-gray-400"
                 >
                   （未开通）
@@ -339,7 +362,7 @@ watch(
           v-if="!schemaLoading && !mainButtons.length && !moreButtons.length"
           class="text-xs text-amber-600"
         >
-          当前场景未勾选任何已开通动作，请到「页面配置」中勾选
+          当前场景无可用按钮（页面未勾选，或账号无对应权限码）
         </span>
       </ElSpace>
       <span class="text-xs text-gray-400">

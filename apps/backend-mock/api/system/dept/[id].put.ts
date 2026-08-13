@@ -1,16 +1,15 @@
 import { eventHandler } from 'h3';
-import { verifyAccessToken } from '~/utils/jwt-utils';
 import {
-  sleep,
-  unAuthorizedResponse,
-  useResponseSuccess,
-} from '~/utils/response';
+  assertSystemAccess,
+  SYSTEM_AUTH,
+} from '~/utils/system-api-auth';
+import { sleep, useResponseSuccess } from '~/utils/response';
 
+/** PUT /api/system/dept/:id 更新部门（演示桩） */
 export default eventHandler(async (event) => {
-  const userinfo = verifyAccessToken(event);
-  if (!userinfo) {
-    return unAuthorizedResponse(event);
-  }
+  const auth = assertSystemAccess(event, SYSTEM_AUTH.deptEdit);
+  if (!auth.ok) return auth.response;
+
   await sleep(2000);
   return useResponseSuccess(null);
 });

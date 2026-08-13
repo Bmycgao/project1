@@ -11,6 +11,14 @@ import {
   type AgreeToolbarButton,
 } from './actions';
 import {
+  DEFAULT_AGREE_FIELD_RULES,
+  type AgreeFieldRule,
+} from './field-access';
+import {
+  buildAgreeModuleMounts,
+  type AgreeModuleMount,
+} from './module-access';
+import {
   AGREE_COLUMN_TEMPLATE,
   getAgreeScene,
   getAgreeSceneBySchemaId,
@@ -40,6 +48,10 @@ export interface AgreeListRuntime {
   columns: AgreeListColumn[];
   /** 本地兜底过滤（接口失败时）；正常以后端 scene 为准 */
   statusIn?: string[];
+  /** 字段显隐规则（列模板继承） */
+  fieldRules?: AgreeFieldRule[];
+  /** 详情模块挂载（场景配置；未配=全部） */
+  modules?: AgreeModuleMount[];
 }
 
 /**
@@ -70,6 +82,8 @@ function fromLocalScene(local: AgreeSceneConfig): AgreeListRuntime {
       ...c,
     })),
     statusIn: local.statusIn,
+    fieldRules: [...DEFAULT_AGREE_FIELD_RULES],
+    modules: buildAgreeModuleMounts(),
   };
 }
 
@@ -82,8 +96,10 @@ function fromPageSchema(
   schema: PageSchemaApi.PageSchema,
   local: AgreeSceneConfig | null,
 ): AgreeListRuntime {
-  const codes = (schema.buttons || []).map((b) => b.code);
-  const buttons = resolveToolbarButtons(codes);
+  // 传入完整按钮对象，保留页面级 bind
+  const buttons = resolveToolbarButtons(
+    (schema.buttons || []) as AgreeToolbarButton[],
+  );
   const scene = String(schema.scene || local?.scene || '').trim();
   const columns = (schema.columns?.length
     ? schema.columns
@@ -99,6 +115,14 @@ function fromPageSchema(
       cellType: c.cellType,
     }));
 
+  const fieldRules = (schema.fieldRules?.length
+    ? schema.fieldRules
+    : DEFAULT_AGREE_FIELD_RULES) as AgreeFieldRule[];
+
+  const modules = (schema.modules?.length
+    ? schema.modules
+    : buildAgreeModuleMounts()) as AgreeModuleMount[];
+
   return {
     source: 'page-schema',
     schemaId: schema.id,
@@ -112,6 +136,8 @@ function fromPageSchema(
     statusIn: schema.statusIn?.length
       ? schema.statusIn
       : local?.statusIn,
+    fieldRules,
+    modules,
   };
 }
 
@@ -158,5 +184,31 @@ export async function loadAgreeListRuntime(
     columns: AGREE_COLUMN_TEMPLATE.filter((c) => c.visible).map((c) => ({
       ...c,
     })),
+    fieldRules: [...DEFAULT_AGREE_FIELD_RULES],
+    modules: buildAgreeModuleMounts(),
   };
+}
+
+/**
+ * 按 schemaId / scene 加载详情模块挂载配置
+ * @param opts schemaId 优先；否则按 scene 反查
+ */
+export async function loadAgreeDetailModules(opts: {
+  schemaId?: string;
+  scene?: string;
+}): Promise<AgreeModuleMount[]> {
+  const schemaId =
+    String(opts.schemaId || '').trim() ||
+    getAgreeScene(String(opts.scene || '').trim())?.schemaId ||
+    '';
+  if (!schemaId) return buildAgreeModuleMounts();
+  try {
+    const schema = await getPageSchema(schemaId);
+    if (schema?.modules?.length) {
+      return schema.modules as AgreeModuleMount[];
+    }
+  } catch {
+    // 回退默认全挂载
+  }
+  return buildAgreeModuleMounts();
 }

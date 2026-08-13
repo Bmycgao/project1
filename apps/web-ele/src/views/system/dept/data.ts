@@ -51,10 +51,19 @@ export function useFormSchema(): VbenFormSchema[] {
 /**
  * 部门树表格列
  * @param onActionClick 操作回调
+ * @param actionAccess 按 System:Dept:* 控制
  */
 export function useColumns(
   onActionClick: OnActionClickFn<SystemDeptApi.SystemDept>,
+  actionAccess?: {
+    canCreate?: boolean;
+    canDelete?: boolean;
+    canEdit?: boolean;
+  },
 ): VxeTableGridColumns {
+  const canCreate = actionAccess?.canCreate !== false;
+  const canEdit = actionAccess?.canEdit !== false;
+  const canDelete = actionAccess?.canDelete !== false;
   return [
     {
       align: 'left',
@@ -82,9 +91,9 @@ export function useColumns(
         attrs: { nameField: 'name', onClick: onActionClick },
         name: 'CellOperation',
         options: [
-          { code: 'append', text: '新增下级' },
-          'edit',
-          'delete',
+          { code: 'append', text: '新增下级', show: canCreate },
+          { code: 'edit', show: canEdit },
+          { code: 'delete', show: canDelete },
         ],
       },
       field: 'operation',

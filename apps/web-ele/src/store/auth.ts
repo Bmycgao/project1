@@ -40,16 +40,8 @@ export const useAuthStore = defineStore('auth', () => {
         // 将 accessToken 存储到 accessStore 中
         accessStore.setAccessToken(accessToken);
 
-        // 获取用户信息并存储到 accessStore 中
-        const [fetchUserInfoResult, accessCodes] = await Promise.all([
-          fetchUserInfo(),
-          getAccessCodesApi(),
-        ]);
-
-        userInfo = fetchUserInfoResult;
-
-        userStore.setUserInfo(userInfo);
-        accessStore.setAccessCodes(accessCodes);
+        // 登录后拉取最新用户信息与权限码
+        userInfo = await refreshAccessSession();
 
         if (accessStore.loginExpired) {
           accessStore.setLoginExpired(false);
@@ -104,6 +96,29 @@ export const useAuthStore = defineStore('auth', () => {
     return userInfo;
   }
 
+  /**
+   * 重新拉取用户信息与权限码（刷新页即可生效，无需重登）
+   * @returns 最新用户信息
+   */
+  async function refreshAccessSession() {
+    const [userInfo, accessCodes] = await Promise.all([
+      fetchUserInfo(),
+      getAccessCodesApi(),
+    ]);
+    accessStore.setAccessCodes(accessCodes);
+    return userInfo;
+  }
+
+  /**
+   * 强制按最新权限重建菜单/路由（整页刷新，不退出登录）
+   * 角色刚改完权限时可调用；普通场景浏览器刷新即可
+   */
+  async function reloadAccess() {
+    // 先清检查标记，刷新后守卫会重拉 codes + 菜单
+    accessStore.setIsAccessChecked(false);
+    window.location.reload();
+  }
+
   function $reset() {
     loginLoading.value = false;
   }
@@ -114,5 +129,7 @@ export const useAuthStore = defineStore('auth', () => {
     fetchUserInfo,
     loginLoading,
     logout,
+    refreshAccessSession,
+    reloadAccess,
   };
 });

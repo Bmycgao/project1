@@ -4,6 +4,7 @@ import type { SystemDeptApi, SystemUserApi } from '#/api';
 
 import { computed, onMounted, ref } from 'vue';
 
+import { AccessControl, useAccess } from '@vben/access';
 import { Page, Tree, useVbenDrawer } from '@vben/common-ui';
 import { Plus } from '@vben/icons';
 
@@ -15,6 +16,15 @@ import { $t } from '#/locales';
 
 import { useColumns, useGridFormSchema } from './data';
 import Form from './modules/form.vue';
+
+const { hasAccessByCodes } = useAccess();
+
+/** 是否可新建用户 */
+const canCreate = hasAccessByCodes(['System:User:Create']);
+/** 是否可编辑用户 */
+const canEdit = hasAccessByCodes(['System:User:Edit']);
+/** 是否可删除用户 */
+const canDelete = hasAccessByCodes(['System:User:Delete']);
 
 const deptList = ref<SystemDeptApi.SystemDept[]>([]);
 const inputSearchValue = ref('');
@@ -189,7 +199,11 @@ const [Grid, gridApi] = useVbenVxeGrid({
     submitOnChange: true,
   },
   gridOptions: {
-    columns: useColumns(onActionClick, onStatusChange),
+    columns: useColumns(
+      onActionClick,
+      canEdit ? onStatusChange : undefined,
+      { canEdit, canDelete },
+    ),
     height: 'auto',
     keepSource: true,
     proxyConfig: {
@@ -251,10 +265,12 @@ const [Grid, gridApi] = useVbenVxeGrid({
       <div class="min-w-0 flex-1">
         <Grid :table-title="$t('system.user.list')">
           <template #toolbar-tools>
-            <ElButton type="primary" @click="onCreate">
-              <Plus class="mr-1 size-4" />
-              {{ $t('ui.actionTitle.create', [$t('system.user.name')]) }}
-            </ElButton>
+            <AccessControl :codes="['System:User:Create']" type="code">
+              <ElButton type="primary" @click="onCreate">
+                <Plus class="mr-1 size-4" />
+                {{ $t('ui.actionTitle.create', [$t('system.user.name')]) }}
+              </ElButton>
+            </AccessControl>
           </template>
         </Grid>
       </div>

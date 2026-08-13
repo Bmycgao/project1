@@ -1,14 +1,15 @@
 import { eventHandler, getQuery } from 'h3';
 import { pageSchemaStore } from '~/utils/mock-page-schema';
-import { verifyAccessToken } from '~/utils/jwt-utils';
-import { unAuthorizedResponse, useResponseSuccess } from '~/utils/response';
+import {
+  assertSystemAccess,
+  SYSTEM_AUTH,
+} from '~/utils/system-api-auth';
+import { useResponseSuccess } from '~/utils/response';
 
 /** 页面配置列表（供菜单关联、配置管理） */
 export default eventHandler(async (event) => {
-  const userinfo = verifyAccessToken(event);
-  if (!userinfo) {
-    return unAuthorizedResponse(event);
-  }
+  const auth = assertSystemAccess(event, SYSTEM_AUTH.pageSchemaList);
+  if (!auth.ok) return auth.response;
 
   const { keyword, status } = getQuery(event);
   let list = structuredClone(pageSchemaStore);

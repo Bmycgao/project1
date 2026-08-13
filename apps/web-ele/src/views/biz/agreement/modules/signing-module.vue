@@ -19,9 +19,12 @@ import {
 
 import SectionCard from '../components/section-card.vue';
 import { cloneJson } from '../clone';
+import { useAgreeFieldAccess } from '../use-field-access';
 
 const props = defineProps<{ detail: AgreementDetail | null }>();
 const emit = defineEmits<{ dirty: [] }>();
+
+const { fieldVisible, fieldEditable, fieldFormat } = useAgreeFieldAccess();
 
 const signing = reactive<SigningInfo>({
   houseAddress: '',
@@ -32,6 +35,7 @@ const signing = reactive<SigningInfo>({
   debtAmount: 0,
   hasSeal: '否',
   sealCourt: '',
+  signDate: '',
 });
 
 const contact = reactive<ContactInfo>({
@@ -125,9 +129,33 @@ defineExpose({ validate, getValues, isDirty });
               <ElInput v-model="signing.mortgagee" />
             </ElFormItem>
           </ElCol>
-          <ElCol :xs="24" :md="12">
+          <ElCol v-if="fieldVisible('debtAmount')" :xs="24" :md="12">
             <ElFormItem label="担保主债权金额">
-              <ElInput v-model="signing.debtAmount" />
+              <template v-if="fieldEditable('debtAmount')">
+                <ElInput v-model="signing.debtAmount" />
+                <div class="mt-1 text-xs text-gray-400">
+                  展示预览：{{ fieldFormat('debtAmount', signing.debtAmount) }}
+                </div>
+              </template>
+              <div v-else class="text-sm text-gray-800">
+                {{ fieldFormat('debtAmount', signing.debtAmount) }}
+              </div>
+            </ElFormItem>
+          </ElCol>
+          <ElCol v-if="fieldVisible('signDate')" :xs="24" :md="12">
+            <ElFormItem label="签约日期">
+              <template v-if="fieldEditable('signDate')">
+                <ElInput
+                  v-model="signing.signDate"
+                  placeholder="YYYY-MM-DD"
+                />
+                <div class="mt-1 text-xs text-gray-400">
+                  展示预览：{{ fieldFormat('signDate', signing.signDate) }}
+                </div>
+              </template>
+              <div v-else class="text-sm text-gray-800">
+                {{ fieldFormat('signDate', signing.signDate) }}
+              </div>
             </ElFormItem>
           </ElCol>
           <ElCol :xs="24" :md="12">
@@ -160,9 +188,12 @@ defineExpose({ validate, getValues, isDirty });
               <ElInput v-model="contact.contact" />
             </ElFormItem>
           </ElCol>
-          <ElCol :xs="24" :md="12">
+          <ElCol v-if="fieldVisible('phone')" :xs="24" :md="12">
             <ElFormItem label="联系电话">
-              <ElInput v-model="contact.phone" />
+              <ElInput
+                v-model="contact.phone"
+                :disabled="!fieldEditable('phone')"
+              />
             </ElFormItem>
           </ElCol>
           <ElCol :xs="24" :md="12">

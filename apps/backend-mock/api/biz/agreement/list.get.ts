@@ -1,8 +1,7 @@
 import { eventHandler, getQuery } from 'h3';
+import { assertAnyAgreeAccess } from '~/utils/agree-api-auth';
 import { queryAgreeListByScene } from '~/utils/mock-agreement-list';
-import { verifyAccessToken } from '~/utils/jwt-utils';
 import {
-  unAuthorizedResponse,
   usePageResponseSuccess,
   useResponseError,
 } from '~/utils/response';
@@ -12,10 +11,8 @@ import {
  * 同一接口：用 scene 区分录入 / 律师审核 / 预览 / 查看 的数据范围
  */
 export default eventHandler(async (event) => {
-  const userinfo = verifyAccessToken(event);
-  if (!userinfo) {
-    return unAuthorizedResponse(event);
-  }
+  const auth = assertAnyAgreeAccess(event);
+  if (!auth.ok) return auth.response;
 
   const query = getQuery(event);
   const scene = String(query.scene || '').trim();

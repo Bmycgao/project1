@@ -19,9 +19,12 @@ import {
 
 import SectionCard from '../components/section-card.vue';
 import { cloneJson } from '../clone';
+import { useAgreeFieldAccess } from '../use-field-access';
 
 const props = defineProps<{ detail: AgreementDetail | null }>();
 const emit = defineEmits<{ dirty: [] }>();
+
+const { fieldVisible, fieldEditable, fieldFormat } = useAgreeFieldAccess();
 
 const form = reactive<CompensationInfo>({
   settleType: '',
@@ -80,9 +83,17 @@ defineExpose({ validate, getValues, isDirty });
               </ElSelect>
             </ElFormItem>
           </ElCol>
-          <ElCol :xs="24" :md="12">
+          <ElCol v-if="fieldVisible('amount')" :xs="24" :md="12">
             <ElFormItem label="补偿金额">
-              <ElInput v-model="form.amount" />
+              <template v-if="fieldEditable('amount')">
+                <ElInput v-model="form.amount" />
+                <div class="mt-1 text-xs text-gray-400">
+                  展示预览：{{ fieldFormat('amount', form.amount) }}
+                </div>
+              </template>
+              <div v-else class="text-sm text-gray-800">
+                {{ fieldFormat('amount', form.amount) }}
+              </div>
             </ElFormItem>
           </ElCol>
           <ElCol :span="24">

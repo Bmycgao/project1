@@ -54,4 +54,23 @@ async function deleteRole(id: string) {
   return requestClient.delete(`/system/role/${id}`);
 }
 
-export { createRole, deleteRole, getRoleList, updateRole };
+/**
+ * 按角色汇总权限码（配置可视化预览）
+ * @param id 角色 ID
+ */
+async function getRoleAccessCodes(id: string) {
+  return requestClient.get<{
+    codes: string[];
+    roleCode?: string;
+    roleId: string;
+    roleName: string;
+  }>(`/system/role/${id}/codes`);
+}
+
+export {
+  createRole,
+  deleteRole,
+  getRoleAccessCodes,
+  getRoleList,
+  updateRole,
+};
