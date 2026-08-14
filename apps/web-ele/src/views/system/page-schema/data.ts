@@ -247,16 +247,29 @@ export function useColumns(
 /** 默认新配置的列模板 */
 export function getDefaultColumns(): PageSchemaApi.Column[] {
   return [
-    { field: 'name', title: '名称', visible: true, width: 160 },
+    { field: 'name', title: '名称', visible: true, width: 160, order: 10 },
     {
       field: 'status',
       title: '状态',
       visible: true,
       width: 100,
       cellType: 'status',
+      order: 20,
     },
-    { field: 'remark', title: '备注', visible: true, minWidth: 140 },
-    { field: 'createTime', title: '创建时间', visible: true, width: 180 },
+    {
+      field: 'remark',
+      title: '备注',
+      visible: true,
+      minWidth: 140,
+      order: 30,
+    },
+    {
+      field: 'createTime',
+      title: '创建时间',
+      visible: true,
+      width: 180,
+      order: 40,
+    },
   ];
 }
 

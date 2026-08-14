@@ -2,7 +2,7 @@
 /**
  * 页面字段配置表单：
  * - entity / template：编辑列与查询条件
- * - scene：引用列模板 + 只能勾选动作库中已实现的动作（不可自由发明按钮）
+ * - scene：引用列模板 + 可覆盖列表列 + 只能勾选动作库中已实现的动作
  */
 import type { PageSchemaApi } from '#/api';
 
@@ -52,7 +52,6 @@ import {
 import {
   AGREE_DETAIL_MODULES,
   buildAgreeModuleMounts,
-  MODULE_SPAN_OPTIONS,
   normalizeAgreeModuleMounts,
   normalizeModuleSpan,
   type AgreeModuleMount,
@@ -67,6 +66,15 @@ import {
   buildSchemaPreview,
   type SchemaPreviewResult,
 } from '../preview-runtime';
+import ModuleLayoutEditor, {
+  type ModuleLayoutEditRow,
+} from './module-layout-editor.vue';
+import BasicInnerEditor from './basic-inner-editor.vue';
+import {
+  buildDefaultBasicModuleInner,
+  normalizeBasicModuleInner,
+  type BasicModuleInnerConfig,
+} from '../../../biz/agreement/module-inner-config';
 
 const emits = defineEmits<{ success: [] }>();
 
@@ -80,21 +88,15 @@ const fieldRules = ref<AgreeFieldRule[]>([]);
 const selectedActionCodes = ref<string[]>([]);
 /** 每个动作码的差异化绑定 */
 const actionBinds = ref<Record<string, AgreeButtonBind>>({});
-/** 场景详情模块布局行（挂载 + 顺序 + 占比） */
-interface ModuleLayoutEditRow {
-  key: AgreeModuleMount['key'];
-  label: string;
-  authCode: string;
-  enabled: boolean;
-  order: number;
-  span: number;
-}
-
 /** 场景数据范围：允许的状态 */
 const selectedStatusIn = ref<string[]>([]);
-/** 场景详情模块布局（勾选/顺序/占比） */
+/** 场景详情模块布局（勾选/顺序/占比，可视化拖拽编辑） */
 const moduleLayoutRows = ref<ModuleLayoutEditRow[]>(
   createDefaultModuleLayoutRows(),
+);
+/** 基础信息模块内部字段配置 */
+const basicInnerConfig = ref<BasicModuleInnerConfig>(
+  buildDefaultBasicModuleInner(),
 );
 /** 当前配置类型（与表单 schemaKind 同步） */
 const schemaKind = ref<'entity' | 'scene' | 'template'>('entity');
@@ -150,7 +152,7 @@ const queryCompOptions = [
 /** 动作库分组（配置页勾选） */
 const actionGroups = groupAgreeActions();
 
-/** 是否场景类型：只勾选动作，不编列 */
+/** 是否场景类型：模块/按钮 + 可覆盖列表列 */
 const isScene = computed(() => schemaKind.value === 'scene');
 
 /** 安全拷贝列配置（避免非数组脏数据） */
@@ -304,36 +306,6 @@ function rowsFromModules(
 }
 
 /**
- * 上移模块顺序
- * @param index 行下标
- */
-function moveModuleUp(index: number) {
-  if (index <= 0) return;
-  const rows = moduleLayoutRows.value;
-  const prev = rows[index - 1]!;
-  const cur = rows[index]!;
-  const prevOrder = prev.order;
-  prev.order = cur.order;
-  cur.order = prevOrder;
-  moduleLayoutRows.value = [...rows].sort((a, b) => a.order - b.order);
-}
-
-/**
- * 下移模块顺序
- * @param index 行下标
- */
-function moveModuleDown(index: number) {
-  const rows = moduleLayoutRows.value;
-  if (index >= rows.length - 1) return;
-  const next = rows[index + 1]!;
-  const cur = rows[index]!;
-  const nextOrder = next.order;
-  next.order = cur.order;
-  cur.order = nextOrder;
-  moduleLayoutRows.value = [...rows].sort((a, b) => a.order - b.order);
-}
-
-/**
  * 组装保存用的 buttons（含 bind）
  */
 function buildSceneButtons() {
@@ -358,18 +330,50 @@ function buildSceneButtons() {
 
 /** 新增一列表字段 */
 function addColumn() {
+  const maxOrder = columns.value.reduce(
+    (m, c) => Math.max(m, c.order ?? 0),
+    0,
+  );
   columns.value.push({
     field: `field${columns.value.length + 1}`,
     title: '新字段',
     visible: true,
     width: 120,
     cellType: 'text',
+    order: maxOrder + 10,
   });
 }
 
 /** 删除列 */
 function removeColumn(index: number) {
   columns.value.splice(index, 1);
+}
+
+/**
+ * 按 order 重排并写回（编辑后保证顺序一致）
+ */
+function resortColumns() {
+  columns.value = [...columns.value].sort(
+    (a, b) => (a.order ?? 999) - (b.order ?? 999),
+  );
+}
+
+/**
+ * 上移/下移列
+ * @param index 当前下标（已按 order 展示）
+ * @param dir -1 上移 / 1 下移
+ */
+function moveColumn(index: number, dir: -1 | 1) {
+  resortColumns();
+  const target = index + dir;
+  if (target < 0 || target >= columns.value.length) return;
+  const cur = columns.value[index]!;
+  const other = columns.value[target]!;
+  const curOrder = cur.order ?? (index + 1) * 10;
+  const otherOrder = other.order ?? (target + 1) * 10;
+  cur.order = otherOrder;
+  other.order = curOrder;
+  resortColumns();
 }
 
 /** 新增查询项 */
@@ -466,24 +470,28 @@ async function runPreview() {
     const roleCodes = await getRoleAccessCodes(previewRoleId.value);
     previewRoleName.value = roleCodes.roleName || previewRoleId.value;
 
-    let previewColumns = columns.value.filter((c) => c.visible !== false);
+    let previewColumns = [...columns.value]
+      .filter((c) => c.visible !== false)
+      .sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
     let previewRules = fieldRules.value;
     const values = await formApi.getValues();
 
-    // 场景：列与字段规则来自列模板（可与草稿中的模板 ID 对齐）
+    // 场景：优先用本场景已配列；字段规则仍可从列模板继承
     if (schemaKind.value === 'scene') {
       const tplId = String(values.columnTemplateId || '').trim();
       if (tplId) {
         try {
           const tpl = await getPageSchema(tplId);
-          if (tpl?.columns?.length) {
-            previewColumns = tpl.columns.filter((c) => c.visible !== false);
+          if (!previewColumns.length && tpl?.columns?.length) {
+            previewColumns = tpl.columns
+              .filter((c) => c.visible !== false)
+              .sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
           }
-          if (tpl?.fieldRules?.length) {
+          if (!previewRules.length && tpl?.fieldRules?.length) {
             previewRules = tpl.fieldRules as AgreeFieldRule[];
           }
         } catch {
-          ElMessage.warning('列模板加载失败，预览仅含当前场景按钮');
+          ElMessage.warning('列模板加载失败，预览仅含当前场景草稿列/按钮');
         }
       }
     }
@@ -568,6 +576,11 @@ async function fillForm(detail: PageSchemaApi.PageSchema) {
     columnTemplateId: detail.columnTemplateId || '',
   });
   columns.value = cloneColumns(detail.columns);
+  // 补齐缺失 order，并按顺序展示
+  columns.value.forEach((c, i) => {
+    if (c.order == null) c.order = (i + 1) * 10;
+  });
+  columns.value.sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
   queryFields.value = cloneQueryFields(detail.queryFields);
   fieldRules.value = Array.isArray(detail.fieldRules)
     ? structuredClone(detail.fieldRules) as AgreeFieldRule[]
@@ -578,6 +591,9 @@ async function fillForm(detail: PageSchemaApi.PageSchema) {
     ? [...detail.statusIn]
     : [];
   moduleLayoutRows.value = rowsFromModules(detail.modules);
+  basicInnerConfig.value = normalizeBasicModuleInner(
+    detail.moduleInner?.basic as BasicModuleInnerConfig | undefined,
+  );
 }
 
 const [Drawer, drawerApi] = useVbenDrawer({
@@ -605,27 +621,40 @@ const [Drawer, drawerApi] = useVbenDrawer({
         ElMessage.warning('请至少挂载一个详情模块');
         return;
       }
+      if (!columns.value.some((c) => c.visible)) {
+        ElMessage.warning('至少保留一列可见的列表字段');
+        return;
+      }
     } else if (!columns.value.some((c) => c.visible)) {
       ElMessage.warning('至少保留一列可见字段');
       return;
     }
 
-    /** 场景：按钮只存动作库解析结果；列交给模板 */
+    /** 场景：按钮只存动作库解析结果；列可场景级覆盖（空则读时继承模板） */
     const payload =
       kind === 'scene'
         ? ({
             ...values,
             schemaKind: 'scene',
-            columns: [],
+            columns: columns.value.map((c, i) => ({
+              ...c,
+              order: c.order ?? (i + 1) * 10,
+            })),
             queryFields: queryFields.value,
             buttons: buildSceneButtons(),
             statusIn: selectedStatusIn.value,
             modules: buildSceneModules(),
+            moduleInner: {
+              basic: normalizeBasicModuleInner(basicInnerConfig.value),
+            },
           } as any)
         : ({
             ...values,
             schemaKind: kind,
-            columns: columns.value,
+            columns: columns.value.map((c, i) => ({
+              ...c,
+              order: c.order ?? (i + 1) * 10,
+            })),
             queryFields: queryFields.value,
             fieldRules: fieldRules.value,
             buttons: undefined,
@@ -658,6 +687,7 @@ const [Drawer, drawerApi] = useVbenDrawer({
     actionBinds.value = {};
     selectedStatusIn.value = [];
     moduleLayoutRows.value = createDefaultModuleLayoutRows();
+    basicInnerConfig.value = buildDefaultBasicModuleInner();
     schemaKind.value = 'entity';
     previewResult.value = null;
     previewRoleName.value = '';
@@ -702,7 +732,7 @@ const title = computed(() => {
   <Drawer :title="title">
     <Form />
 
-    <!-- 场景：只能勾选动作库 -->
+    <!-- 场景：数据范围 / 模块 / 列表列 / 动作 -->
     <div v-if="isScene" class="mt-4">
       <div class="mb-2 font-medium">数据范围（状态）</div>
       <p class="mb-2 text-xs text-gray-500">
@@ -720,69 +750,30 @@ const title = computed(() => {
         </div>
       </ElCheckboxGroup>
 
-      <div class="mb-2 font-medium">详情模块挂载与布局</div>
+      <div class="mb-2 mt-2 flex items-center justify-between">
+        <div class="font-medium">列表表格字段</div>
+        <ElButton size="small" type="primary" @click="addColumn">添加列</ElButton>
+      </div>
       <p class="mb-2 text-xs text-gray-500">
-        勾选本场景要挂载的区域，并设置
-        <strong>顺序</strong>（侧栏与页面排列）与
-        <strong>占比</strong>（24 栅格：整行/半宽等）。运行时再与角色
-        <code class="rounded bg-gray-100 px-1">Agree:Module:*</code>
-        求交。未挂载的区域不占布局。
+        控制协议列表表头（协议编号、被补偿人等）：开关「显示」、改标题/宽度、上下调整顺序。
+        首次打开若为空会从列模板带入；保存后本场景独立生效。
       </p>
-      <ElTable
-        :data="moduleLayoutRows"
-        border
-        size="small"
-        class="mb-4"
-        row-key="key"
-      >
-        <ElTableColumn label="挂载" width="70" align="center">
+      <ElTable :data="columns" border size="small" class="mb-4">
+        <ElTableColumn label="字段名" min-width="110">
           <template #default="{ row }">
-            <ElSwitch v-model="row.enabled" />
+            <ElInput v-model="row.field" size="small" />
           </template>
         </ElTableColumn>
-        <ElTableColumn label="模块" min-width="140">
+        <ElTableColumn label="列标题" min-width="110">
           <template #default="{ row }">
-            <div class="text-xs font-medium">{{ row.label }}</div>
-            <div class="text-xs text-gray-400">{{ row.authCode }}</div>
+            <ElInput v-model="row.title" size="small" />
           </template>
         </ElTableColumn>
-        <ElTableColumn label="顺序" width="100" align="center">
+        <ElTableColumn label="类型" width="100">
           <template #default="{ row }">
-            <ElInputNumber
-              v-model="row.order"
-              size="small"
-              :min="1"
-              :max="999"
-              controls-position="right"
-              class="w-full"
-            />
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="上/下" width="100" align="center">
-          <template #default="{ $index }">
-            <ElButton
-              link
-              size="small"
-              :disabled="$index === 0"
-              @click="moveModuleUp($index)"
-            >
-              上移
-            </ElButton>
-            <ElButton
-              link
-              size="small"
-              :disabled="$index === moduleLayoutRows.length - 1"
-              @click="moveModuleDown($index)"
-            >
-              下移
-            </ElButton>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="占比" width="150">
-          <template #default="{ row }">
-            <ElSelect v-model="row.span" size="small" class="w-full">
+            <ElSelect v-model="row.cellType" size="small" class="w-full">
               <ElOption
-                v-for="opt in MODULE_SPAN_OPTIONS"
+                v-for="opt in cellTypeOptions"
                 :key="opt.value"
                 :label="opt.label"
                 :value="opt.value"
@@ -790,7 +781,73 @@ const title = computed(() => {
             </ElSelect>
           </template>
         </ElTableColumn>
+        <ElTableColumn label="顺序" width="88" align="center">
+          <template #default="{ row }">
+            <ElInputNumber
+              v-model="row.order"
+              size="small"
+              :min="1"
+              :max="9999"
+              controls-position="right"
+              class="w-full"
+              @change="resortColumns"
+            />
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="宽度" width="90">
+          <template #default="{ row }">
+            <ElInputNumber
+              v-model="row.width"
+              size="small"
+              :min="60"
+              :max="400"
+              controls-position="right"
+              class="w-full"
+            />
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="显示" width="70" align="center">
+          <template #default="{ row }">
+            <ElSwitch v-model="row.visible" />
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="操作" width="120" align="center">
+          <template #default="{ $index }">
+            <ElButton
+              link
+              type="primary"
+              size="small"
+              :disabled="$index === 0"
+              @click="moveColumn($index, -1)"
+            >
+              上
+            </ElButton>
+            <ElButton
+              link
+              type="primary"
+              size="small"
+              :disabled="$index >= columns.length - 1"
+              @click="moveColumn($index, 1)"
+            >
+              下
+            </ElButton>
+            <ElButton
+              link
+              type="danger"
+              size="small"
+              @click="removeColumn($index)"
+            >
+              删
+            </ElButton>
+          </template>
+        </ElTableColumn>
       </ElTable>
+
+      <div class="mb-2 font-medium">详情模块挂载与布局</div>
+      <ModuleLayoutEditor v-model="moduleLayoutRows" />
+
+      <div class="mb-2 font-medium">基础信息 · 内部内容（打样）</div>
+      <BasicInnerEditor v-model="basicInnerConfig" />
 
       <div class="mb-2 font-medium">工具栏动作（仅可勾选已实现）</div>
       <p class="mb-3 text-xs text-gray-500">
@@ -977,6 +1034,19 @@ const title = computed(() => {
             </ElSelect>
           </template>
         </ElTableColumn>
+        <ElTableColumn label="顺序" width="88" align="center">
+          <template #default="{ row }">
+            <ElInputNumber
+              v-model="row.order"
+              size="small"
+              :min="1"
+              :max="9999"
+              controls-position="right"
+              class="w-full"
+              @change="resortColumns"
+            />
+          </template>
+        </ElTableColumn>
         <ElTableColumn label="宽度" width="100">
           <template #default="{ row }">
             <ElInputNumber
@@ -994,8 +1064,26 @@ const title = computed(() => {
             <ElSwitch v-model="row.visible" />
           </template>
         </ElTableColumn>
-        <ElTableColumn label="操作" width="70" align="center">
+        <ElTableColumn label="操作" width="120" align="center">
           <template #default="{ $index }">
+            <ElButton
+              link
+              type="primary"
+              size="small"
+              :disabled="$index === 0"
+              @click="moveColumn($index, -1)"
+            >
+              上
+            </ElButton>
+            <ElButton
+              link
+              type="primary"
+              size="small"
+              :disabled="$index >= columns.length - 1"
+              @click="moveColumn($index, 1)"
+            >
+              下
+            </ElButton>
             <ElButton
               link
               type="danger"

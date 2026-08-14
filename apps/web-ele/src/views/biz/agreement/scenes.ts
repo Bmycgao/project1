@@ -30,25 +30,57 @@ export interface AgreeSceneConfig {
 
 /** 共用列（所有协议场景同一张表结构） */
 export const AGREE_COLUMN_TEMPLATE = [
-  { field: 'agreementNo', title: '协议编号', visible: true, minWidth: 130 },
-  { field: 'compensatee', title: '被补偿人', visible: true, minWidth: 100 },
-  { field: 'houseAddress', title: '房屋地址', visible: true, minWidth: 200 },
+  {
+    field: 'agreementNo',
+    title: '协议编号',
+    visible: true,
+    minWidth: 130,
+    order: 10,
+  },
+  {
+    field: 'compensatee',
+    title: '被补偿人',
+    visible: true,
+    minWidth: 100,
+    order: 20,
+  },
+  {
+    field: 'houseAddress',
+    title: '房屋地址',
+    visible: true,
+    minWidth: 200,
+    order: 30,
+  },
   {
     field: 'statusValue',
     title: '状态值',
     visible: true,
     minWidth: 120,
     cellType: 'tag' as const,
+    order: 40,
   },
-  { field: 'signType', title: '签约类型', visible: true, minWidth: 110 },
+  {
+    field: 'signType',
+    title: '签约类型',
+    visible: true,
+    minWidth: 110,
+    order: 50,
+  },
   {
     field: 'isSigned',
     title: '是否签约',
     visible: true,
     minWidth: 100,
     cellType: 'tag' as const,
+    order: 60,
   },
-  { field: 'batchGroup', title: '批次分组', visible: true, minWidth: 110 },
+  {
+    field: 'batchGroup',
+    title: '批次分组',
+    visible: true,
+    minWidth: 110,
+    order: 70,
+  },
 ];
 
 /** 列模板 ID（页面配置里可引用） */

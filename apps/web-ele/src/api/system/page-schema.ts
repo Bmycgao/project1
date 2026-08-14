@@ -13,6 +13,8 @@ export namespace PageSchemaApi {
     width?: number;
     minWidth?: number;
     cellType?: ColumnType;
+    /** 显示顺序，越小越靠前 */
+    order?: number;
   }
 
   export interface QueryField {
@@ -74,15 +76,38 @@ export namespace PageSchemaApi {
      * 详情页挂载的业务模块（场景配置）
      * 未配置则详情默认挂载全部模块，再与角色 Agree:Module:* 求交
      */
-  modules?: {
-    key: string;
-    enabled: boolean;
-    /** 显示顺序，越小越靠前 */
-    order?: number;
-    /** 栅格占比 8/12/16/24 */
-    span?: number;
-  }[];
-}
+    modules?: {
+      key: string;
+      enabled: boolean;
+      /** 显示顺序，越小越靠前 */
+      order?: number;
+      /** 栅格占比 8/12/16/24 */
+      span?: number;
+    }[];
+    /**
+     * 模块内部字段/子块配置（场景级）
+     * 目前打样 basic：权利人/房屋列可挂卸与排序
+     */
+    moduleInner?: {
+      basic?: {
+        sections: {
+          key: string;
+          label: string;
+          subtitle?: string;
+          enabled: boolean;
+          order: number;
+          fields: {
+            key: string;
+            label: string;
+            enabled: boolean;
+            order: number;
+            minWidth?: number;
+            accessField?: string;
+          }[];
+        }[];
+      };
+    };
+  }
 }
 
 /** 获取页面配置列表 */

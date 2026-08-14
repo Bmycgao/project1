@@ -21,6 +21,8 @@ export interface PageColumnSchema {
   minWidth?: number;
   /** 单元格类型 */
   cellType?: PageColumnType;
+  /** 显示顺序，越小越靠前 */
+  order?: number;
 }
 
 /** 查询表单字段 */
@@ -50,7 +52,7 @@ export interface PageSchema {
   /**
    * entity=独立实体列表；
    * template=列模板（只定义列）；
-   * scene=场景视图（引用列模板，带 scene/按钮说明）
+   * scene=场景视图（引用列模板；可覆盖 columns 显隐/顺序）
    */
   schemaKind?: 'entity' | 'scene' | 'template';
   /** scene 引用的列模板 ID */
@@ -101,6 +103,28 @@ export interface PageSchema {
     /** 栅格占比 8/12/16/24 */
     span?: number;
   }[];
+  /**
+   * 模块内部配置（场景）：basic 子块/字段显隐与顺序
+   */
+  moduleInner?: {
+    basic?: {
+      sections: {
+        key: string;
+        label: string;
+        subtitle?: string;
+        enabled: boolean;
+        order: number;
+        fields: {
+          key: string;
+          label: string;
+          enabled: boolean;
+          order: number;
+          minWidth?: number;
+          accessField?: string;
+        }[];
+      }[];
+    };
+  };
 }
 
 /** 生成场景默认模块挂载（含顺序与整行占比） */
@@ -123,6 +147,78 @@ function buildModules(
   }));
 }
 
+/** 基础信息内部字段种子（全量） */
+function buildBasicInnerFull(): NonNullable<
+  NonNullable<PageSchema['moduleInner']>['basic']
+> {
+  return {
+    sections: [
+      {
+        key: 'rightHolders',
+        label: '权利人信息',
+        subtitle: '可新增多位权利人',
+        enabled: true,
+        order: 10,
+        fields: [
+          { key: 'agreementNo', label: '协议编号', enabled: true, order: 10, minWidth: 120 },
+          { key: 'name', label: '姓名', enabled: true, order: 20, minWidth: 100 },
+          {
+            key: 'idNo',
+            label: '身份证号/营业执照号',
+            enabled: true,
+            order: 30,
+            minWidth: 180,
+            accessField: 'idNo',
+          },
+          {
+            key: 'phone',
+            label: '联系电话',
+            enabled: true,
+            order: 40,
+            minWidth: 120,
+            accessField: 'phone',
+          },
+        ],
+      },
+      {
+        key: 'houses',
+        label: '房屋列表',
+        subtitle: '勾选或维护涉签约房屋',
+        enabled: true,
+        order: 20,
+        fields: [
+          { key: '_selection', label: '勾选', enabled: true, order: 5, minWidth: 48 },
+          { key: 'address', label: '房屋地址', enabled: true, order: 10, minWidth: 180 },
+          { key: 'certNo', label: '产权证号', enabled: true, order: 20, minWidth: 160 },
+          {
+            key: 'propertyType',
+            label: '产权类型',
+            enabled: true,
+            order: 30,
+            minWidth: 140,
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/** 查看场景：少挂两列，演示「全量 100、本页只配 80」 */
+function buildBasicInnerViewSubset() {
+  const full = buildBasicInnerFull();
+  return {
+    sections: full.sections.map((sec) => ({
+      ...sec,
+      fields: sec.fields.map((f) => {
+        if (f.key === 'agreementNo' || f.key === 'propertyType') {
+          return { ...f, enabled: false };
+        }
+        return f;
+      }),
+    })),
+  };
+}
+
 /**
  * 内置页面配置：以协议场景为主
  * 实体类 schema 可由「页面配置」新增；不再内置客户/物料演示
@@ -137,25 +233,57 @@ export const MOCK_PAGE_SCHEMAS: PageSchema[] = [
     status: 1,
     schemaKind: 'template',
     columns: [
-      { field: 'agreementNo', title: '协议编号', visible: true, minWidth: 130 },
-      { field: 'compensatee', title: '被补偿人', visible: true, minWidth: 100 },
-      { field: 'houseAddress', title: '房屋地址', visible: true, minWidth: 200 },
+      {
+        field: 'agreementNo',
+        title: '协议编号',
+        visible: true,
+        minWidth: 130,
+        order: 10,
+      },
+      {
+        field: 'compensatee',
+        title: '被补偿人',
+        visible: true,
+        minWidth: 100,
+        order: 20,
+      },
+      {
+        field: 'houseAddress',
+        title: '房屋地址',
+        visible: true,
+        minWidth: 200,
+        order: 30,
+      },
       {
         field: 'statusValue',
         title: '状态值',
         visible: true,
         minWidth: 120,
         cellType: 'tag',
+        order: 40,
       },
-      { field: 'signType', title: '签约类型', visible: true, minWidth: 110 },
+      {
+        field: 'signType',
+        title: '签约类型',
+        visible: true,
+        minWidth: 110,
+        order: 50,
+      },
       {
         field: 'isSigned',
         title: '是否签约',
         visible: true,
         minWidth: 100,
         cellType: 'tag',
+        order: 60,
       },
-      { field: 'batchGroup', title: '批次分组', visible: true, minWidth: 110 },
+      {
+        field: 'batchGroup',
+        title: '批次分组',
+        visible: true,
+        minWidth: 110,
+        order: 70,
+      },
     ],
     queryFields: [
       { field: 'keyword', title: '关键字', component: 'Input' },
@@ -259,6 +387,7 @@ export const MOCK_PAGE_SCHEMAS: PageSchema[] = [
       'certifyMaterial',
       'compensation',
     ]),
+    moduleInner: { basic: buildBasicInnerFull() },
   },
   {
     id: 'PS_AGREE_LAWYER',
@@ -314,6 +443,7 @@ export const MOCK_PAGE_SCHEMAS: PageSchema[] = [
       'certifyMaterial',
       'compensation',
     ]),
+    moduleInner: { basic: buildBasicInnerFull() },
   },
   {
     id: 'PS_AGREE_PREVIEW',
@@ -341,6 +471,7 @@ export const MOCK_PAGE_SCHEMAS: PageSchema[] = [
       ...m,
       span: m.key === 'compensation' ? 24 : 12,
     })),
+    moduleInner: { basic: buildBasicInnerFull() },
   },
   {
     id: 'PS_AGREE_VIEW',
@@ -359,11 +490,12 @@ export const MOCK_PAGE_SCHEMAS: PageSchema[] = [
       { code: 'edit', label: '修改', group: 'main' },
       { code: 'export', label: '导出', group: 'main' },
     ],
-    /** 查看：仅基础 + 签约；半宽并排演示占比 */
+    /** 查看：仅基础 + 签约；半宽并排；基础信息少两列演示子集 */
     modules: buildModules(['basic', 'signing']).map((m) => ({
       ...m,
       span: 12,
     })),
+    moduleInner: { basic: buildBasicInnerViewSubset() },
   },
 ];
 
@@ -405,8 +537,33 @@ function hydratePageSchemaFromDisk() {
   }
   // 旧落盘缺 modules 时，用种子补齐场景挂载
   ensureSceneModulesFromSeed();
+  ensureModuleInnerFromSeed();
   // 旧落盘 fieldRules 缺 displayFormat / signDate 时补齐
   ensureFieldFormatsFromSeed();
+  // 旧落盘列缺 order 时按种子/下标补齐
+  ensureColumnOrderFromSeed();
+}
+
+/**
+ * 给已落盘场景补 moduleInner.basic（缺则用种子）
+ */
+function ensureModuleInnerFromSeed() {
+  let changed = false;
+  for (const seed of MOCK_PAGE_SCHEMAS) {
+    if (seed.schemaKind !== 'scene' || !seed.moduleInner?.basic) continue;
+    const idx = pageSchemaStore.findIndex(
+      (s) => String(s.id) === String(seed.id),
+    );
+    if (idx < 0) continue;
+    const current = pageSchemaStore[idx]!;
+    if (current.moduleInner?.basic?.sections?.length) continue;
+    pageSchemaStore[idx] = {
+      ...current,
+      moduleInner: structuredClone(seed.moduleInner),
+    };
+    changed = true;
+  }
+  if (changed) persistPageSchemaStore();
 }
 
 /**
@@ -482,6 +639,37 @@ function ensureFieldFormatsFromSeed() {
 }
 
 /**
+ * 给已落盘列配置补齐 order（按种子同名字段或下标）
+ */
+function ensureColumnOrderFromSeed() {
+  let anyChanged = false;
+  for (const seed of MOCK_PAGE_SCHEMAS) {
+    if (!seed.columns?.length) continue;
+    const idx = pageSchemaStore.findIndex(
+      (s) => String(s.id) === String(seed.id),
+    );
+    if (idx < 0) continue;
+    const cur = pageSchemaStore[idx]!;
+    if (!cur.columns?.length) continue;
+    let rowChanged = false;
+    const next = cur.columns.map((c, i) => {
+      if (typeof c.order === 'number') return c;
+      const seedCol = seed.columns.find((s) => s.field === c.field);
+      rowChanged = true;
+      return {
+        ...c,
+        order: seedCol?.order ?? (i + 1) * 10,
+      };
+    });
+    if (rowChanged) {
+      pageSchemaStore[idx] = { ...cur, columns: next };
+      anyChanged = true;
+    }
+  }
+  if (anyChanged) persistPageSchemaStore();
+}
+
+/**
  * 落盘当前配置与历史
  */
 function persistPageSchemaStore() {
@@ -551,7 +739,7 @@ export function rollbackPageSchema(schemaId: string, versionId: string) {
 }
 
 /**
- * 按 id 查找页面配置；scene 类型自动合并列模板的 columns
+ * 按 id 查找页面配置；scene 无自有列时合并列模板
  * @param id 配置 ID
  */
 export function findPageSchema(id: string) {
@@ -562,10 +750,14 @@ export function findPageSchema(id: string) {
     const tpl = pageSchemaStore.find(
       (item) => String(item.id) === String(node.columnTemplateId),
     );
-    if (tpl?.columns?.length) {
+    if (tpl) {
+      // 场景已保存过列 → 用场景自己的；否则继承列模板
+      const columns = node.columns?.length
+        ? structuredClone(node.columns)
+        : structuredClone(tpl.columns || []);
       return {
         ...node,
-        columns: structuredClone(tpl.columns),
+        columns,
         fieldRules: node.fieldRules?.length
           ? node.fieldRules
           : structuredClone(tpl.fieldRules || []),
@@ -620,6 +812,7 @@ export function createPageSchema(data: Partial<PageSchema>) {
       : [{ field: 'name', title: '名称', component: 'Input' }],
     fieldRules: data.fieldRules,
     modules: data.modules,
+    moduleInner: data.moduleInner,
     mockCount: data.mockCount ?? 40,
   };
   pageSchemaStore.push(node);
@@ -646,6 +839,8 @@ export function updatePageSchema(id: string, data: Partial<PageSchema>) {
     fieldRules:
       data.fieldRules !== undefined ? data.fieldRules : prev.fieldRules,
     modules: data.modules !== undefined ? data.modules : prev.modules,
+    moduleInner:
+      data.moduleInner !== undefined ? data.moduleInner : prev.moduleInner,
   };
   persistPageSchemaStore();
   return pageSchemaStore[idx];

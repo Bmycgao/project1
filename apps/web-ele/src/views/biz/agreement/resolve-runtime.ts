@@ -19,6 +19,11 @@ import {
   type AgreeModuleMount,
 } from './module-access';
 import {
+  buildDefaultBasicModuleInner,
+  normalizeBasicModuleInner,
+  type BasicModuleInnerConfig,
+} from './module-inner-config';
+import {
   AGREE_COLUMN_TEMPLATE,
   getAgreeScene,
   getAgreeSceneBySchemaId,
@@ -33,6 +38,8 @@ export interface AgreeListColumn {
   width?: number;
   minWidth?: number;
   cellType?: string;
+  /** 显示顺序，越小越靠前 */
+  order?: number;
 }
 
 /** 列表页实际使用的运行时配置 */
@@ -66,6 +73,14 @@ function inferDetailMode(codes: string[]): 'audit' | 'edit' | 'view' {
 }
 
 /**
+ * 按 order 排序列（无 order 时保持原下标）
+ * @param cols 列配置
+ */
+function sortListColumns<T extends { order?: number }>(cols: T[]): T[] {
+  return [...cols].sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
+}
+
+/**
  * 本地场景 → 运行时
  * @param local 本地场景
  */
@@ -78,9 +93,11 @@ function fromLocalScene(local: AgreeSceneConfig): AgreeListRuntime {
     remark: local.remark,
     detailMode: local.detailMode,
     buttons: resolveToolbarButtons(local.buttonCodes),
-    columns: AGREE_COLUMN_TEMPLATE.filter((c) => c.visible).map((c) => ({
-      ...c,
-    })),
+    columns: sortListColumns(
+      AGREE_COLUMN_TEMPLATE.filter((c) => c.visible).map((c) => ({
+        ...c,
+      })),
+    ),
     statusIn: local.statusIn,
     fieldRules: [...DEFAULT_AGREE_FIELD_RULES],
     modules: buildAgreeModuleMounts(),
@@ -101,19 +118,19 @@ function fromPageSchema(
     (schema.buttons || []) as AgreeToolbarButton[],
   );
   const scene = String(schema.scene || local?.scene || '').trim();
-  const columns = (schema.columns?.length
-    ? schema.columns
-    : AGREE_COLUMN_TEMPLATE
-  )
-    .filter((c) => c.visible !== false)
-    .map((c) => ({
-      field: c.field,
-      title: c.title,
-      visible: true,
-      width: c.width,
-      minWidth: c.minWidth,
-      cellType: c.cellType,
-    }));
+  const columns = sortListColumns(
+    (schema.columns?.length ? schema.columns : AGREE_COLUMN_TEMPLATE)
+      .filter((c) => c.visible !== false)
+      .map((c) => ({
+        field: c.field,
+        title: c.title,
+        visible: true,
+        width: c.width,
+        minWidth: c.minWidth,
+        cellType: c.cellType,
+        order: c.order,
+      })),
+  );
 
   const fieldRules = (schema.fieldRules?.length
     ? schema.fieldRules
@@ -181,34 +198,64 @@ export async function loadAgreeListRuntime(
     remark: '未找到页面配置或本地场景，请检查菜单 meta.schemaId',
     detailMode: 'view',
     buttons: [],
-    columns: AGREE_COLUMN_TEMPLATE.filter((c) => c.visible).map((c) => ({
-      ...c,
-    })),
+    columns: sortListColumns(
+      AGREE_COLUMN_TEMPLATE.filter((c) => c.visible).map((c) => ({
+        ...c,
+      })),
+    ),
     fieldRules: [...DEFAULT_AGREE_FIELD_RULES],
     modules: buildAgreeModuleMounts(),
   };
 }
 
 /**
+ * 按 schemaId / scene 加载详情页配置：模块挂载 + 基础信息内部字段
+ * @param opts schemaId 优先；否则按 scene 反查
+ */
+export async function loadAgreeDetailPageConfig(opts: {
+  schemaId?: string;
+  scene?: string;
+}): Promise<{
+  modules: AgreeModuleMount[];
+  basicInner: BasicModuleInnerConfig;
+}> {
+  const schemaId =
+    String(opts.schemaId || '').trim() ||
+    getAgreeScene(String(opts.scene || '').trim())?.schemaId ||
+    '';
+  if (!schemaId) {
+    return {
+      modules: buildAgreeModuleMounts(),
+      basicInner: buildDefaultBasicModuleInner(),
+    };
+  }
+  try {
+    const schema = await getPageSchema(schemaId);
+    return {
+      modules: (schema?.modules?.length
+        ? schema.modules
+        : buildAgreeModuleMounts()) as AgreeModuleMount[],
+      basicInner: normalizeBasicModuleInner(
+        schema?.moduleInner?.basic as BasicModuleInnerConfig | undefined,
+      ),
+    };
+  } catch {
+    return {
+      modules: buildAgreeModuleMounts(),
+      basicInner: buildDefaultBasicModuleInner(),
+    };
+  }
+}
+
+/**
  * 按 schemaId / scene 加载详情模块挂载配置
  * @param opts schemaId 优先；否则按 scene 反查
+ * @deprecated 请优先用 loadAgreeDetailPageConfig
  */
 export async function loadAgreeDetailModules(opts: {
   schemaId?: string;
   scene?: string;
 }): Promise<AgreeModuleMount[]> {
-  const schemaId =
-    String(opts.schemaId || '').trim() ||
-    getAgreeScene(String(opts.scene || '').trim())?.schemaId ||
-    '';
-  if (!schemaId) return buildAgreeModuleMounts();
-  try {
-    const schema = await getPageSchema(schemaId);
-    if (schema?.modules?.length) {
-      return schema.modules as AgreeModuleMount[];
-    }
-  } catch {
-    // 回退默认全挂载
-  }
-  return buildAgreeModuleMounts();
+  const cfg = await loadAgreeDetailPageConfig(opts);
+  return cfg.modules;
 }
