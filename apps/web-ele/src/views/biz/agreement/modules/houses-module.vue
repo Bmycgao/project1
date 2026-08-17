@@ -1,8 +1,9 @@
 <script lang="ts" setup>
 /**
- * 补偿安置：项目表格（对标参考页 Tab）
+ * 房屋信息表格模块（详情 Tab）
+ * 列配置来自 moduleInner.houses
  */
-import type { AgreementDetail, CompensationRow } from '../types';
+import type { AgreementDetail, HouseRow } from '../types';
 import type {
   ModuleInnerConfig,
   ModuleInnerFieldItem,
@@ -24,7 +25,7 @@ import {
 import SectionCard from '../components/section-card.vue';
 import { cloneJson } from '../clone';
 import {
-  normalizeCompensationModuleInner,
+  normalizeHousesModuleInner,
   resolveEnabledFields,
   resolveEnabledSections,
 } from '../module-inner-config';
@@ -36,39 +37,26 @@ const emit = defineEmits<{ dirty: [] }>();
 const { fieldVisible, fieldEditable } = useAgreeFieldAccess();
 
 const injectedInner = inject<Ref<ModuleInnerConfig | null>>(
-  'agreeModuleInnerCompensation',
+  'agreeModuleInnerHouses',
   ref(null),
 );
 
 const innerConfig = computed(() =>
-  normalizeCompensationModuleInner(injectedInner.value),
+  normalizeHousesModuleInner(injectedInner.value),
 );
 
 const section = computed(() => {
   const secs = resolveEnabledSections(innerConfig.value);
-  return secs.find((s) => s.key === 'compensation') || secs[0] || null;
+  return secs.find((s) => s.key === 'houses') || secs[0] || null;
 });
 
-const rows = ref<CompensationRow[]>([]);
+const rows = ref<HouseRow[]>([]);
 const dirty = ref(false);
 
 watch(
   () => props.detail,
   (val) => {
-    rows.value = val ? cloneJson(val.compensationItems || []) : [];
-    if (!rows.value.length && val?.compensation?.amount) {
-      rows.value = [
-        {
-          id: 'cp-legacy',
-          name: val.compensation.settleType || '补偿',
-          calcType: '',
-          quantity: 1,
-          unitPrice: val.compensation.amount,
-          amount: val.compensation.amount,
-          remark: val.compensation.remark || '',
-        },
-      ];
-    }
+    rows.value = val ? cloneJson(val.houses) : [];
     dirty.value = false;
   },
   { immediate: true },
@@ -99,21 +87,21 @@ function isSelectCol(field: ModuleInnerFieldItem) {
   return cell === 'select' || cell === 'yesno';
 }
 
-function emptyRow(): CompensationRow {
-  return {
-    id: `cp-${Date.now()}`,
-    name: '',
-    calcType: '',
-    quantity: '',
-    unitPrice: '',
-    amount: '',
-    remark: '',
-  };
-}
-
 function addRow() {
   if (section.value?.tableOptions?.allowAdd === false) return;
-  rows.value.push(emptyRow());
+  rows.value.push({
+    id: `hs-${Date.now()}`,
+    address: '',
+    certNo: '',
+    propertyType: '',
+    buildArea: '',
+    expropriatedArea: '',
+    houseType: '',
+    structure: '',
+    yearBuilt: '',
+    floor: '',
+    evalValue: '',
+  });
   markDirty();
 }
 
@@ -121,25 +109,21 @@ function removeRow(index: number) {
   if (section.value?.tableOptions?.allowRemove === false) return;
   const minRows = section.value?.tableOptions?.minRows ?? 1;
   if (rows.value.length <= minRows) {
-    ElMessage.warning(`至少保留 ${minRows} 条补偿项`);
+    ElMessage.warning(`至少保留 ${minRows} 套房屋`);
     return;
   }
   rows.value.splice(index, 1);
   markDirty();
 }
 
-function cellValue(row: CompensationRow, key: string) {
-  return (row as Record<string, unknown>)[key];
+function cellValue(row: HouseRow, key: string) {
+  return (row as unknown as Record<string, unknown>)[key];
 }
 
-function setCell(row: CompensationRow, key: string, val: string) {
-  (row as Record<string, unknown>)[key] = val;
+function setCell(row: HouseRow, key: string, val: string) {
+  (row as unknown as Record<string, unknown>)[key] = val;
   markDirty();
 }
-
-const totalAmount = computed(() =>
-  rows.value.reduce((sum, r) => sum + (Number(r.amount) || 0), 0),
-);
 
 async function validate() {
   if (!section.value) return true;
@@ -154,23 +138,26 @@ async function validate() {
 }
 
 function getValues() {
-  const items = cloneJson(rows.value);
-  const amount = items.reduce(
-    (sum: number, r: CompensationRow) => sum + (Number(r.amount) || 0),
-    0,
-  );
-  return {
-    compensationItems: items,
-    compensation: {
-      settleType: items[0]?.name || '',
-      settleAddress: '',
-      amount,
-      remark: items[0]?.remark || '',
-    },
-  };
+  return { houses: cloneJson(rows.value) };
 }
 
-defineExpose({ validate, getValues, isDirty: () => dirty.value });
+/** 评估价值合计（对标参考页底部红字） */
+const evalTotalText = computed(() => {
+  const sum = rows.value.reduce(
+    (acc, r) => acc + (Number(r.evalValue) || 0),
+    0,
+  );
+  return sum.toLocaleString('zh-CN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+});
+
+function isDirty() {
+  return dirty.value;
+}
+
+defineExpose({ validate, getValues, isDirty });
 </script>
 
 <template>
@@ -192,41 +179,47 @@ defineExpose({ validate, getValues, isDirty: () => dirty.value });
         </ElButton>
       </template>
       <ElTable :data="rows" border size="small" row-key="id">
-        <ElTableColumn
-          v-for="col in sectionFields(section)"
-          :key="col.key"
-          :label="col.label"
-          :min-width="col.minWidth || 100"
-        >
-          <template #default="{ row }">
-            <ElSelect
-              v-if="isSelectCol(col)"
-              size="small"
-              class="w-full"
-              :disabled="!columnEditable(col)"
-              :model-value="String(cellValue(row, col.key) ?? '')"
-              @update:model-value="(v: string) => setCell(row, col.key, v)"
-            >
-              <ElOption
-                v-for="opt in col.options || [
-                  { label: '是', value: '是' },
-                  { label: '否', value: '否' },
-                ]"
-                :key="opt.value"
-                :label="opt.label"
-                :value="opt.value"
+        <template v-for="col in sectionFields(section)" :key="col.key">
+          <ElTableColumn
+            v-if="col.key === '_selection'"
+            type="selection"
+            width="48"
+          />
+          <ElTableColumn
+            v-else
+            :label="col.label"
+            :min-width="col.minWidth || 100"
+          >
+            <template #default="{ row }">
+              <ElSelect
+                v-if="isSelectCol(col)"
+                size="small"
+                class="w-full"
+                :disabled="!columnEditable(col)"
+                :model-value="String(cellValue(row, col.key) ?? '')"
+                @update:model-value="(v: string) => setCell(row, col.key, v)"
+              >
+                <ElOption
+                  v-for="opt in col.options || [
+                    { label: '是', value: '是' },
+                    { label: '否', value: '否' },
+                  ]"
+                  :key="opt.value"
+                  :label="opt.label"
+                  :value="opt.value"
+                />
+              </ElSelect>
+              <ElInput
+                v-else
+                size="small"
+                :disabled="!columnEditable(col)"
+                :placeholder="col.placeholder"
+                :model-value="String(cellValue(row, col.key) ?? '')"
+                @update:model-value="(v: string) => setCell(row, col.key, v)"
               />
-            </ElSelect>
-            <ElInput
-              v-else
-              size="small"
-              :disabled="!columnEditable(col)"
-              :placeholder="col.placeholder"
-              :model-value="String(cellValue(row, col.key) ?? '')"
-              @update:model-value="(v: string) => setCell(row, col.key, v)"
-            />
-          </template>
-        </ElTableColumn>
+            </template>
+          </ElTableColumn>
+        </template>
         <ElTableColumn
           v-if="section.tableOptions?.allowRemove !== false"
           label="操作"
@@ -235,21 +228,26 @@ defineExpose({ validate, getValues, isDirty: () => dirty.value });
           align="center"
         >
           <template #default="{ $index }">
-            <ElButton type="danger" link size="small" @click="removeRow($index)">
+            <ElButton
+              type="danger"
+              link
+              size="small"
+              @click="removeRow($index)"
+            >
               删除
             </ElButton>
           </template>
         </ElTableColumn>
       </ElTable>
-      <div class="mt-2 text-right text-sm text-red-500">
-        补偿合计：¥
-        {{
-          totalAmount.toLocaleString('zh-CN', {
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 2,
-          })
-        }}
+      <div
+        v-if="rows.length"
+        class="mt-2 text-right text-sm font-medium text-red-500"
+      >
+        评估总价值：¥ {{ evalTotalText }}
       </div>
     </SectionCard>
+    <div v-else class="py-8 text-center text-xs text-gray-400">
+      当前场景未挂载房屋列，请在页面配置中启用
+    </div>
   </div>
 </template>

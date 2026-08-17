@@ -84,8 +84,8 @@ const [Grid, gridApi] = useVbenVxeGrid({
       type="info"
       show-icon
       :closable="false"
-      title="可视化配置台怎么用"
-      description="① 业务场景：勾选已开通按钮与数据状态；② 菜单挂协议列表 + 本场景；③ 编辑底部可「按角色预览」列/按钮/字段；④ 每次保存会留历史，可一键回滚。角色/用户与页面配置会落盘到 mock data 目录，重启一般不丢。"
+      title="怎么用：菜单入口 + 本方案画详情"
+      description="① 菜单管理只新建入口并绑定本「页面方案」；② 场景方案共 5 块：基础信息/协议人口是表单（可增删字段、拖位置占宽），房屋/补偿安置/奖励补贴是表格；③ 列表点协议编号进入详情，按方案渲染；④ 保存会留历史可回滚。"
     />
     <Grid table-title="页面与场景配置">
       <template #toolbar-tools>

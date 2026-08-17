@@ -66,14 +66,21 @@ import {
   buildSchemaPreview,
   type SchemaPreviewResult,
 } from '../preview-runtime';
-import ModuleLayoutEditor, {
-  type ModuleLayoutEditRow,
-} from './module-layout-editor.vue';
-import BasicInnerEditor from './basic-inner-editor.vue';
+import { type ModuleLayoutEditRow } from './module-layout-editor.vue';
+import DetailDesigner from './detail-designer.vue';
 import {
   buildDefaultBasicModuleInner,
+  buildDefaultCompensationModuleInner,
+  buildDefaultHousesModuleInner,
+  buildDefaultPopulationModuleInner,
+  buildDefaultRewardsModuleInner,
   normalizeBasicModuleInner,
+  normalizeCompensationModuleInner,
+  normalizeHousesModuleInner,
+  normalizePopulationModuleInner,
+  normalizeRewardsModuleInner,
   type BasicModuleInnerConfig,
+  type ModuleInnerConfig,
 } from '../../../biz/agreement/module-inner-config';
 
 const emits = defineEmits<{ success: [] }>();
@@ -97,6 +104,21 @@ const moduleLayoutRows = ref<ModuleLayoutEditRow[]>(
 /** 基础信息模块内部字段配置 */
 const basicInnerConfig = ref<BasicModuleInnerConfig>(
   buildDefaultBasicModuleInner(),
+);
+const housesInnerConfig = ref<ModuleInnerConfig>(
+  buildDefaultHousesModuleInner(),
+);
+/** 补偿安置内部列配置 */
+const compensationInnerConfig = ref<ModuleInnerConfig>(
+  buildDefaultCompensationModuleInner(),
+);
+/** 奖励补贴内部列配置 */
+const rewardsInnerConfig = ref<ModuleInnerConfig>(
+  buildDefaultRewardsModuleInner(),
+);
+/** 协议人口表单配置 */
+const populationInnerConfig = ref<ModuleInnerConfig>(
+  buildDefaultPopulationModuleInner(),
 );
 /** 当前配置类型（与表单 schemaKind 同步） */
 const schemaKind = ref<'entity' | 'scene' | 'template'>('entity');
@@ -594,10 +616,23 @@ async function fillForm(detail: PageSchemaApi.PageSchema) {
   basicInnerConfig.value = normalizeBasicModuleInner(
     detail.moduleInner?.basic as BasicModuleInnerConfig | undefined,
   );
+  housesInnerConfig.value = normalizeHousesModuleInner(
+    (detail.moduleInner as any)?.houses as ModuleInnerConfig | undefined,
+    detail.moduleInner?.basic as ModuleInnerConfig | undefined,
+  );
+  compensationInnerConfig.value = normalizeCompensationModuleInner(
+    (detail.moduleInner as any)?.compensation as ModuleInnerConfig | undefined,
+  );
+  rewardsInnerConfig.value = normalizeRewardsModuleInner(
+    (detail.moduleInner as any)?.rewards as ModuleInnerConfig | undefined,
+  );
+  populationInnerConfig.value = normalizePopulationModuleInner(
+    (detail.moduleInner as any)?.population as ModuleInnerConfig | undefined,
+  );
 }
 
 const [Drawer, drawerApi] = useVbenDrawer({
-  class: 'w-[920px]',
+  class: 'w-[96vw] max-w-[1440px]',
   async onConfirm() {
     const { valid } = await formApi.validate();
     if (!valid) return;
@@ -621,7 +656,11 @@ const [Drawer, drawerApi] = useVbenDrawer({
         ElMessage.warning('请至少挂载一个详情模块');
         return;
       }
-      if (!columns.value.some((c) => c.visible)) {
+      // 场景可继承列模板：仅当本场景已配列时才校验至少一列可见
+      if (
+        columns.value.length > 0 &&
+        !columns.value.some((c) => c.visible)
+      ) {
         ElMessage.warning('至少保留一列可见的列表字段');
         return;
       }
@@ -646,6 +685,14 @@ const [Drawer, drawerApi] = useVbenDrawer({
             modules: buildSceneModules(),
             moduleInner: {
               basic: normalizeBasicModuleInner(basicInnerConfig.value),
+              houses: normalizeHousesModuleInner(housesInnerConfig.value),
+              compensation: normalizeCompensationModuleInner(
+                compensationInnerConfig.value,
+              ),
+              rewards: normalizeRewardsModuleInner(rewardsInnerConfig.value),
+              population: normalizePopulationModuleInner(
+                populationInnerConfig.value,
+              ),
             },
           } as any)
         : ({
@@ -676,6 +723,11 @@ const [Drawer, drawerApi] = useVbenDrawer({
       drawerApi.unlock();
     }
   },
+  onCancel() {
+    // 自定义 onCancel 时 DrawerApi 不会自动 close，需手动关
+    drawerApi.unlock();
+    drawerApi.close();
+  },
   async onOpenChange(isOpen) {
     if (!isOpen) return;
     const data = drawerApi.getData<PageSchemaApi.PageSchema>();
@@ -688,6 +740,10 @@ const [Drawer, drawerApi] = useVbenDrawer({
     selectedStatusIn.value = [];
     moduleLayoutRows.value = createDefaultModuleLayoutRows();
     basicInnerConfig.value = buildDefaultBasicModuleInner();
+    housesInnerConfig.value = buildDefaultHousesModuleInner();
+    compensationInnerConfig.value = buildDefaultCompensationModuleInner();
+    rewardsInnerConfig.value = buildDefaultRewardsModuleInner();
+    populationInnerConfig.value = buildDefaultPopulationModuleInner();
     schemaKind.value = 'entity';
     previewResult.value = null;
     previewRoleName.value = '';
@@ -724,7 +780,7 @@ const [Drawer, drawerApi] = useVbenDrawer({
 
 const title = computed(() => {
   if (!formData.value?.id) return '新建页面配置';
-  return isScene.value ? '配置场景动作' : '配置列表字段';
+  return isScene.value ? '配置场景 · 详情设计器' : '配置列表字段';
 });
 </script>
 
@@ -843,11 +899,18 @@ const title = computed(() => {
         </ElTableColumn>
       </ElTable>
 
-      <div class="mb-2 font-medium">详情模块挂载与布局</div>
-      <ModuleLayoutEditor v-model="moduleLayoutRows" />
-
-      <div class="mb-2 font-medium">基础信息 · 内部内容（打样）</div>
-      <BasicInnerEditor v-model="basicInnerConfig" />
+      <div class="mb-2 font-medium">详情设计器</div>
+      <p class="mb-2 text-xs text-gray-500">
+        共 5 块：基础信息 / 协议人口是表单（可增删字段、拖顺序占宽）；房屋 / 补偿安置 / 奖励补贴是表格。
+      </p>
+      <DetailDesigner
+        v-model:layouts="moduleLayoutRows"
+        v-model:basic-inner="basicInnerConfig"
+        v-model:houses-inner="housesInnerConfig"
+        v-model:compensation-inner="compensationInnerConfig"
+        v-model:rewards-inner="rewardsInnerConfig"
+        v-model:population-inner="populationInnerConfig"
+      />
 
       <div class="mb-2 font-medium">工具栏动作（仅可勾选已实现）</div>
       <p class="mb-3 text-xs text-gray-500">

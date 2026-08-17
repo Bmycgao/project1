@@ -7,6 +7,9 @@ import type { AgreementModuleKey } from './types';
 
 import { matchAccessCodes } from './field-access';
 
+/** 详情模块在画布上的组件形态 */
+export type AgreeModuleWidgetKind = 'form' | 'table';
+
 /** 详情模块元数据 */
 export interface AgreeModuleMeta {
   key: AgreementModuleKey;
@@ -14,6 +17,8 @@ export interface AgreeModuleMeta {
   desc: string;
   /** 可见所需权限码 */
   authCode: string;
+  /** 设计器左侧组件类型：表单 / 表格 */
+  widgetKind: AgreeModuleWidgetKind;
 }
 
 /** 页面配置中的模块挂载项（含布局） */
@@ -43,37 +48,42 @@ export const MODULE_SPAN_OPTIONS = [
   { label: '约 1/3 (8)', value: 8 },
 ] as const;
 
-/** 详情全部区域（默认顺序） */
+/** 详情全部区域（参考页 5 块：基础表单置顶 + 4 个 Tab） */
 export const AGREE_DETAIL_MODULES: AgreeModuleMeta[] = [
   {
     key: 'basic',
     label: '基础信息',
-    desc: '权利人 / 房屋',
+    desc: '协议头表单（可增删字段、拖位置/占宽）',
     authCode: 'Agree:Module:basic',
+    widgetKind: 'form',
   },
   {
-    key: 'signing',
-    label: '签约信息',
-    desc: '签约要素 / 通讯',
-    authCode: 'Agree:Module:signing',
-  },
-  {
-    key: 'signMaterial',
-    label: '签约材料',
-    desc: '材料清单',
-    authCode: 'Agree:Module:signMaterial',
-  },
-  {
-    key: 'certifyMaterial',
-    label: '认定材料',
-    desc: '资格认定',
-    authCode: 'Agree:Module:certifyMaterial',
+    key: 'houses',
+    label: '房屋信息',
+    desc: '涉签约房屋表格',
+    authCode: 'Agree:Module:houses',
+    widgetKind: 'table',
   },
   {
     key: 'compensation',
     label: '补偿安置',
-    desc: '安置与金额',
+    desc: '补偿项目表格',
     authCode: 'Agree:Module:compensation',
+    widgetKind: 'table',
+  },
+  {
+    key: 'rewards',
+    label: '奖励补贴',
+    desc: '奖励项目表格',
+    authCode: 'Agree:Module:rewards',
+    widgetKind: 'table',
+  },
+  {
+    key: 'population',
+    label: '协议人口信息',
+    desc: '户主 / 家庭人口表单',
+    authCode: 'Agree:Module:population',
+    widgetKind: 'form',
   },
 ];
 
@@ -118,15 +128,38 @@ export function normalizeAgreeModuleMounts(
   const byKey = new Map(
     modules.map((item) => [String(item.key), item] as const),
   );
+  const basicRaw = byKey.get('basic');
+  const inheritFromBasic = !!basicRaw && basicRaw.enabled !== false;
+  const compRaw = byKey.get('compensation');
   return AGREE_DETAIL_MODULES.map((meta, index) => {
-    const raw = byKey.get(meta.key);
+    let raw = byKey.get(meta.key);
+    /** 旧「权利人」挂载项 → 协议人口 */
+    if (!raw && meta.key === 'population') {
+      raw = byKey.get('rightHolders');
+    }
+    const inherited =
+      !raw &&
+      ((meta.key === 'houses' && inheritFromBasic) ||
+        (meta.key === 'population' && inheritFromBasic) ||
+        (meta.key === 'rewards' && !!compRaw && compRaw.enabled !== false));
+    const basicOrder =
+      typeof basicRaw?.order === 'number' ? basicRaw.order : 10;
     return {
       key: meta.key,
-      enabled: raw ? raw.enabled !== false : false,
+      enabled: raw ? raw.enabled !== false : inherited,
       order:
         typeof raw?.order === 'number' && Number.isFinite(raw.order)
           ? raw.order
-          : (index + 1) * 10,
+          : inherited
+            ? basicOrder +
+              (meta.key === 'houses'
+                ? 1
+                : meta.key === 'compensation'
+                  ? 2
+                  : meta.key === 'rewards'
+                    ? 3
+                    : 4)
+            : (index + 1) * 10,
       span: normalizeModuleSpan(raw?.span),
     };
   });
@@ -161,7 +194,11 @@ export function isAgreeModuleVisible(
   if (!meta) return false;
   const set = new Set(accessCodes || []);
   if (set.has('Agree:*') || set.has('Agree:Module:*')) return true;
-  return matchAccessCodes(accessCodes, [meta.authCode]);
+  const need = [meta.authCode];
+  if (key === 'population') {
+    need.push('Agree:Module:rightHolders');
+  }
+  return matchAccessCodes(accessCodes, need);
 }
 
 /**

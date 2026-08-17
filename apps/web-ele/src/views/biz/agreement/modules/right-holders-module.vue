@@ -1,8 +1,9 @@
 <script lang="ts" setup>
 /**
- * 补偿安置：项目表格（对标参考页 Tab）
+ * 权利人表格模块（详情 Tab）
+ * 列配置来自 moduleInner.rightHolders
  */
-import type { AgreementDetail, CompensationRow } from '../types';
+import type { AgreementDetail, RightHolderRow } from '../types';
 import type {
   ModuleInnerConfig,
   ModuleInnerFieldItem,
@@ -24,7 +25,7 @@ import {
 import SectionCard from '../components/section-card.vue';
 import { cloneJson } from '../clone';
 import {
-  normalizeCompensationModuleInner,
+  normalizeRightHoldersModuleInner,
   resolveEnabledFields,
   resolveEnabledSections,
 } from '../module-inner-config';
@@ -36,39 +37,26 @@ const emit = defineEmits<{ dirty: [] }>();
 const { fieldVisible, fieldEditable } = useAgreeFieldAccess();
 
 const injectedInner = inject<Ref<ModuleInnerConfig | null>>(
-  'agreeModuleInnerCompensation',
+  'agreeModuleInnerRightHolders',
   ref(null),
 );
 
 const innerConfig = computed(() =>
-  normalizeCompensationModuleInner(injectedInner.value),
+  normalizeRightHoldersModuleInner(injectedInner.value),
 );
 
 const section = computed(() => {
   const secs = resolveEnabledSections(innerConfig.value);
-  return secs.find((s) => s.key === 'compensation') || secs[0] || null;
+  return secs.find((s) => s.key === 'rightHolders') || secs[0] || null;
 });
 
-const rows = ref<CompensationRow[]>([]);
+const rows = ref<RightHolderRow[]>([]);
 const dirty = ref(false);
 
 watch(
   () => props.detail,
   (val) => {
-    rows.value = val ? cloneJson(val.compensationItems || []) : [];
-    if (!rows.value.length && val?.compensation?.amount) {
-      rows.value = [
-        {
-          id: 'cp-legacy',
-          name: val.compensation.settleType || '补偿',
-          calcType: '',
-          quantity: 1,
-          unitPrice: val.compensation.amount,
-          amount: val.compensation.amount,
-          remark: val.compensation.remark || '',
-        },
-      ];
-    }
+    rows.value = val ? cloneJson(val.rightHolders) : [];
     dirty.value = false;
   },
   { immediate: true },
@@ -99,21 +87,15 @@ function isSelectCol(field: ModuleInnerFieldItem) {
   return cell === 'select' || cell === 'yesno';
 }
 
-function emptyRow(): CompensationRow {
-  return {
-    id: `cp-${Date.now()}`,
-    name: '',
-    calcType: '',
-    quantity: '',
-    unitPrice: '',
-    amount: '',
-    remark: '',
-  };
-}
-
 function addRow() {
   if (section.value?.tableOptions?.allowAdd === false) return;
-  rows.value.push(emptyRow());
+  rows.value.push({
+    id: `rh-${Date.now()}`,
+    agreementNo: props.detail?.agreementNo || '',
+    name: '',
+    idNo: '',
+    phone: '',
+  });
   markDirty();
 }
 
@@ -121,25 +103,21 @@ function removeRow(index: number) {
   if (section.value?.tableOptions?.allowRemove === false) return;
   const minRows = section.value?.tableOptions?.minRows ?? 1;
   if (rows.value.length <= minRows) {
-    ElMessage.warning(`至少保留 ${minRows} 条补偿项`);
+    ElMessage.warning(`至少保留 ${minRows} 位权利人`);
     return;
   }
   rows.value.splice(index, 1);
   markDirty();
 }
 
-function cellValue(row: CompensationRow, key: string) {
-  return (row as Record<string, unknown>)[key];
+function cellValue(row: RightHolderRow, key: string) {
+  return (row as unknown as Record<string, unknown>)[key];
 }
 
-function setCell(row: CompensationRow, key: string, val: string) {
-  (row as Record<string, unknown>)[key] = val;
+function setCell(row: RightHolderRow, key: string, val: string) {
+  (row as unknown as Record<string, unknown>)[key] = val;
   markDirty();
 }
-
-const totalAmount = computed(() =>
-  rows.value.reduce((sum, r) => sum + (Number(r.amount) || 0), 0),
-);
 
 async function validate() {
   if (!section.value) return true;
@@ -154,23 +132,14 @@ async function validate() {
 }
 
 function getValues() {
-  const items = cloneJson(rows.value);
-  const amount = items.reduce(
-    (sum: number, r: CompensationRow) => sum + (Number(r.amount) || 0),
-    0,
-  );
-  return {
-    compensationItems: items,
-    compensation: {
-      settleType: items[0]?.name || '',
-      settleAddress: '',
-      amount,
-      remark: items[0]?.remark || '',
-    },
-  };
+  return { rightHolders: cloneJson(rows.value) };
 }
 
-defineExpose({ validate, getValues, isDirty: () => dirty.value });
+function isDirty() {
+  return dirty.value;
+}
+
+defineExpose({ validate, getValues, isDirty });
 </script>
 
 <template>
@@ -235,21 +204,20 @@ defineExpose({ validate, getValues, isDirty: () => dirty.value });
           align="center"
         >
           <template #default="{ $index }">
-            <ElButton type="danger" link size="small" @click="removeRow($index)">
+            <ElButton
+              type="danger"
+              link
+              size="small"
+              @click="removeRow($index)"
+            >
               删除
             </ElButton>
           </template>
         </ElTableColumn>
       </ElTable>
-      <div class="mt-2 text-right text-sm text-red-500">
-        补偿合计：¥
-        {{
-          totalAmount.toLocaleString('zh-CN', {
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 2,
-          })
-        }}
-      </div>
     </SectionCard>
+    <div v-else class="py-8 text-center text-xs text-gray-400">
+      当前场景未挂载权利人列，请在页面配置中启用
+    </div>
   </div>
 </template>

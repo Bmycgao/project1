@@ -24,10 +24,10 @@ export const AGREE_ACTION_AUTH: Record<string, string> = {
 /** 详情区域 → 权限码 */
 export const AGREE_MODULE_AUTH: Record<string, string> = {
   basic: 'Agree:Module:basic',
-  signing: 'Agree:Module:signing',
-  signMaterial: 'Agree:Module:signMaterial',
-  certifyMaterial: 'Agree:Module:certifyMaterial',
+  houses: 'Agree:Module:houses',
   compensation: 'Agree:Module:compensation',
+  rewards: 'Agree:Module:rewards',
+  population: 'Agree:Module:population',
 };
 
 /**

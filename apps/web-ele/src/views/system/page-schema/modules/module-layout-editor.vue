@@ -155,10 +155,9 @@ watch(
 <template>
   <div class="module-layout-editor mb-4">
     <p class="mb-2 text-xs text-gray-500">
-      <strong>可视化布局：</strong>拖动手柄调整顺序；下拉改占比（24
-      栅格预览）。未挂载的放在下方，点「挂上」加入本场景。
-      后端/全量数据可以很多，本页只需挂需要的模块（例如全量 100
-      项只配其中 80）。
+      <strong>可视化布局（可拖拽）：</strong>拖动手柄调整详情模块顺序；下拉改占比（24
+      栅格预览）。点「挂上 / 卸下」控制本场景是否展示。
+      详情页：基础信息固定在上方，其余模块按此处顺序显示在 Tab 中。
     </p>
 
     <div class="mb-2 flex items-center justify-between text-xs text-gray-500">

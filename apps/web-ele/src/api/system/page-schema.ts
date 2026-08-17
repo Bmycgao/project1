@@ -86,27 +86,56 @@ export namespace PageSchemaApi {
     }[];
     /**
      * 模块内部字段/子块配置（场景级）
-     * 目前打样 basic：权利人/房屋列可挂卸与排序
+     * 5 块：basic / houses / compensation / rewards / population
      */
     moduleInner?: {
-      basic?: {
-        sections: {
-          key: string;
-          label: string;
-          subtitle?: string;
-          enabled: boolean;
-          order: number;
-          fields: {
-            key: string;
-            label: string;
-            enabled: boolean;
-            order: number;
-            minWidth?: number;
-            accessField?: string;
-          }[];
-        }[];
-      };
+      basic?: ModuleInnerBlock;
+      houses?: ModuleInnerBlock;
+      compensation?: ModuleInnerBlock;
+      rewards?: ModuleInnerBlock;
+      population?: ModuleInnerBlock;
+      /** 以下为旧字段，读时忽略 */
+      rightHolders?: ModuleInnerBlock;
+      signing?: ModuleInnerBlock;
+      material?: ModuleInnerBlock;
+      signMaterial?: ModuleInnerBlock;
+      certifyMaterial?: ModuleInnerBlock;
     };
+  }
+
+  /** 模块内部配置块 */
+  export interface ModuleInnerBlock {
+    sections: {
+      key: string;
+      label: string;
+      subtitle?: string;
+      enabled: boolean;
+      order: number;
+      /** 配置台新增的自定义表格子块 */
+      custom?: boolean;
+      fields: {
+        key: string;
+        label: string;
+        enabled: boolean;
+        order: number;
+        minWidth?: number;
+        accessField?: string;
+        controlType?: string;
+        span?: number;
+        options?: { label: string; value: string }[];
+        required?: boolean;
+        placeholder?: string;
+        cellType?: string;
+        custom?: boolean;
+      }[];
+      /** 本场景已删除的内置字段，normalize 不再补回 */
+      removedFieldKeys?: string[];
+      tableOptions?: {
+        allowAdd?: boolean;
+        allowRemove?: boolean;
+        minRows?: number;
+      };
+    }[];
   }
 }
 

@@ -20,8 +20,17 @@ import {
 } from './module-access';
 import {
   buildDefaultBasicModuleInner,
+  buildDefaultCompensationModuleInner,
+  buildDefaultHousesModuleInner,
+  buildDefaultPopulationModuleInner,
+  buildDefaultRewardsModuleInner,
   normalizeBasicModuleInner,
+  normalizeCompensationModuleInner,
+  normalizeHousesModuleInner,
+  normalizePopulationModuleInner,
+  normalizeRewardsModuleInner,
   type BasicModuleInnerConfig,
+  type ModuleInnerConfig,
 } from './module-inner-config';
 import {
   AGREE_COLUMN_TEMPLATE,
@@ -209,7 +218,7 @@ export async function loadAgreeListRuntime(
 }
 
 /**
- * 按 schemaId / scene 加载详情页配置：模块挂载 + 基础信息内部字段
+ * 按 schemaId / scene 加载详情页配置：模块挂载 + 内部字段
  * @param opts schemaId 优先；否则按 scene 反查
  */
 export async function loadAgreeDetailPageConfig(opts: {
@@ -218,32 +227,50 @@ export async function loadAgreeDetailPageConfig(opts: {
 }): Promise<{
   modules: AgreeModuleMount[];
   basicInner: BasicModuleInnerConfig;
+  housesInner: ModuleInnerConfig;
+  compensationInner: ModuleInnerConfig;
+  rewardsInner: ModuleInnerConfig;
+  populationInner: ModuleInnerConfig;
 }> {
+  const empty = {
+    modules: buildAgreeModuleMounts(),
+    basicInner: buildDefaultBasicModuleInner(),
+    housesInner: buildDefaultHousesModuleInner(),
+    compensationInner: buildDefaultCompensationModuleInner(),
+    rewardsInner: buildDefaultRewardsModuleInner(),
+    populationInner: buildDefaultPopulationModuleInner(),
+  };
   const schemaId =
     String(opts.schemaId || '').trim() ||
     getAgreeScene(String(opts.scene || '').trim())?.schemaId ||
     '';
   if (!schemaId) {
-    return {
-      modules: buildAgreeModuleMounts(),
-      basicInner: buildDefaultBasicModuleInner(),
-    };
+    return empty;
   }
   try {
     const schema = await getPageSchema(schemaId);
+    const inner = schema?.moduleInner as
+      | Record<string, ModuleInnerConfig>
+      | undefined;
     return {
       modules: (schema?.modules?.length
         ? schema.modules
         : buildAgreeModuleMounts()) as AgreeModuleMount[],
-      basicInner: normalizeBasicModuleInner(
-        schema?.moduleInner?.basic as BasicModuleInnerConfig | undefined,
+      basicInner: normalizeBasicModuleInner(inner?.basic),
+      housesInner: normalizeHousesModuleInner(
+        inner?.houses,
+        inner?.basic,
+      ),
+      compensationInner: normalizeCompensationModuleInner(
+        inner?.compensation,
+      ),
+      rewardsInner: normalizeRewardsModuleInner(inner?.rewards),
+      populationInner: normalizePopulationModuleInner(
+        inner?.population,
       ),
     };
   } catch {
-    return {
-      modules: buildAgreeModuleMounts(),
-      basicInner: buildDefaultBasicModuleInner(),
-    };
+    return empty;
   }
 }
 

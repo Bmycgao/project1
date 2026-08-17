@@ -141,16 +141,17 @@ function collectIdsByAuthCodes(codes: string[]): Array<number | string> {
 /** 详情全部区域按钮 ID */
 const ALL_MODULE_PERM_IDS = collectIdsByAuthCodes([
   'Agree:Module:basic',
-  'Agree:Module:signing',
-  'Agree:Module:signMaterial',
-  'Agree:Module:certifyMaterial',
+  'Agree:Module:houses',
   'Agree:Module:compensation',
+  'Agree:Module:rewards',
+  'Agree:Module:population',
 ]);
 
-/** 查询岗仅看基础信息 + 签约 */
+/** 查询岗仅看基础信息 + 房屋 + 人口 */
 const VIEWER_MODULE_PERM_IDS = collectIdsByAuthCodes([
   'Agree:Module:basic',
-  'Agree:Module:signing',
+  'Agree:Module:houses',
+  'Agree:Module:population',
 ]);
 
 const ENTRY_PERM_IDS = [

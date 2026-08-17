@@ -1,23 +1,30 @@
 <script lang="ts" setup>
 /**
- * 基础信息模块：权利人 + 房屋
- * 子块/列由场景 moduleInner.basic 配置驱动（可挂卸、可排序）
+ * 基础信息：协议头 KV 表单（order + span 驱动栅格）
+ * 配置台自定义表格仍渲染在表单下方，数据落在 detail.basicTables
  */
-import type { AgreementDetail, HouseRow, RightHolderRow } from '../types';
+import type {
+  AgreementDetail,
+  BasicInfo,
+  BasicTableRow,
+} from '../types';
 import type {
   BasicModuleInnerConfig,
   ModuleInnerFieldItem,
   ModuleInnerSection,
 } from '../module-inner-config';
 
-import { computed, inject, ref, type Ref, watch } from 'vue';
+import { computed, inject, reactive, ref, type Ref, watch } from 'vue';
 
-import { ElButton, ElInput, ElMessage, ElTable, ElTableColumn } from 'element-plus';
+import { ElButton, ElCol, ElForm, ElFormItem, ElInput, ElMessage, ElRow, ElTable, ElTableColumn } from 'element-plus';
 
+import ModuleFormControl from '../components/module-form-control.vue';
 import SectionCard from '../components/section-card.vue';
 import { cloneJson } from '../clone';
 import {
+  isCustomBasicSection,
   normalizeBasicModuleInner,
+  normalizeFieldSpan,
   resolveEnabledFields,
   resolveEnabledSections,
 } from '../module-inner-config';
@@ -26,9 +33,8 @@ import { useAgreeFieldAccess } from '../use-field-access';
 const props = defineProps<{ detail: AgreementDetail | null }>();
 const emit = defineEmits<{ dirty: [] }>();
 
-const { fieldVisible, fieldEditable } = useAgreeFieldAccess();
+const { fieldVisible, fieldEditable, fieldFormat } = useAgreeFieldAccess();
 
-/** 详情页注入的基础信息内部配置 */
 const injectedBasicInner = inject<Ref<BasicModuleInnerConfig | null>>(
   'agreeModuleInnerBasic',
   ref(null),
@@ -39,133 +45,162 @@ const innerConfig = computed(() =>
 );
 
 const sections = computed(() => resolveEnabledSections(innerConfig.value));
+const formSections = computed(() =>
+  sections.value.filter((s) => !isCustomBasicSection(s)),
+);
+const customSections = computed(() =>
+  sections.value.filter((s) => isCustomBasicSection(s)),
+);
 
-const rightHolders = ref<RightHolderRow[]>([]);
-const houses = ref<HouseRow[]>([]);
+const form = reactive<BasicInfo>({
+  agreementNo: '',
+  agreementName: '',
+  department: '',
+  acquirer: '',
+  compensatee: '',
+  amount: '',
+  signDate: '',
+  statusValue: '',
+  remark: '',
+});
+
+const basicTables = reactive<Record<string, BasicTableRow[]>>({});
 const dirty = ref(false);
 
 watch(
   () => props.detail,
   (val) => {
-    rightHolders.value = val ? cloneJson(val.rightHolders) : [];
-    houses.value = val ? cloneJson(val.houses) : [];
+    const next = emptyBasic(val);
+    Object.assign(form, next);
+    const tables = val?.basicTables ? cloneJson(val.basicTables) : {};
+    Object.keys(basicTables).forEach((k) => delete basicTables[k]);
+    Object.assign(basicTables, tables);
     dirty.value = false;
   },
   { immediate: true },
 );
+
+watch(
+  customSections,
+  (secs) => {
+    for (const sec of secs) {
+      if (!Array.isArray(basicTables[sec.key])) {
+        basicTables[sec.key] = [];
+      }
+    }
+  },
+  { immediate: true },
+);
+
+/**
+ * 从详情拼协议头；缺 basic 时用顶栏字段兜底
+ * @param val 详情
+ */
+function emptyBasic(val: AgreementDetail | null): BasicInfo {
+  if (!val) {
+    return {
+      agreementNo: '',
+      agreementName: '',
+      department: '',
+      acquirer: '',
+      compensatee: '',
+      amount: '',
+      signDate: '',
+      statusValue: '',
+      remark: '',
+    };
+  }
+  const b = val.basic;
+  return {
+    ...(b || {}),
+    agreementNo: b?.agreementNo || val.agreementNo || '',
+    agreementName: b?.agreementName || '',
+    department: b?.department || '',
+    acquirer: b?.acquirer || '',
+    compensatee: b?.compensatee || val.rightHolders?.[0]?.name || '',
+    amount: b?.amount ?? val.compensation?.amount ?? '',
+    signDate: b?.signDate || val.signing?.signDate || '',
+    statusValue: b?.statusValue || val.statusValue || '',
+    remark: b?.remark || val.compensation?.remark || '',
+  };
+}
 
 function markDirty() {
   dirty.value = true;
   emit('dirty');
 }
 
-function addRightHolder() {
-  rightHolders.value.push({
-    id: `rh-${Date.now()}`,
-    agreementNo: props.detail?.agreementNo || '',
-    name: '',
-    idNo: '',
-    phone: '',
-  });
-  markDirty();
-}
+const model = form as unknown as Record<string, unknown>;
 
-function addHouse() {
-  houses.value.push({
-    id: `hs-${Date.now()}`,
-    address: '',
-    certNo: '',
-    propertyType: '',
-  });
-  markDirty();
-}
-
-/**
- * 列是否最终可见：配置启用 ∩（可选）字段权限
- * @param field 字段配置
- */
-function columnVisible(field: ModuleInnerFieldItem) {
+function isFieldShown(field: ModuleInnerFieldItem) {
   if (!field.enabled) return false;
-  if (field.accessField) {
-    return fieldVisible(field.accessField);
-  }
+  if (field.accessField) return fieldVisible(field.accessField);
   return true;
 }
 
-/**
- * 列是否可编辑
- * @param field 字段配置
- */
-function columnEditable(field: ModuleInnerFieldItem) {
-  if (field.accessField) {
-    return fieldEditable(field.accessField);
-  }
+function isFieldEditable(field: ModuleInnerFieldItem) {
+  if (field.accessField) return fieldEditable(field.accessField);
   return true;
 }
 
-/**
- * 读权利人单元格
- * @param row 行
- * @param key 字段
- */
-function rhValue(row: RightHolderRow, key: string) {
-  return (row as Record<string, unknown>)[key];
+function colSpan(field: ModuleInnerFieldItem) {
+  return normalizeFieldSpan(field.span);
 }
 
-/**
- * 写权利人单元格
- * @param row 行
- * @param key 字段
- * @param val 值
- */
-function setRhValue(row: RightHolderRow, key: string, val: string) {
-  (row as Record<string, unknown>)[key] = val;
+function visibleFields(section: ModuleInnerSection) {
+  return resolveEnabledFields(section).filter((f) => isFieldShown(f));
+}
+
+function showFormatPreview(field: ModuleInnerFieldItem) {
+  return field.accessField === 'amount' || field.accessField === 'signDate';
+}
+
+function addCustomRow(section: ModuleInnerSection) {
+  const row: BasicTableRow = { id: `bt-${Date.now()}` };
+  for (const f of resolveEnabledFields(section)) {
+    if (f.key === '_selection') continue;
+    row[f.key] = '';
+  }
+  if (!basicTables[section.key]) basicTables[section.key] = [];
+  basicTables[section.key]!.push(row);
   markDirty();
 }
 
-/**
- * 读房屋单元格
- * @param row 行
- * @param key 字段
- */
-function hsValue(row: HouseRow, key: string) {
-  return (row as Record<string, unknown>)[key];
+function removeCustomRow(sectionKey: string, index: number) {
+  basicTables[sectionKey]?.splice(index, 1);
+  markDirty();
 }
 
-/**
- * 写房屋单元格
- * @param row 行
- * @param key 字段
- * @param val 值
- */
-function setHsValue(row: HouseRow, key: string, val: string) {
-  (row as Record<string, unknown>)[key] = val;
+function customRows(sectionKey: string) {
+  return basicTables[sectionKey] || [];
+}
+
+function setCellValue(row: Record<string, unknown>, key: string, val: string) {
+  row[key] = val;
   markDirty();
 }
 
 async function validate() {
-  const secs = sections.value;
-  const needRh = secs.some((s) => s.key === 'rightHolders');
-  const needHs = secs.some((s) => s.key === 'houses');
-  if (needRh) {
-    if (!rightHolders.value.length || !rightHolders.value[0]?.name?.trim()) {
-      ElMessage.warning('请完善权利人姓名');
-      return false;
-    }
-  }
-  if (needHs) {
-    if (!houses.value.length || !houses.value[0]?.address?.trim()) {
-      ElMessage.warning('请完善房屋地址');
-      return false;
+  for (const sec of formSections.value) {
+    for (const field of visibleFields(sec)) {
+      if (!field.required) continue;
+      const text = String(model[field.key] ?? '').trim();
+      if (!text) {
+        ElMessage.warning(`请完善「${field.label}」`);
+        return false;
+      }
     }
   }
   return true;
 }
 
 function getValues() {
+  const basic = cloneJson(form);
   return {
-    rightHolders: cloneJson(rightHolders.value),
-    houses: cloneJson(houses.value),
+    basic,
+    agreementNo: basic.agreementNo,
+    statusValue: basic.statusValue,
+    basicTables: cloneJson(basicTables),
   };
 }
 
@@ -174,34 +209,65 @@ function isDirty() {
 }
 
 defineExpose({ validate, getValues, isDirty });
-
-/** 权利人启用列 */
-function rhFields(section: ModuleInnerSection) {
-  return resolveEnabledFields(section).filter((f) => columnVisible(f));
-}
-
-/** 房屋启用列 */
-function hsFields(section: ModuleInnerSection) {
-  return resolveEnabledFields(section).filter((f) => columnVisible(f));
-}
 </script>
 
 <template>
-  <div @input="markDirty">
-    <template v-for="sec in sections" :key="sec.key">
-      <SectionCard
-        v-if="sec.key === 'rightHolders'"
-        :title="sec.label"
-        :subtitle="sec.subtitle"
-      >
+  <div @change="markDirty" @input="markDirty">
+    <template v-for="sec in formSections" :key="sec.key">
+      <ElForm label-width="120px">
+        <ElRow :gutter="16">
+          <ElCol
+            v-for="field in visibleFields(sec)"
+            :key="field.key"
+            :xs="24"
+            :md="colSpan(field)"
+          >
+            <ElFormItem :label="field.label">
+              <ModuleFormControl
+                v-if="isFieldEditable(field)"
+                :field="field"
+                :model-value="model[field.key]"
+                @update:model-value="
+                  (v) => {
+                    model[field.key] = v;
+                    markDirty();
+                  }
+                "
+              />
+              <div v-else class="text-sm text-gray-800">
+                <template v-if="showFormatPreview(field) && field.accessField">
+                  {{ fieldFormat(field.accessField, model[field.key]) }}
+                </template>
+                <template v-else>{{ model[field.key] ?? '' }}</template>
+              </div>
+              <div
+                v-if="
+                  isFieldEditable(field) &&
+                  showFormatPreview(field) &&
+                  field.accessField
+                "
+                class="mt-1 text-xs text-gray-400"
+              >
+                展示预览：{{
+                  fieldFormat(field.accessField, model[field.key])
+                }}
+              </div>
+            </ElFormItem>
+          </ElCol>
+        </ElRow>
+      </ElForm>
+    </template>
+
+    <template v-for="sec in customSections" :key="sec.key">
+      <SectionCard :title="sec.label" :subtitle="sec.subtitle">
         <template #extra>
-          <ElButton size="small" type="primary" link @click="addRightHolder">
+          <ElButton size="small" type="primary" link @click="addCustomRow(sec)">
             新增
           </ElButton>
         </template>
-        <ElTable :data="rightHolders" border size="small" row-key="id">
+        <ElTable :data="customRows(sec.key)" border size="small" row-key="id">
           <ElTableColumn
-            v-for="col in rhFields(sec)"
+            v-for="col in resolveEnabledFields(sec)"
             :key="col.key"
             :label="col.label"
             :min-width="col.minWidth || 100"
@@ -209,58 +275,44 @@ function hsFields(section: ModuleInnerSection) {
             <template #default="{ row }">
               <ElInput
                 size="small"
-                :model-value="String(rhValue(row, col.key) ?? '')"
-                :disabled="!columnEditable(col)"
-                @update:model-value="(v: string) => setRhValue(row, col.key, v)"
+                :placeholder="col.placeholder || ''"
+                :model-value="
+                  String((row as Record<string, unknown>)[col.key] ?? '')
+                "
+                @update:model-value="
+                  (v: string) =>
+                    setCellValue(row as Record<string, unknown>, col.key, v)
+                "
               />
             </template>
           </ElTableColumn>
+          <ElTableColumn label="操作" width="72" fixed="right" align="center">
+            <template #default="{ $index }">
+              <ElButton
+                type="danger"
+                link
+                size="small"
+                @click="removeCustomRow(sec.key, $index)"
+              >
+                删除
+              </ElButton>
+            </template>
+          </ElTableColumn>
         </ElTable>
-      </SectionCard>
-
-      <SectionCard
-        v-else-if="sec.key === 'houses'"
-        :title="sec.label"
-        :subtitle="sec.subtitle"
-      >
-        <template #extra>
-          <ElButton size="small" type="primary" link @click="addHouse">
-            新增
-          </ElButton>
-        </template>
-        <ElTable :data="houses" border size="small" row-key="id">
-          <template v-for="col in hsFields(sec)" :key="col.key">
-            <ElTableColumn
-              v-if="col.key === '_selection'"
-              type="selection"
-              width="48"
-            />
-            <ElTableColumn
-              v-else
-              :label="col.label"
-              :min-width="col.minWidth || 100"
-            >
-              <template #default="{ row }">
-                <ElInput
-                  size="small"
-                  :model-value="String(hsValue(row, col.key) ?? '')"
-                  :disabled="!columnEditable(col)"
-                  @update:model-value="
-                    (v: string) => setHsValue(row, col.key, v)
-                  "
-                />
-              </template>
-            </ElTableColumn>
-          </template>
-        </ElTable>
+        <div
+          v-if="!customRows(sec.key).length"
+          class="py-3 text-center text-xs text-gray-400"
+        >
+          暂无数据，请点击右上角「新增」添加行
+        </div>
       </SectionCard>
     </template>
 
     <div
-      v-if="!sections.length"
+      v-if="!formSections.length && !customSections.length"
       class="py-8 text-center text-xs text-gray-400"
     >
-      当前场景未挂载基础信息子块，请在页面配置「基础信息 · 内部字段」中启用
+      当前场景未挂载基础信息字段，请在页面配置中启用
     </div>
   </div>
 </template>

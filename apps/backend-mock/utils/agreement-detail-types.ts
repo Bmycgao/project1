@@ -2,10 +2,10 @@
 
 export type AgreementModuleKey =
   | 'basic'
-  | 'signing'
-  | 'signMaterial'
-  | 'certifyMaterial'
-  | 'compensation';
+  | 'houses'
+  | 'compensation'
+  | 'rewards'
+  | 'population';
 
 export interface RightHolderRow {
   id: string;
@@ -20,6 +20,64 @@ export interface HouseRow {
   address: string;
   certNo: string;
   propertyType: string;
+  buildArea?: string | number;
+  expropriatedArea?: string | number;
+  houseType?: string;
+  structure?: string;
+  yearBuilt?: string;
+  floor?: string;
+  evalValue?: string | number;
+}
+
+/** 协议头表单（含配置台扩展字段） */
+export interface BasicInfo {
+  agreementNo: string;
+  agreementName: string;
+  department: string;
+  acquirer: string;
+  compensatee: string;
+  amount: string | number;
+  signDate: string;
+  statusValue: string;
+  remark: string;
+  [key: string]: unknown;
+}
+
+/** 协议人口表单 */
+export interface PopulationInfo {
+  headName: string;
+  idNo: string;
+  familySize: string | number;
+  phone: string;
+  hukouAddress: string;
+  remark: string;
+  [key: string]: unknown;
+}
+
+export interface CompensationRow {
+  id: string;
+  name: string;
+  calcType: string;
+  quantity: string | number;
+  unitPrice: string | number;
+  amount: string | number;
+  remark: string;
+  [key: string]: unknown;
+}
+
+export interface RewardRow {
+  id: string;
+  name: string;
+  condition: string;
+  amount: string | number;
+  remark: string;
+  [key: string]: unknown;
+}
+
+/** 自定义基础信息子块行 */
+export interface BasicTableRow {
+  id: string;
+  [key: string]: unknown;
 }
 
 export interface SigningInfo {
@@ -63,11 +121,17 @@ export interface AgreementDetail {
   statusValue: string;
   signType: string;
   isSigned: string;
+  basic: BasicInfo;
   rightHolders: RightHolderRow[];
   houses: HouseRow[];
+  /** 配置台新增子块的行数据 */
+  basicTables?: Record<string, BasicTableRow[]>;
   signing: SigningInfo;
   contact: ContactInfo;
   signMaterials: MaterialRow[];
   certifyMaterials: MaterialRow[];
   compensation: CompensationInfo;
+  compensationItems: CompensationRow[];
+  rewardItems: RewardRow[];
+  population: PopulationInfo;
 }
