@@ -52,6 +52,9 @@ import {
 import {
   AGREE_DETAIL_MODULES,
   buildAgreeModuleMounts,
+  inferCustomWidgetKind,
+  isCustomAgreeModule,
+  metaFromMount,
   normalizeAgreeModuleMounts,
   normalizeModuleSpan,
   type AgreeModuleMount,
@@ -71,11 +74,15 @@ import DetailDesigner from './detail-designer.vue';
 import {
   buildDefaultBasicModuleInner,
   buildDefaultCompensationModuleInner,
+  buildDefaultCustomFormInner,
+  buildDefaultCustomTableInner,
   buildDefaultHousesModuleInner,
   buildDefaultPopulationModuleInner,
   buildDefaultRewardsModuleInner,
   normalizeBasicModuleInner,
   normalizeCompensationModuleInner,
+  normalizeCustomFormInner,
+  normalizeCustomTableInner,
   normalizeHousesModuleInner,
   normalizePopulationModuleInner,
   normalizeRewardsModuleInner,
@@ -120,6 +127,8 @@ const rewardsInnerConfig = ref<ModuleInnerConfig>(
 const populationInnerConfig = ref<ModuleInnerConfig>(
   buildDefaultPopulationModuleInner(),
 );
+/** 配置台新建业务组件的内部配置 */
+const customInnerMap = ref<Record<string, ModuleInnerConfig>>({});
 /** 当前配置类型（与表单 schemaKind 同步） */
 const schemaKind = ref<'entity' | 'scene' | 'template'>('entity');
 
@@ -286,6 +295,9 @@ function createDefaultModuleLayoutRows(): ModuleLayoutEditRow[] {
       enabled: m.enabled,
       order: m.order ?? 10,
       span: normalizeModuleSpan(m.span),
+      widgetKind: meta.widgetKind,
+      custom: false,
+      desc: meta.desc,
     };
   });
 }
@@ -299,6 +311,11 @@ function buildSceneModules(): AgreeModuleMount[] {
     enabled: row.enabled,
     order: row.order,
     span: normalizeModuleSpan(row.span),
+    label: row.label,
+    desc: row.desc,
+    widgetKind: row.widgetKind,
+    custom: row.custom,
+    authCode: row.authCode,
   }));
 }
 
@@ -314,7 +331,7 @@ function rowsFromModules(
   );
   return normalized
     .map((m) => {
-      const meta = AGREE_DETAIL_MODULES.find((x) => x.key === m.key)!;
+      const meta = metaFromMount(m);
       return {
         key: m.key,
         label: meta.label,
@@ -322,9 +339,58 @@ function rowsFromModules(
         enabled: m.enabled,
         order: m.order ?? 10,
         span: normalizeModuleSpan(m.span),
+        widgetKind: meta.widgetKind,
+        custom: isCustomAgreeModule(String(m.key)),
+        desc: meta.desc,
       };
     })
     .sort((a, b) => a.order - b.order);
+}
+
+/** 页面配置里不算自定义业务组件的 moduleInner key */
+const BUILTIN_INNER_KEYS = new Set([
+  'basic',
+  'houses',
+  'compensation',
+  'rewards',
+  'population',
+  'rightHolders',
+  'signing',
+  'material',
+  'signMaterial',
+  'certifyMaterial',
+]);
+
+/**
+ * 从已存 moduleInner 抽出自定义组件配置
+ * @param inner 场景 moduleInner
+ * @param layouts 布局行（用于推断表单/表格）
+ */
+function extractCustomInnerMap(
+  inner: PageSchemaApi.PageSchema['moduleInner'] | undefined,
+  layouts: ModuleLayoutEditRow[],
+): Record<string, ModuleInnerConfig> {
+  const map: Record<string, ModuleInnerConfig> = {};
+  for (const [key, block] of Object.entries(inner || {})) {
+    if (BUILTIN_INNER_KEYS.has(key) || !block) continue;
+    const row = layouts.find((r) => r.key === key);
+    const kind =
+      row?.widgetKind || inferCustomWidgetKind(key);
+    const label = row?.label || '自定义组件';
+    map[key] =
+      kind === 'table'
+        ? normalizeCustomTableInner(block as ModuleInnerConfig, label)
+        : normalizeCustomFormInner(block as ModuleInnerConfig, label);
+  }
+  for (const row of layouts) {
+    if (!row.custom && !isCustomAgreeModule(String(row.key))) continue;
+    if (map[row.key]) continue;
+    map[row.key] =
+      row.widgetKind === 'table'
+        ? buildDefaultCustomTableInner(row.label)
+        : buildDefaultCustomFormInner(row.label);
+  }
+  return map;
 }
 
 /**
@@ -629,6 +695,10 @@ async function fillForm(detail: PageSchemaApi.PageSchema) {
   populationInnerConfig.value = normalizePopulationModuleInner(
     (detail.moduleInner as any)?.population as ModuleInnerConfig | undefined,
   );
+  customInnerMap.value = extractCustomInnerMap(
+    detail.moduleInner,
+    moduleLayoutRows.value,
+  );
 }
 
 const [Drawer, drawerApi] = useVbenDrawer({
@@ -693,6 +763,7 @@ const [Drawer, drawerApi] = useVbenDrawer({
               population: normalizePopulationModuleInner(
                 populationInnerConfig.value,
               ),
+              ...customInnerMap.value,
             },
           } as any)
         : ({
@@ -744,6 +815,7 @@ const [Drawer, drawerApi] = useVbenDrawer({
     compensationInnerConfig.value = buildDefaultCompensationModuleInner();
     rewardsInnerConfig.value = buildDefaultRewardsModuleInner();
     populationInnerConfig.value = buildDefaultPopulationModuleInner();
+    customInnerMap.value = {};
     schemaKind.value = 'entity';
     previewResult.value = null;
     previewRoleName.value = '';
@@ -901,7 +973,7 @@ const title = computed(() => {
 
       <div class="mb-2 font-medium">详情设计器</div>
       <p class="mb-2 text-xs text-gray-500">
-        共 5 块：基础信息 / 协议人口是表单（可增删字段、拖顺序占宽）；房屋 / 补偿安置 / 奖励补贴是表格。
+        内置 5 块可挂卸；左侧可「新建业务组件」（空白表单/表格）。模块多时画布顶栏胶囊横向滑动、不换行。
       </p>
       <DetailDesigner
         v-model:layouts="moduleLayoutRows"
@@ -910,6 +982,7 @@ const title = computed(() => {
         v-model:compensation-inner="compensationInnerConfig"
         v-model:rewards-inner="rewardsInnerConfig"
         v-model:population-inner="populationInnerConfig"
+        v-model:custom-inners="customInnerMap"
       />
 
       <div class="mb-2 font-medium">工具栏动作（仅可勾选已实现）</div>

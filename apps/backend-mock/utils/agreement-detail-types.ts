@@ -1,11 +1,6 @@
 /** 与前端协议详情 types 对齐的 mock 类型（避免跨包引用） */
 
-export type AgreementModuleKey =
-  | 'basic'
-  | 'houses'
-  | 'compensation'
-  | 'rewards'
-  | 'population';
+export type AgreementModuleKey = string;
 
 export interface RightHolderRow {
   id: string;
@@ -134,4 +129,6 @@ export interface AgreementDetail {
   compensationItems: CompensationRow[];
   rewardItems: RewardRow[];
   population: PopulationInfo;
+  extraForms?: Record<string, Record<string, unknown>>;
+  extraTables?: Record<string, Record<string, unknown>[]>;
 }

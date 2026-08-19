@@ -1082,3 +1082,141 @@ export const TABLE_CELL_OPTIONS: {
   { label: '下拉', value: 'select' },
   { label: '是 / 否', value: 'yesno' },
 ];
+
+/**
+ * 默认自定义表单内部配置
+ * @param label 组件名
+ */
+export function buildDefaultCustomFormInner(label: string): ModuleInnerConfig {
+  return {
+    sections: [
+      {
+        key: 'main',
+        label,
+        subtitle: '自定义表单，可新增字段',
+        enabled: true,
+        order: 10,
+        fields: [
+          {
+            key: 'title',
+            label: '标题',
+            enabled: true,
+            order: 10,
+            custom: true,
+            controlType: 'input',
+            span: 8,
+          },
+          {
+            key: 'remark',
+            label: '备注',
+            enabled: true,
+            order: 20,
+            custom: true,
+            controlType: 'textarea',
+            span: 24,
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * 默认自定义表格内部配置
+ * @param label 组件名
+ */
+export function buildDefaultCustomTableInner(label: string): ModuleInnerConfig {
+  return {
+    sections: [
+      {
+        key: 'main',
+        label,
+        subtitle: '自定义表格，可新增列与行',
+        enabled: true,
+        custom: true,
+        order: 10,
+        tableOptions: { allowAdd: true, allowRemove: true, minRows: 0 },
+        fields: [
+          {
+            key: 'name',
+            label: '名称',
+            enabled: true,
+            order: 10,
+            minWidth: 140,
+            custom: true,
+            cellType: 'text',
+          },
+          {
+            key: 'remark',
+            label: '备注',
+            enabled: true,
+            order: 20,
+            minWidth: 160,
+            custom: true,
+            cellType: 'text',
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * 规范化自定义表单
+ * @param raw 已存配置
+ * @param label 组件名
+ */
+export function normalizeCustomFormInner(
+  raw?: ModuleInnerConfig | null,
+  label = '自定义表单',
+) {
+  if (!raw?.sections?.length) {
+    return buildDefaultCustomFormInner(label);
+  }
+  return {
+    sections: raw.sections.map((s, i) => ({
+      ...s,
+      enabled: s.enabled !== false,
+      order: typeof s.order === 'number' ? s.order : (i + 1) * 10,
+      fields: (s.fields || []).map((f, fi) => ({
+        ...f,
+        enabled: f.enabled !== false,
+        order: typeof f.order === 'number' ? f.order : (fi + 1) * 10,
+        custom: true,
+      })),
+    })),
+  };
+}
+
+/**
+ * 规范化自定义表格
+ * @param raw 已存配置
+ * @param label 组件名
+ */
+export function normalizeCustomTableInner(
+  raw?: ModuleInnerConfig | null,
+  label = '自定义表格',
+) {
+  if (!raw?.sections?.length) {
+    return buildDefaultCustomTableInner(label);
+  }
+  return {
+    sections: raw.sections.map((s, i) => ({
+      ...s,
+      enabled: s.enabled !== false,
+      custom: true,
+      order: typeof s.order === 'number' ? s.order : (i + 1) * 10,
+      tableOptions: {
+        allowAdd: s.tableOptions?.allowAdd !== false,
+        allowRemove: s.tableOptions?.allowRemove !== false,
+        minRows: s.tableOptions?.minRows ?? 0,
+      },
+      fields: (s.fields || []).map((f, fi) => ({
+        ...f,
+        enabled: f.enabled !== false,
+        order: typeof f.order === 'number' ? f.order : (fi + 1) * 10,
+        custom: true,
+      })),
+    })),
+  };
+}

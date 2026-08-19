@@ -237,8 +237,12 @@ export function buildSchemaPreview(
     for (const mount of [...normalized].sort(
       (a, b) => (a.order ?? 0) - (b.order ?? 0),
     )) {
-      const meta = AGREE_DETAIL_MODULES.find((m) => m.key === mount.key);
-      if (!meta) continue;
+      const meta =
+        AGREE_DETAIL_MODULES.find((m) => m.key === mount.key) || {
+          key: mount.key,
+          label: mount.label || '自定义组件',
+          authCode: mount.authCode || 'Agree:Module:custom',
+        };
       const layout = shownMap.get(mount.key);
       if (!mount.enabled) {
         modules.push({

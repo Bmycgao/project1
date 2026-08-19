@@ -1,10 +1,13 @@
-/** 协议签约模块标识（详情 5 块：基础/人口表单 + 房屋/补偿/奖励表格） */
-export type AgreementModuleKey =
+/** 内置详情模块 */
+export type BuiltinAgreeModuleKey =
   | 'basic'
   | 'houses'
   | 'compensation'
   | 'rewards'
   | 'population';
+
+/** 协议详情模块标识（含配置台新建的 custom_form_* / custom_table_*） */
+export type AgreementModuleKey = BuiltinAgreeModuleKey | (string & {});
 
 /** 列表行 */
 export interface AgreementListItem {
@@ -182,4 +185,8 @@ export interface AgreementDetail {
   rewardItems: RewardRow[];
   /** 协议人口表单 */
   population: PopulationInfo;
+  /** 配置台新建的自定义表单：模块 key → 字段值 */
+  extraForms?: Record<string, Record<string, unknown>>;
+  /** 配置台新建的自定义表格：模块 key → 行数组 */
+  extraTables?: Record<string, Record<string, unknown>[]>;
 }

@@ -33,6 +33,11 @@ export interface ModuleLayoutEditRow {
   enabled: boolean;
   order: number;
   span: number;
+  /** 表单 / 表格 */
+  widgetKind?: 'form' | 'table';
+  /** 配置台新建 */
+  custom?: boolean;
+  desc?: string;
 }
 
 const model = defineModel<ModuleLayoutEditRow[]>({ required: true });

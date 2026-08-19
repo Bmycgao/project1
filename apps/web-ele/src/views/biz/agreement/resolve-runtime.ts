@@ -16,16 +16,22 @@ import {
 } from './field-access';
 import {
   buildAgreeModuleMounts,
+  inferCustomWidgetKind,
+  isCustomAgreeModule,
   type AgreeModuleMount,
 } from './module-access';
 import {
   buildDefaultBasicModuleInner,
   buildDefaultCompensationModuleInner,
+  buildDefaultCustomFormInner,
+  buildDefaultCustomTableInner,
   buildDefaultHousesModuleInner,
   buildDefaultPopulationModuleInner,
   buildDefaultRewardsModuleInner,
   normalizeBasicModuleInner,
   normalizeCompensationModuleInner,
+  normalizeCustomFormInner,
+  normalizeCustomTableInner,
   normalizeHousesModuleInner,
   normalizePopulationModuleInner,
   normalizeRewardsModuleInner,
@@ -231,6 +237,7 @@ export async function loadAgreeDetailPageConfig(opts: {
   compensationInner: ModuleInnerConfig;
   rewardsInner: ModuleInnerConfig;
   populationInner: ModuleInnerConfig;
+  customInners: Record<string, ModuleInnerConfig>;
 }> {
   const empty = {
     modules: buildAgreeModuleMounts(),
@@ -239,6 +246,7 @@ export async function loadAgreeDetailPageConfig(opts: {
     compensationInner: buildDefaultCompensationModuleInner(),
     rewardsInner: buildDefaultRewardsModuleInner(),
     populationInner: buildDefaultPopulationModuleInner(),
+    customInners: {} as Record<string, ModuleInnerConfig>,
   };
   const schemaId =
     String(opts.schemaId || '').trim() ||
@@ -252,10 +260,43 @@ export async function loadAgreeDetailPageConfig(opts: {
     const inner = schema?.moduleInner as
       | Record<string, ModuleInnerConfig>
       | undefined;
+    const modules = (schema?.modules?.length
+      ? schema.modules
+      : buildAgreeModuleMounts()) as AgreeModuleMount[];
+    const customInners: Record<string, ModuleInnerConfig> = {};
+    const skip = new Set([
+      'basic',
+      'houses',
+      'compensation',
+      'rewards',
+      'population',
+      'rightHolders',
+      'signing',
+      'material',
+      'signMaterial',
+      'certifyMaterial',
+    ]);
+    for (const [key, block] of Object.entries(inner || {})) {
+      if (skip.has(key) || !block) continue;
+      const mount = modules.find((m) => m.key === key);
+      const kind =
+        mount?.widgetKind || inferCustomWidgetKind(key);
+      const label = mount?.label || '自定义组件';
+      customInners[key] =
+        kind === 'table'
+          ? normalizeCustomTableInner(block, label)
+          : normalizeCustomFormInner(block, label);
+    }
+    for (const mount of modules) {
+      if (!isCustomAgreeModule(String(mount.key))) continue;
+      if (customInners[mount.key]) continue;
+      customInners[mount.key] =
+        mount.widgetKind === 'table'
+          ? buildDefaultCustomTableInner(mount.label || '自定义表格')
+          : buildDefaultCustomFormInner(mount.label || '自定义表单');
+    }
     return {
-      modules: (schema?.modules?.length
-        ? schema.modules
-        : buildAgreeModuleMounts()) as AgreeModuleMount[],
+      modules,
       basicInner: normalizeBasicModuleInner(inner?.basic),
       housesInner: normalizeHousesModuleInner(
         inner?.houses,
@@ -268,21 +309,9 @@ export async function loadAgreeDetailPageConfig(opts: {
       populationInner: normalizePopulationModuleInner(
         inner?.population,
       ),
+      customInners,
     };
   } catch {
     return empty;
   }
-}
-
-/**
- * 按 schemaId / scene 加载详情模块挂载配置
- * @param opts schemaId 优先；否则按 scene 反查
- * @deprecated 请优先用 loadAgreeDetailPageConfig
- */
-export async function loadAgreeDetailModules(opts: {
-  schemaId?: string;
-  scene?: string;
-}): Promise<AgreeModuleMount[]> {
-  const cfg = await loadAgreeDetailPageConfig(opts);
-  return cfg.modules;
 }

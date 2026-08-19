@@ -27,6 +27,7 @@ import {
   ElButton,
   ElInput,
   ElInputNumber,
+  ElMessage,
   ElOption,
   ElSelect,
   ElSwitch,
@@ -35,12 +36,19 @@ import {
 
 import {
   AGREE_DETAIL_MODULES,
+  createCustomAgreeModule,
+  inferCustomWidgetKind,
+  isCustomAgreeModule,
+  metaFromMount,
   type AgreeModuleMeta,
+  type AgreeModuleWidgetKind,
 } from '../../../biz/agreement/module-access';
 import {
   FORM_CONTROL_OPTIONS,
   FORM_SPAN_OPTIONS,
   TABLE_CELL_OPTIONS,
+  buildDefaultCustomFormInner,
+  buildDefaultCustomTableInner,
   isCustomBasicSection,
   normalizeFieldSpan,
   resolveEnabledFields,
@@ -67,6 +75,14 @@ const rewardsInner = defineModel<ModuleInnerConfig>('rewardsInner', {
 const populationInner = defineModel<ModuleInnerConfig>('populationInner', {
   required: true,
 });
+/** 自定义业务组件内部配置：key → 子块字段 */
+const customInners = defineModel<Record<string, ModuleInnerConfig>>(
+  'customInners',
+  { default: () => ({}) },
+);
+
+const newComponentName = ref('');
+const newComponentKind = ref<AgreeModuleWidgetKind>('form');
 
 const selectedKey = ref<AgreementModuleKey>('basic');
 /** 当前点中的子块（表格多表时用） */
@@ -78,7 +94,24 @@ const canvasPageRef = ref<HTMLElement | null>(null);
 let tabSortable: { destroy: () => void } | null = null;
 const formSortables: { destroy: () => void }[] = [];
 
-const palette = AGREE_DETAIL_MODULES;
+const palette = computed<AgreeModuleMeta[]>(() => {
+  const customs = layouts.value
+    .filter((r) => r.custom || isCustomAgreeModule(String(r.key)))
+    .map((r) =>
+      metaFromMount({
+        key: r.key,
+        enabled: r.enabled,
+        order: r.order,
+        span: r.span,
+        label: r.label,
+        desc: r.desc,
+        widgetKind: r.widgetKind,
+        custom: true,
+        authCode: r.authCode,
+      }),
+    );
+  return [...AGREE_DETAIL_MODULES, ...customs];
+});
 
 const mounted = computed(() =>
   [...layouts.value]
@@ -88,10 +121,6 @@ const mounted = computed(() =>
 
 const basicOnCanvas = computed(() =>
   mounted.value.find((r) => r.key === 'basic'),
-);
-
-const tabMounted = computed(() =>
-  mounted.value.filter((r) => r.key !== 'basic'),
 );
 
 watch(
@@ -107,7 +136,7 @@ watch(
 );
 
 function metaOf(key: string): AgreeModuleMeta | undefined {
-  return palette.find((m) => m.key === key);
+  return palette.value.find((m) => m.key === key);
 }
 
 function isMounted(key: AgreementModuleKey) {
@@ -115,6 +144,8 @@ function isMounted(key: AgreementModuleKey) {
 }
 
 function isTableWidget(key: AgreementModuleKey) {
+  const row = layouts.value.find((r) => r.key === key);
+  if (row?.widgetKind) return row.widgetKind === 'table';
   return metaOf(key)?.widgetKind === 'table';
 }
 
@@ -162,6 +193,61 @@ function removeFromCanvas(key: AgreementModuleKey) {
 }
 
 /**
+ * 新建业务组件并挂上画布
+ */
+function createCustomComponent() {
+  const label = newComponentName.value.trim();
+  if (!label) {
+    ElMessage.warning('请填写组件名称');
+    return;
+  }
+  const maxOrder = Math.max(0, ...layouts.value.map((r) => r.order || 0));
+  const mount = createCustomAgreeModule({
+    label,
+    widgetKind: newComponentKind.value,
+    order: maxOrder + 10,
+  });
+  layouts.value = [
+    ...layouts.value,
+    {
+      key: mount.key,
+      label: mount.label || label,
+      authCode: mount.authCode || 'Agree:Module:custom',
+      enabled: true,
+      order: mount.order ?? maxOrder + 10,
+      span: 24,
+      widgetKind: mount.widgetKind,
+      custom: true,
+      desc: mount.desc,
+    },
+  ];
+  customInners.value = {
+    ...customInners.value,
+    [mount.key]:
+      mount.widgetKind === 'table'
+        ? buildDefaultCustomTableInner(label)
+        : buildDefaultCustomFormInner(label),
+  };
+  newComponentName.value = '';
+  selectBlock(mount.key);
+  ElMessage.success(`已创建「${label}」，画布胶囊可横向滑动`);
+}
+
+/**
+ * 彻底删除自定义业务组件
+ * @param key 模块
+ */
+function deleteCustomComponent(key: AgreementModuleKey) {
+  layouts.value = layouts.value.filter((r) => r.key !== key);
+  const next = { ...customInners.value };
+  delete next[key];
+  customInners.value = next;
+  if (selectedKey.value === key) {
+    selectedKey.value = layouts.value.find((r) => r.enabled)?.key || 'basic';
+  }
+}
+
+/**
  * 选中整块（清空字段点选）
  * @param key 模块
  */
@@ -192,7 +278,15 @@ function innerOf(key: AgreementModuleKey): ModuleInnerConfig {
   if (key === 'houses') return housesInner.value;
   if (key === 'compensation') return compensationInner.value;
   if (key === 'rewards') return rewardsInner.value;
-  return populationInner.value;
+  if (key === 'population') return populationInner.value;
+  const row = layouts.value.find((r) => r.key === key);
+  const kind =
+    row?.widgetKind || inferCustomWidgetKind(String(key));
+  const existing = customInners.value[key];
+  if (existing) return existing;
+  return kind === 'table'
+    ? buildDefaultCustomTableInner(row?.label || '自定义表格')
+    : buildDefaultCustomFormInner(row?.label || '自定义表单');
 }
 
 function previewSections(key: AgreementModuleKey) {
@@ -237,7 +331,10 @@ function assignInner(key: AgreementModuleKey, next: ModuleInnerConfig) {
   else if (key === 'houses') housesInner.value = cloned;
   else if (key === 'compensation') compensationInner.value = cloned;
   else if (key === 'rewards') rewardsInner.value = cloned;
-  else populationInner.value = cloned;
+  else if (key === 'population') populationInner.value = cloned;
+  else {
+    customInners.value = { ...customInners.value, [key]: cloned };
+  }
 }
 
 /**
@@ -564,9 +661,8 @@ function syncTabOrderFromDom() {
   const keys = [...el.children]
     .map((n) => (n as HTMLElement).dataset.key)
     .filter(Boolean) as AgreementModuleKey[];
-  const orderByKey = new Map(keys.map((k, i) => [k, (i + 2) * 10]));
+  const orderByKey = new Map(keys.map((k, i) => [k, (i + 1) * 10]));
   layouts.value = layouts.value.map((row) => {
-    if (row.key === 'basic') return { ...row, order: 10 };
     const next = orderByKey.get(row.key);
     return next === undefined ? row : { ...row, order: next };
   });
@@ -590,7 +686,7 @@ async function initTabSortable() {
   tabSortable = Sortable.create(el, {
     animation: 180,
     handle: '.tab-drag',
-    draggable: '.canvas-tab',
+    draggable: '.canvas-pill',
     onEnd() {
       syncTabOrderFromDom();
     },
@@ -610,7 +706,7 @@ onBeforeUnmount(() => {
 });
 
 watch(
-  () => tabMounted.value.map((r) => r.key).join(','),
+  () => mounted.value.map((r) => r.key).join(','),
   () => {
     void nextTick().then(() => initTabSortable());
   },
@@ -635,7 +731,7 @@ watch(
   <div class="detail-designer">
     <aside class="designer-pane designer-palette">
       <div class="pane-title">业务组件</div>
-      <p class="pane-hint">表单可增删字段、拖顺序/占宽；表格配列。点放到画布，再在中间点字段/列。</p>
+      <p class="pane-hint">表单可增删字段、拖顺序/占宽；表格配列。点放到画布；模块多时顶栏胶囊横滑。</p>
       <button
         v-for="item in palette"
         :key="item.key"
@@ -655,11 +751,32 @@ watch(
         </div>
         <div class="mt-0.5 text-[11px] text-gray-400">{{ item.desc }}</div>
       </button>
+      <div class="palette-create">
+        <div class="mb-1 text-xs font-medium text-gray-600">新建业务组件</div>
+        <ElInput
+          v-model="newComponentName"
+          size="small"
+          class="mb-1.5"
+          placeholder="名称，如评估信息"
+        />
+        <ElSelect v-model="newComponentKind" size="small" class="mb-1.5 w-full">
+          <ElOption label="空白表单" value="form" />
+          <ElOption label="空白表格" value="table" />
+        </ElSelect>
+        <ElButton
+          type="primary"
+          size="small"
+          class="w-full"
+          @click="createCustomComponent"
+        >
+          创建并放到画布
+        </ElButton>
+      </div>
     </aside>
 
     <div class="designer-pane designer-canvas">
       <div class="pane-title">详情画布</div>
-      <p class="pane-hint">拖格子改顺序，拖右边改占宽；可新增/删除字段。Tab 可拖排序。</p>
+      <p class="pane-hint">胶囊可拖排序，多了横向滑动不换行。点胶囊编辑该块。</p>
 
       <div ref="canvasPageRef" class="canvas-page">
         <div class="canvas-header">
@@ -671,8 +788,28 @@ watch(
           <div v-for="n in 4" :key="n" class="summary-mini">指标 {{ n }}</div>
         </div>
 
+        <nav
+          v-if="mounted.length"
+          ref="tabListRef"
+          class="canvas-pills"
+          aria-label="画布模块胶囊"
+        >
+          <button
+            v-for="row in mounted"
+            :key="row.key"
+            type="button"
+            class="canvas-pill"
+            :class="{ 'is-selected': selectedKey === row.key }"
+            :data-key="row.key"
+            @click="selectBlock(row.key)"
+          >
+            <GripVertical class="tab-drag size-3.5 text-gray-400" />
+            <span>{{ metaOf(row.key)?.label || row.label }}</span>
+          </button>
+        </nav>
+
         <div
-          v-if="basicOnCanvas"
+          v-if="basicOnCanvas && selectedKey === 'basic'"
           class="canvas-block"
           :class="{ 'is-selected': selectedKey === 'basic' && !selectedFieldKey }"
           @click.stop="selectBlock('basic')"
@@ -746,23 +883,13 @@ watch(
           </div>
         </div>
 
-        <div v-if="tabMounted.length" class="canvas-tabs-wrap">
-          <div ref="tabListRef" class="canvas-tabs">
-            <button
-              v-for="row in tabMounted"
-              :key="row.key"
-              type="button"
-              class="canvas-tab"
-              :class="{ 'is-selected': selectedKey === row.key }"
-              :data-key="row.key"
-              @click="selectBlock(row.key)"
-            >
-              <GripVertical class="tab-drag size-3.5 text-gray-400" />
-              {{ metaOf(row.key)?.label }}
-            </button>
-          </div>
-
-          <template v-if="selectedKey !== 'basic' && isMounted(selectedKey)">
+        <div
+          v-if="selectedKey !== 'basic' && isMounted(selectedKey)"
+          class="canvas-tabs-wrap"
+        >
+            <div class="canvas-block__head">
+              {{ metaOf(selectedKey)?.label || selectedKey }}
+            </div>
             <!-- 表单栅格：每子块一格，可拖顺序/占宽 -->
             <div v-if="!isTableWidget(selectedKey)">
               <template
@@ -839,7 +966,6 @@ watch(
                 <div class="table-row-ghost">示例行 · 点「新增列」可插列</div>
               </div>
             </div>
-          </template>
         </div>
 
         <div
@@ -864,6 +990,15 @@ watch(
           @click="removeFromCanvas(selectedKey)"
         >
           卸下画布
+        </ElButton>
+        <ElButton
+          v-if="isCustomAgreeModule(String(selectedKey))"
+          link
+          type="danger"
+          size="small"
+          @click="deleteCustomComponent(selectedKey)"
+        >
+          删除组件
         </ElButton>
       </div>
       <p class="pane-hint">
@@ -1149,6 +1284,54 @@ watch(
   background: #eff6ff;
   border-color: #93c5fd;
   border-style: solid;
+}
+
+.palette-create {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  margin-top: auto;
+  padding-top: 10px;
+  background: #fff;
+  border-top: 1px dashed #e5e7eb;
+}
+
+.canvas-pills {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  padding: 6px;
+  margin-bottom: 8px;
+  overflow-x: auto;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  scrollbar-width: thin;
+}
+
+.canvas-pill {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 4px;
+  align-items: center;
+  padding: 6px 12px;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+}
+
+.canvas-pill:hover {
+  background: #f8fafc;
+}
+
+.canvas-pill.is-selected {
+  font-weight: 600;
+  color: #1d4ed8;
+  background: #eff6ff;
+  border-color: rgb(37 99 235 / 18%);
 }
 
 .canvas-page {

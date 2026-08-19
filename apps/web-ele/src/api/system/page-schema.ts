@@ -79,10 +79,13 @@ export namespace PageSchemaApi {
     modules?: {
       key: string;
       enabled: boolean;
-      /** 显示顺序，越小越靠前 */
       order?: number;
-      /** 栅格占比 8/12/16/24 */
       span?: number;
+      label?: string;
+      desc?: string;
+      widgetKind?: 'form' | 'table';
+      custom?: boolean;
+      authCode?: string;
     }[];
     /**
      * 模块内部字段/子块配置（场景级）
@@ -100,6 +103,8 @@ export namespace PageSchemaApi {
       material?: ModuleInnerBlock;
       signMaterial?: ModuleInnerBlock;
       certifyMaterial?: ModuleInnerBlock;
+      /** 配置台新建的业务组件 */
+      [key: string]: ModuleInnerBlock | undefined;
     };
   }
 

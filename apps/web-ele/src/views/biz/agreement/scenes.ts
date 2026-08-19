@@ -2,13 +2,6 @@
  * 协议列表：共用列模板 + 多场景（按钮码 / 数据过滤不同，同一 list 接口）
  * 按钮只存动作码，文案与样式由 actions 注册表解析
  */
-import {
-  resolveToolbarButtons,
-  type AgreeToolbarButton,
-} from './actions';
-
-export type { AgreeToolbarButton };
-
 /** 场景配置 */
 export interface AgreeSceneConfig {
   /** 场景码，请求 list 时带上 */

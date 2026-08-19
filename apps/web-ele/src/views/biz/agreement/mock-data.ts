@@ -249,5 +249,7 @@ export function buildAgreementDetail(
       hukouAddress: row.houseAddress || '翠园街十八巷7号202',
       remark: '',
     },
+    extraForms: {},
+    extraTables: {},
   };
 }

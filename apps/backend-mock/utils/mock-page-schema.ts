@@ -98,10 +98,13 @@ export interface PageSchema {
   modules?: {
     key: string;
     enabled: boolean;
-    /** 显示顺序，越小越靠前 */
     order?: number;
-    /** 栅格占比 8/12/16/24 */
     span?: number;
+    label?: string;
+    desc?: string;
+    widgetKind?: 'form' | 'table';
+    custom?: boolean;
+    authCode?: string;
   }[];
   /**
    * 模块内部配置（场景）：5 块 basic / houses / compensation / rewards / population
@@ -117,6 +120,7 @@ export interface PageSchema {
     material?: ModuleInnerSchema;
     signMaterial?: ModuleInnerSchema;
     certifyMaterial?: ModuleInnerSchema;
+    [key: string]: ModuleInnerSchema | undefined;
   };
 }
 
@@ -1008,10 +1012,24 @@ function migrateAgreeFiveModules() {
     const byKey = new Map(mods.map((m) => [m.key, m]));
     const rh = byKey.get('rightHolders');
     const comp = byKey.get('compensation');
+    const dropLegacy = new Set([
+      'basic',
+      'houses',
+      'compensation',
+      'rewards',
+      'population',
+      'rightHolders',
+      'signMaterial',
+      'certifyMaterial',
+      'signing',
+      'material',
+      'contact',
+    ]);
     const nextMods = five.map((key, i) => {
       const existing = byKey.get(key);
       if (existing) {
         return {
+          ...existing,
           key,
           enabled: existing.enabled !== false,
           order: typeof existing.order === 'number' ? existing.order : (i + 1) * 10,
@@ -1039,6 +1057,9 @@ function migrateAgreeFiveModules() {
         ? structuredClone(seedItem)
         : { key, enabled: false, order: (i + 1) * 10, span: 24 };
     });
+    /** 配置台新建的业务组件不能被 5 块迁移冲掉 */
+    const extraMods = mods.filter((m) => !dropLegacy.has(String(m.key)));
+    nextMods.push(...extraMods);
     const nextInner = {
       ...(current.moduleInner || {}),
     } as NonNullable<PageSchema['moduleInner']>;

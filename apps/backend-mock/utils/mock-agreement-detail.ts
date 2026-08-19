@@ -188,6 +188,8 @@ export function createDefaultAgreementDetail(
       hukouAddress: address,
       remark: '',
     },
+    extraForms: {},
+    extraTables: {},
   };
 }
 
@@ -222,6 +224,12 @@ export function getOrCreateAgreementDetail(
     if (!node.population) {
       node.population = fresh.population;
     }
+    if (!node.extraForms || typeof node.extraForms !== 'object') {
+      node.extraForms = {};
+    }
+    if (!node.extraTables || typeof node.extraTables !== 'object') {
+      node.extraTables = {};
+    }
   }
   return structuredClone(node);
 }
@@ -252,6 +260,8 @@ export function saveAgreementDetailAll(payload: Partial<AgreementDetail>) {
     compensationItems: payload.compensationItems ?? current.compensationItems,
     rewardItems: payload.rewardItems ?? current.rewardItems,
     population: payload.population ?? current.population,
+    extraForms: payload.extraForms ?? current.extraForms ?? {},
+    extraTables: payload.extraTables ?? current.extraTables ?? {},
   };
   detailCache.set(agreementNo, next);
   // 详情保存时同步列表展示字段
@@ -295,6 +305,15 @@ export function saveAgreementDetailModule(
     current.rewardItems = data.rewardItems ?? current.rewardItems;
   } else if (module === 'population') {
     current.population = data.population ?? current.population;
+  } else if (data?.extraForms || data?.extraTables) {
+    current.extraForms = {
+      ...(current.extraForms || {}),
+      ...(data.extraForms || {}),
+    };
+    current.extraTables = {
+      ...(current.extraTables || {}),
+      ...(data.extraTables || {}),
+    };
   } else {
     throw new Error(`未知模块：${module}`);
   }

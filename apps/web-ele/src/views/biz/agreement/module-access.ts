@@ -32,6 +32,16 @@ export interface AgreeModuleMount {
    * 栅格占比（24 栅格）：24 整行 / 16 约 2/3 / 12 半宽 / 8 约 1/3
    */
   span?: number;
+  /** 自定义组件显示名 */
+  label?: string;
+  /** 自定义组件说明 */
+  desc?: string;
+  /** 表单 / 表格；自定义组件必填 */
+  widgetKind?: AgreeModuleWidgetKind;
+  /** 配置台新建的业务组件 */
+  custom?: boolean;
+  /** 可见权限码 */
+  authCode?: string;
 }
 
 /** 详情实际渲染项 = 元数据 + 布局 */
@@ -87,6 +97,84 @@ export const AGREE_DETAIL_MODULES: AgreeModuleMeta[] = [
   },
 ];
 
+/** 内置模块 key */
+export const BUILTIN_AGREE_MODULE_KEYS = AGREE_DETAIL_MODULES.map((m) => m.key);
+
+/**
+ * 是否内置详情模块
+ * @param key 模块 key
+ */
+export function isBuiltinAgreeModule(key: string) {
+  return AGREE_DETAIL_MODULES.some((m) => m.key === key);
+}
+
+/**
+ * 是否配置台新建的业务组件
+ * @param key 模块 key
+ */
+export function isCustomAgreeModule(key: string) {
+  return String(key).startsWith('custom_');
+}
+
+/**
+ * 从 key 推断自定义组件形态
+ * @param key 模块 key
+ */
+export function inferCustomWidgetKind(key: string): AgreeModuleWidgetKind {
+  return String(key).includes('_table_') ? 'table' : 'form';
+}
+
+/**
+ * 创建一条自定义业务组件挂载
+ * @param opts.label 显示名
+ * @param opts.widgetKind 表单或表格
+ * @param opts.order 排序
+ */
+export function createCustomAgreeModule(opts: {
+  label: string;
+  widgetKind: AgreeModuleWidgetKind;
+  order: number;
+}): AgreeModuleMount {
+  const widgetKind = opts.widgetKind;
+  const key = `custom_${widgetKind}_${Date.now()}`;
+  const label =
+    opts.label.trim() || (widgetKind === 'table' ? '新建表格' : '新建表单');
+  return {
+    key,
+    enabled: true,
+    order: opts.order,
+    span: 24,
+    label,
+    desc:
+      widgetKind === 'table'
+        ? '自定义表格，可增删列与行'
+        : '自定义表单，可增删字段',
+    widgetKind,
+    custom: true,
+    authCode: 'Agree:Module:custom',
+  };
+}
+
+/**
+ * 挂载项 → 展示用元数据（内置查目录，自定义用挂载上的 label）
+ * @param mount 挂载
+ */
+export function metaFromMount(mount: AgreeModuleMount): AgreeModuleMeta {
+  const builtin = AGREE_DETAIL_MODULES.find((m) => m.key === mount.key);
+  if (builtin) return builtin;
+  const widgetKind =
+    mount.widgetKind || inferCustomWidgetKind(String(mount.key));
+  return {
+    key: mount.key,
+    label: mount.label || '自定义组件',
+    desc:
+      mount.desc ||
+      (widgetKind === 'table' ? '自定义表格' : '自定义表单'),
+    authCode: mount.authCode || 'Agree:Module:custom',
+    widgetKind,
+  };
+}
+
 /**
  * 规范化 span 到允许档位
  * @param span 原始值
@@ -131,7 +219,7 @@ export function normalizeAgreeModuleMounts(
   const basicRaw = byKey.get('basic');
   const inheritFromBasic = !!basicRaw && basicRaw.enabled !== false;
   const compRaw = byKey.get('compensation');
-  return AGREE_DETAIL_MODULES.map((meta, index) => {
+  const builtins = AGREE_DETAIL_MODULES.map((meta, index) => {
     let raw = byKey.get(meta.key);
     /** 旧「权利人」挂载项 → 协议人口 */
     if (!raw && meta.key === 'population') {
@@ -161,8 +249,40 @@ export function normalizeAgreeModuleMounts(
                     : 4)
             : (index + 1) * 10,
       span: normalizeModuleSpan(raw?.span),
+      widgetKind: meta.widgetKind,
+      label: meta.label,
+      desc: meta.desc,
+      authCode: meta.authCode,
+      custom: false,
     };
   });
+  const customMounts = modules
+    .filter(
+      (item) =>
+        !isBuiltinAgreeModule(String(item.key)) &&
+        String(item.key) !== 'rightHolders',
+    )
+    .map((item, index) => {
+      const widgetKind =
+        item.widgetKind || inferCustomWidgetKind(String(item.key));
+      return {
+        key: item.key,
+        enabled: item.enabled !== false,
+        order:
+          typeof item.order === 'number' && Number.isFinite(item.order)
+            ? item.order
+            : 500 + (index + 1) * 10,
+        span: normalizeModuleSpan(item.span),
+        label: item.label || '自定义组件',
+        desc:
+          item.desc ||
+          (widgetKind === 'table' ? '自定义表格' : '自定义表单'),
+        widgetKind,
+        custom: true,
+        authCode: item.authCode || 'Agree:Module:custom',
+      };
+    });
+  return [...builtins, ...customMounts];
 }
 
 /**
@@ -190,10 +310,14 @@ export function isAgreeModuleVisible(
   key: AgreementModuleKey,
   accessCodes: string[] | undefined,
 ) {
-  const meta = AGREE_DETAIL_MODULES.find((m) => m.key === key);
-  if (!meta) return false;
   const set = new Set(accessCodes || []);
   if (set.has('Agree:*') || set.has('Agree:Module:*')) return true;
+  if (isCustomAgreeModule(String(key))) {
+    if (set.has('Agree:Module:custom')) return true;
+    return [...set].some((c) => String(c).startsWith('Agree:Module:'));
+  }
+  const meta = AGREE_DETAIL_MODULES.find((m) => m.key === key);
+  if (!meta) return false;
   const need = [meta.authCode];
   if (key === 'population') {
     need.push('Agree:Module:rightHolders');
@@ -235,8 +359,7 @@ export function resolveAgreeModulesForPage(
   for (const mount of normalized) {
     if (!enabledKeys.has(mount.key)) continue;
     if (!isAgreeModuleVisible(mount.key, accessCodes)) continue;
-    const meta = AGREE_DETAIL_MODULES.find((m) => m.key === mount.key);
-    if (!meta) continue;
+    const meta = metaFromMount(mount);
     result.push({
       ...meta,
       order: mount.order ?? 0,
@@ -253,6 +376,6 @@ export function resolveAgreeModulesForPage(
 export function getAgreeModuleAuthCode(key: AgreementModuleKey) {
   return (
     AGREE_DETAIL_MODULES.find((m) => m.key === key)?.authCode ||
-    `Agree:Module:${key}`
+    `Agree:Module:${isCustomAgreeModule(String(key)) ? 'custom' : key}`
   );
 }
