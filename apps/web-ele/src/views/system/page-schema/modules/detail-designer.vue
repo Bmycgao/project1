@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 /**
- * 协议详情设计器：左业务组件 / 中 WYSIWYG 画布 / 右「点选」属性
- * 表单可增删字段、拖顺序/占宽；表格配列宽/单元格/增删行
+ * 协议详情设计器：先组装模块（挂载/排序），再点进某一块编表单或表格
+ * 存储仍是场景 modules + moduleInner，不拆方案库
  */
 import type { AgreementModuleKey } from '../../../biz/agreement/types';
 import type {
@@ -83,6 +83,8 @@ const customInners = defineModel<Record<string, ModuleInnerConfig>>(
 
 const newComponentName = ref('');
 const newComponentKind = ref<AgreeModuleWidgetKind>('form');
+/** 组装：只挂模块；编辑：只编当前块的字段/列 */
+const designerStep = ref<'assemble' | 'edit'>('assemble');
 
 const selectedKey = ref<AgreementModuleKey>('basic');
 /** 当前点中的子块（表格多表时用） */
@@ -190,6 +192,56 @@ function removeFromCanvas(key: AgreementModuleKey) {
   layouts.value = layouts.value.map((row) =>
     row.key === key ? { ...row, enabled: false } : row,
   );
+  if (designerStep.value === 'edit' && selectedKey.value === key) {
+    backToAssemble();
+  }
+}
+
+/**
+ * 左侧组件：未挂则挂上；已挂则选中（组装步不进入字段编辑）
+ * @param key 模块
+ */
+function onPaletteClick(key: AgreementModuleKey) {
+  if (!isMounted(key)) {
+    addToCanvas(key);
+    return;
+  }
+  selectBlock(key);
+}
+
+/**
+ * 进入某一块的表单或表格编辑
+ * @param key 模块
+ */
+function enterEdit(key: AgreementModuleKey) {
+  if (!isMounted(key)) addToCanvas(key);
+  selectBlock(key);
+  designerStep.value = 'edit';
+}
+
+/** 回到详情组装（只拖模块，不改字段） */
+function backToAssemble() {
+  designerStep.value = 'assemble';
+  selectedFieldKey.value = '';
+}
+
+/**
+ * 已挂模块的形态文案
+ * @param key 模块
+ */
+function widgetLabelOf(key: AgreementModuleKey) {
+  return isTableWidget(key) ? '表格' : '表单';
+}
+
+/**
+ * 画布卡片上展示的字段/列数量
+ * @param key 模块
+ */
+function fieldCountOf(key: AgreementModuleKey) {
+  return previewSections(key).reduce(
+    (n, sec) => n + previewFields(sec).length,
+    0,
+  );
 }
 
 /**
@@ -230,7 +282,8 @@ function createCustomComponent() {
   };
   newComponentName.value = '';
   selectBlock(mount.key);
-  ElMessage.success(`已创建「${label}」，画布胶囊可横向滑动`);
+  designerStep.value = 'assemble';
+  ElMessage.success(`已创建「${label}」，点卡片上的「编辑」进入${widgetLabelOf(mount.key)}`);
 }
 
 /**
@@ -244,6 +297,7 @@ function deleteCustomComponent(key: AgreementModuleKey) {
   customInners.value = next;
   if (selectedKey.value === key) {
     selectedKey.value = layouts.value.find((r) => r.enabled)?.key || 'basic';
+    backToAssemble();
   }
 }
 
@@ -375,6 +429,7 @@ function syncFieldOrderFromGrid(el: HTMLElement) {
 async function initFormSortable() {
   formSortables.forEach((s) => s.destroy());
   formSortables.length = 0;
+  if (designerStep.value !== 'edit') return;
   const root = canvasPageRef.value;
   if (!root) return;
   const Sortable = await loadSortable();
@@ -715,6 +770,7 @@ watch(
 watch(
   () =>
     [
+      designerStep.value,
       selectedKey.value,
       mounted.value.map((r) => r.key).join(','),
       selectedInner.value.sections
@@ -722,7 +778,10 @@ watch(
         .join(','),
     ].join('|'),
   () => {
-    void nextTick().then(() => initFormSortable());
+    void nextTick().then(() => {
+      void initTabSortable();
+      void initFormSortable();
+    });
   },
 );
 </script>
@@ -731,14 +790,16 @@ watch(
   <div class="detail-designer">
     <aside class="designer-pane designer-palette">
       <div class="pane-title">业务组件</div>
-      <p class="pane-hint">表单可增删字段、拖顺序/占宽；表格配列。点放到画布；模块多时顶栏胶囊横滑。</p>
+      <p class="pane-hint">
+        点组件挂到本场景；已挂的点「编辑」才改字段或列。本场景一份拷贝，改这里不影响其他场景。
+      </p>
       <button
         v-for="item in palette"
         :key="item.key"
         type="button"
         class="palette-item"
         :class="{ 'is-on': isMounted(item.key) }"
-        @click="isMounted(item.key) ? selectBlock(item.key) : addToCanvas(item.key)"
+        @click="onPaletteClick(item.key)"
       >
         <div class="flex items-center justify-between gap-1">
           <span class="font-medium">{{ item.label }}</span>
@@ -769,27 +830,56 @@ watch(
           class="w-full"
           @click="createCustomComponent"
         >
-          创建并放到画布
+          创建并挂到场景
         </ElButton>
       </div>
     </aside>
 
     <div class="designer-pane designer-canvas">
-      <div class="pane-title">详情画布</div>
-      <p class="pane-hint">胶囊可拖排序，多了横向滑动不换行。点胶囊编辑该块。</p>
+      <div class="flex items-start justify-between gap-2">
+        <div>
+          <div class="pane-title">
+            {{
+              designerStep === 'assemble'
+                ? '详情组装'
+                : isTableWidget(selectedKey)
+                  ? '表格设计'
+                  : '表单设计'
+            }}
+          </div>
+          <p class="pane-hint">
+            {{
+              designerStep === 'assemble'
+                ? '拖胶囊改模块顺序；点卡片「编辑」进入该块。此处不改字段。'
+                : isTableWidget(selectedKey)
+                  ? '拖列表头改顺序，右侧改列宽/单元格。'
+                  : '拖格子改字段顺序和占宽，右侧改显示名/控件。'
+            }}
+          </p>
+        </div>
+        <ElButton
+          v-if="designerStep === 'edit'"
+          size="small"
+          @click="backToAssemble"
+        >
+          返回组装
+        </ElButton>
+      </div>
 
       <div ref="canvasPageRef" class="canvas-page">
         <div class="canvas-header">
           <span class="text-xs font-semibold">XY-2024-0025</span>
           <ElTag size="small" type="warning">待复核</ElTag>
-          <span class="ml-auto text-[11px] text-gray-400">预览</span>
+          <span class="ml-auto text-[11px] text-gray-400">
+            {{ designerStep === 'assemble' ? '组装预览' : '模块预览' }}
+          </span>
         </div>
-        <div class="canvas-summary">
+        <div v-if="designerStep === 'assemble'" class="canvas-summary">
           <div v-for="n in 4" :key="n" class="summary-mini">指标 {{ n }}</div>
         </div>
 
         <nav
-          v-if="mounted.length"
+          v-if="designerStep === 'assemble' && mounted.length"
           ref="tabListRef"
           class="canvas-pills"
           aria-label="画布模块胶囊"
@@ -802,12 +892,53 @@ watch(
             :class="{ 'is-selected': selectedKey === row.key }"
             :data-key="row.key"
             @click="selectBlock(row.key)"
+            @dblclick="enterEdit(row.key)"
           >
             <GripVertical class="tab-drag size-3.5 text-gray-400" />
             <span>{{ metaOf(row.key)?.label || row.label }}</span>
           </button>
         </nav>
 
+        <!-- 组装：模块卡片，不展示字段栅格 -->
+        <div v-if="designerStep === 'assemble'" class="assemble-list">
+          <div
+            v-for="row in mounted"
+            :key="row.key"
+            class="assemble-card"
+            :class="{ 'is-selected': selectedKey === row.key }"
+            @click="selectBlock(row.key)"
+          >
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-1">
+                <span class="text-xs font-semibold">
+                  {{ metaOf(row.key)?.label || row.label }}
+                </span>
+                <ElTag
+                  size="small"
+                  :type="isTableWidget(row.key) ? 'success' : 'primary'"
+                >
+                  {{ widgetLabelOf(row.key) }}
+                </ElTag>
+              </div>
+              <div class="mt-0.5 text-[11px] text-gray-400">
+                {{ fieldCountOf(row.key) }}
+                个{{ isTableWidget(row.key) ? '列' : '字段' }} · 双击胶囊也可进入
+              </div>
+            </div>
+            <ElButton size="small" type="primary" @click.stop="enterEdit(row.key)">
+              编辑{{ widgetLabelOf(row.key) }}
+            </ElButton>
+          </div>
+          <div
+            v-if="!mounted.length"
+            class="py-10 text-center text-xs text-gray-400"
+          >
+            从左侧把组件挂到本场景
+          </div>
+        </div>
+
+        <!-- 编辑：只渲染当前模块的表单或表格 -->
+        <template v-else>
         <div
           v-if="basicOnCanvas && selectedKey === 'basic'"
           class="canvas-block"
@@ -967,17 +1098,47 @@ watch(
               </div>
             </div>
         </div>
-
-        <div
-          v-if="!mounted.length"
-          class="py-10 text-center text-xs text-gray-400"
-        >
-          从左侧把组件放到画布
-        </div>
+        </template>
       </div>
     </div>
 
     <aside class="designer-pane designer-props">
+      <template v-if="designerStep === 'assemble'">
+        <div class="pane-title">模块</div>
+        <p class="pane-hint">
+          {{ metaOf(selectedKey)?.label || '未选择' }} ·
+          {{ widgetLabelOf(selectedKey) }} · 本场景独立配置
+        </p>
+        <template v-if="isMounted(selectedKey)">
+          <ElButton
+            size="small"
+            type="primary"
+            class="mb-2 w-full"
+            @click="enterEdit(selectedKey)"
+          >
+            编辑{{ widgetLabelOf(selectedKey) }}
+          </ElButton>
+          <ElButton
+            size="small"
+            class="mb-2 w-full"
+            @click="removeFromCanvas(selectedKey)"
+          >
+            卸下本场景
+          </ElButton>
+          <ElButton
+            v-if="isCustomAgreeModule(String(selectedKey))"
+            size="small"
+            type="danger"
+            plain
+            class="w-full"
+            @click="deleteCustomComponent(selectedKey)"
+          >
+            删除组件
+          </ElButton>
+        </template>
+        <div v-else class="text-xs text-gray-400">从左侧点组件挂到本场景</div>
+      </template>
+      <template v-else>
       <div class="flex items-center justify-between gap-2">
         <div class="pane-title mb-0">
           {{ isTableContext() ? '表格属性' : '表单属性' }}
@@ -989,7 +1150,7 @@ watch(
           size="small"
           @click="removeFromCanvas(selectedKey)"
         >
-          卸下画布
+          卸下
         </ElButton>
         <ElButton
           v-if="isCustomAgreeModule(String(selectedKey))"
@@ -1233,6 +1394,7 @@ watch(
         </div>
       </template>
       <div v-else class="text-xs text-gray-400">请先放到画布</div>
+      </template>
     </aside>
   </div>
 </template>
@@ -1294,6 +1456,28 @@ watch(
   padding-top: 10px;
   background: #fff;
   border-top: 1px dashed #e5e7eb;
+}
+
+.assemble-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.assemble-card {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  cursor: pointer;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.assemble-card.is-selected {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 1px #2563eb;
 }
 
 .canvas-pills {

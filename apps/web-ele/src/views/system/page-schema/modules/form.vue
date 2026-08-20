@@ -15,6 +15,8 @@ import {
   ElButton,
   ElCheckbox,
   ElCheckboxGroup,
+  ElCollapse,
+  ElCollapseItem,
   ElInput,
   ElInputNumber,
   ElMessage,
@@ -136,6 +138,8 @@ const schemaKind = ref<'entity' | 'scene' | 'template'>('entity');
 const roleOptions = ref<SystemRoleApi.SystemRole[]>([]);
 const previewRoleId = ref('R_VIEWER');
 const previewStatus = ref('待复核');
+/** 按角色验权限：默认收起，避免当成页面预览 */
+const previewCollapse = ref<string[]>([]);
 const previewLoading = ref(false);
 const previewRoleName = ref('');
 const previewResult = ref<SchemaPreviewResult | null>(null);
@@ -852,7 +856,7 @@ const [Drawer, drawerApi] = useVbenDrawer({
 
 const title = computed(() => {
   if (!formData.value?.id) return '新建页面配置';
-  return isScene.value ? '配置场景 · 详情设计器' : '配置列表字段';
+  return isScene.value ? '配置场景 · 详情组装' : '配置列表字段';
 });
 </script>
 
@@ -862,9 +866,9 @@ const title = computed(() => {
 
     <!-- 场景：数据范围 / 模块 / 列表列 / 动作 -->
     <div v-if="isScene" class="mt-4">
-      <div class="mb-2 font-medium">数据范围（状态）</div>
+      <div class="mb-2 font-medium">本岗能看的状态</div>
       <p class="mb-2 text-xs text-gray-500">
-        列表接口按场景码过滤；此处勾选的状态会写入配置，后端优先按此过滤。不勾选则未知场景看全量。
+        这是列表数据白名单，不是搜索条件。勾选后本场景列表只出现这些状态（如录入岗：告知单/待复核/草稿）。不勾选则不过滤。
       </p>
       <ElCheckboxGroup v-model="selectedStatusIn" class="mb-4">
         <div class="flex flex-wrap gap-x-4 gap-y-2">
@@ -971,9 +975,9 @@ const title = computed(() => {
         </ElTableColumn>
       </ElTable>
 
-      <div class="mb-2 font-medium">详情设计器</div>
+      <div class="mb-2 font-medium">详情组装</div>
       <p class="mb-2 text-xs text-gray-500">
-        内置 5 块可挂卸；左侧可「新建业务组件」（空白表单/表格）。模块多时画布顶栏胶囊横向滑动、不换行。
+        先挂模块、拖胶囊排序；再点「编辑表单/表格」改字段或列。每个场景一份独立拷贝，改本场景不影响其他岗。
       </p>
       <DetailDesigner
         v-model:layouts="moduleLayoutRows"
@@ -1093,49 +1097,6 @@ const title = computed(() => {
                 :value="s"
               />
             </ElSelect>
-          </template>
-        </ElTableColumn>
-      </ElTable>
-
-      <div class="mb-2 mt-2 flex items-center justify-between">
-        <div class="font-medium">查询条件（可选）</div>
-        <ElButton size="small" type="primary" @click="addQueryField">
-          添加条件
-        </ElButton>
-      </div>
-      <ElTable :data="queryFields" border size="small">
-        <ElTableColumn label="字段名" min-width="110">
-          <template #default="{ row }">
-            <ElInput v-model="row.field" size="small" />
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="标题" min-width="110">
-          <template #default="{ row }">
-            <ElInput v-model="row.title" size="small" />
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="控件" width="120">
-          <template #default="{ row }">
-            <ElSelect v-model="row.component" size="small" class="w-full">
-              <ElOption
-                v-for="opt in queryCompOptions"
-                :key="opt.value"
-                :label="opt.label"
-                :value="opt.value"
-              />
-            </ElSelect>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="操作" width="70" align="center">
-          <template #default="{ $index }">
-            <ElButton
-              link
-              type="danger"
-              size="small"
-              @click="removeQueryField($index)"
-            >
-              删
-            </ElButton>
           </template>
         </ElTableColumn>
       </ElTable>
@@ -1463,12 +1424,11 @@ const title = computed(() => {
       </ElTable>
     </div>
 
-    <!-- 可视化预览：按角色模拟列/按钮/字段效果（不落库） -->
-    <div class="mt-6 rounded-lg border border-dashed border-gray-300 p-3">
-      <div class="mb-2 font-medium">可视化预览</div>
+    <!-- 按角色验权限：列/按钮/模块是否可见（表格对照，不是页面截图） -->
+    <ElCollapse v-model="previewCollapse" class="mt-6">
+      <ElCollapseItem name="preview" title="按角色验权限（可选）">
       <p class="mb-3 text-xs text-gray-500">
-        用某角色的权限码，模拟当前草稿下列表会显示哪些列、按钮、详情模块，以及字段规则结果。场景会拉取列模板的列与
-        fieldRules；不保存即可预览。
+        用角色权限码对照当前草稿：列表哪些列、哪些按钮、详情哪些模块会显示。不是页面长什么样的预览。
       </p>
       <div class="mb-3 flex flex-wrap items-end gap-3">
         <div class="min-w-[160px]">
@@ -1629,6 +1589,7 @@ const title = computed(() => {
           <ElTableColumn prop="reason" label="说明" min-width="140" />
         </ElTable>
       </template>
-    </div>
+      </ElCollapseItem>
+    </ElCollapse>
   </Drawer>
 </template>
