@@ -1,16 +1,22 @@
 <script lang="ts" setup>
-/**
- * 协议详情设计器：先组装模块（挂载/排序），再点进某一块编表单或表格
- * 存储仍是场景 modules + moduleInner，不拆方案库
- */
-import type { AgreementModuleKey } from '../../../biz/agreement/types';
 import type {
+  AgreeModuleMeta,
+  AgreeModuleWidgetKind,
+} from '../../../biz/agreement/module-access';
+import type {
+  ModuleInnerCellType,
   ModuleInnerConfig,
   ModuleInnerControlType,
   ModuleInnerFieldItem,
   ModuleInnerSection,
 } from '../../../biz/agreement/module-inner-config';
+/**
+ * 协议详情设计器：组装模块（挂载/排序），每块选择 FormCreate 模板
+ */
+import type { AgreementModuleKey } from '../../../biz/agreement/types';
 import type { ModuleLayoutEditRow } from './module-layout-editor.vue';
+
+import type { FcBindingsMap, FcSchemaApi } from '#/api';
 
 import {
   computed,
@@ -34,27 +40,26 @@ import {
   ElTag,
 } from 'element-plus';
 
+import { getFcSchemaList } from '#/api';
+
 import {
   AGREE_DETAIL_MODULES,
   createCustomAgreeModule,
   inferCustomWidgetKind,
   isCustomAgreeModule,
   metaFromMount,
-  type AgreeModuleMeta,
-  type AgreeModuleWidgetKind,
 } from '../../../biz/agreement/module-access';
 import {
-  FORM_CONTROL_OPTIONS,
-  FORM_SPAN_OPTIONS,
-  TABLE_CELL_OPTIONS,
   buildDefaultCustomFormInner,
   buildDefaultCustomTableInner,
+  FORM_CONTROL_OPTIONS,
+  FORM_SPAN_OPTIONS,
   isCustomBasicSection,
   normalizeFieldSpan,
   resolveEnabledFields,
   resolveEnabledSections,
   snapFieldSpan,
-  type ModuleInnerCellType,
+  TABLE_CELL_OPTIONS,
 } from '../../../biz/agreement/module-inner-config';
 
 const layouts = defineModel<ModuleLayoutEditRow[]>('layouts', {
@@ -80,9 +85,15 @@ const customInners = defineModel<Record<string, ModuleInnerConfig>>(
   'customInners',
   { default: () => ({}) },
 );
+/** 各块引用的 FormCreate 模板 id */
+const fcBindings = defineModel<FcBindingsMap>('fcBindings', {
+  default: () => ({}),
+});
 
 const newComponentName = ref('');
 const newComponentKind = ref<AgreeModuleWidgetKind>('form');
+/** 模板库选项（列表页维护） */
+const fcSchemaList = ref<FcSchemaApi.FcSchema[]>([]);
 /** 组装：只挂模块；编辑：只编当前块的字段/列 */
 const designerStep = ref<'assemble' | 'edit'>('assemble');
 
@@ -93,8 +104,24 @@ const selectedSectionKey = ref('');
 const selectedFieldKey = ref('');
 const tabListRef = ref<HTMLElement | null>(null);
 const canvasPageRef = ref<HTMLElement | null>(null);
-let tabSortable: { destroy: () => void } | null = null;
+/** 表格编辑态：左侧「列控件」面板根节点 */
+const columnPaletteRef = ref<HTMLElement | null>(null);
+let tabSortable: null | { destroy: () => void } = null;
 const formSortables: { destroy: () => void }[] = [];
+/** 表头列拖拽排序 / 接收左侧克隆 */
+const tableSortables: { destroy: () => void }[] = [];
+let columnPaletteSortable: null | { destroy: () => void } = null;
+
+/** 左侧可拖入画布的列类型（对标 starfish 控件面板） */
+const columnPaletteItems = TABLE_CELL_OPTIONS.map((opt) => ({
+  ...opt,
+  tip:
+    opt.value === 'text'
+      ? '文本输入列'
+      : opt.value === 'select'
+        ? '下拉选项列'
+        : '是否开关列',
+}));
 
 const palette = computed<AgreeModuleMeta[]>(() => {
   const customs = layouts.value
@@ -116,9 +143,7 @@ const palette = computed<AgreeModuleMeta[]>(() => {
 });
 
 const mounted = computed(() =>
-  [...layouts.value]
-    .filter((r) => r.enabled)
-    .sort((a, b) => a.order - b.order),
+  [...layouts.value].filter((r) => r.enabled).sort((a, b) => a.order - b.order),
 );
 
 const basicOnCanvas = computed(() =>
@@ -128,9 +153,10 @@ const basicOnCanvas = computed(() =>
 watch(
   mounted,
   (list) => {
-    if (!list.length) return;
+    if (list.length === 0) return;
     if (!list.some((r) => r.key === selectedKey.value)) {
-      selectedKey.value = list[0]!.key;
+      const first = list[0];
+      if (first) selectedKey.value = first.key;
       selectedFieldKey.value = '';
     }
   },
@@ -210,13 +236,54 @@ function onPaletteClick(key: AgreementModuleKey) {
 }
 
 /**
- * 进入某一块的表单或表格编辑
+ * 当前模块绑定的模板 id
+ * @param key 模块 key
+ */
+function bindingOf(key: AgreementModuleKey) {
+  return fcBindings.value[key] || '';
+}
+
+/**
+ * 更新模块模板引用
+ * @param key 模块 key
+ * @param schemaId 模板 id
+ */
+function setBinding(
+  key: AgreementModuleKey,
+  schemaId: boolean | number | string,
+) {
+  fcBindings.value = {
+    ...fcBindings.value,
+    [key]: String(schemaId || '') || undefined,
+  };
+}
+
+/**
+ * 按形态过滤可选模板
+ * @param key 模块 key
+ */
+function fcSchemaOptionsFor(key: AgreementModuleKey) {
+  const kind = isTableWidget(key) ? 'table' : 'form';
+  return fcSchemaList.value.filter((s) => s.kind === kind && s.status === 1);
+}
+
+/**
+ * 当前绑定模板名称
+ * @param key 模块 key
+ */
+function boundSchemaName(key: AgreementModuleKey) {
+  const id = bindingOf(key);
+  if (!id) return '未选择';
+  return fcSchemaList.value.find((s) => s.id === id)?.name || id;
+}
+
+/**
+ * 选中模块（组装步）
  * @param key 模块
  */
 function enterEdit(key: AgreementModuleKey) {
   if (!isMounted(key)) addToCanvas(key);
   selectBlock(key);
-  designerStep.value = 'edit';
 }
 
 /** 回到详情组装（只拖模块，不改字段） */
@@ -234,14 +301,12 @@ function widgetLabelOf(key: AgreementModuleKey) {
 }
 
 /**
- * 画布卡片上展示的字段/列数量
- * @param key 模块
+ * 开关值转 boolean（ElSwitch change 可能是 string | number | boolean）
+ * @param v 开关回调值
  */
-function fieldCountOf(key: AgreementModuleKey) {
-  return previewSections(key).reduce(
-    (n, sec) => n + previewFields(sec).length,
-    0,
-  );
+function asSwitchOn(v: boolean | number | string) {
+  if (v === 'false' || v === '0') return false;
+  return v !== false && v !== 0 && v !== '';
 }
 
 /**
@@ -283,7 +348,7 @@ function createCustomComponent() {
   newComponentName.value = '';
   selectBlock(mount.key);
   designerStep.value = 'assemble';
-  ElMessage.success(`已创建「${label}」，点卡片上的「编辑」进入${widgetLabelOf(mount.key)}`);
+  ElMessage.success(`已创建「${label}」，请在右侧选择表单模板`);
 }
 
 /**
@@ -292,9 +357,12 @@ function createCustomComponent() {
  */
 function deleteCustomComponent(key: AgreementModuleKey) {
   layouts.value = layouts.value.filter((r) => r.key !== key);
-  const next = { ...customInners.value };
-  delete next[key];
-  customInners.value = next;
+  customInners.value = Object.fromEntries(
+    Object.entries(customInners.value).filter(([k]) => k !== key),
+  );
+  fcBindings.value = Object.fromEntries(
+    Object.entries(fcBindings.value).filter(([k]) => k !== key),
+  );
   if (selectedKey.value === key) {
     selectedKey.value = layouts.value.find((r) => r.enabled)?.key || 'basic';
     backToAssemble();
@@ -334,8 +402,7 @@ function innerOf(key: AgreementModuleKey): ModuleInnerConfig {
   if (key === 'rewards') return rewardsInner.value;
   if (key === 'population') return populationInner.value;
   const row = layouts.value.find((r) => r.key === key);
-  const kind =
-    row?.widgetKind || inferCustomWidgetKind(String(key));
+  const kind = row?.widgetKind || inferCustomWidgetKind(String(key));
   const existing = customInners.value[key];
   if (existing) return existing;
   return kind === 'table'
@@ -449,6 +516,117 @@ async function initFormSortable() {
 }
 
 /**
+ * 根据表头 DOM 顺序写回列 order（勾选列固定最前）
+ * @param el 表头行容器 .table-col-row
+ */
+function syncColumnOrderFromHeader(el: HTMLElement) {
+  const moduleKey = el.dataset.moduleKey as AgreementModuleKey;
+  const sectionKey = el.dataset.sectionKey || '';
+  if (!moduleKey || !sectionKey) return;
+  const keys = [...el.querySelectorAll('.table-col')]
+    .map((n) => (n as HTMLElement).dataset.fieldKey)
+    .filter(Boolean) as string[];
+  if (keys.length === 0) return;
+  const src = innerOf(moduleKey);
+  const next: ModuleInnerConfig = {
+    sections: src.sections.map((s) => {
+      if (s.key !== sectionKey) return s;
+      const byKey = new Map(s.fields.map((f) => [f.key, f]));
+      const seen = new Set(keys);
+      const ordered = keys
+        .map((k, i) => {
+          const f = byKey.get(k);
+          return f ? { ...f, order: (i + 1) * 10 } : null;
+        })
+        .filter(Boolean) as ModuleInnerFieldItem[];
+      /** 未出现在 DOM 的列（如被过滤）缀后，勾选列强制最前 */
+      const rest = s.fields
+        .filter((f) => !seen.has(f.key))
+        .map((f, i) => ({ ...f, order: 1000 + i * 10 }));
+      const merged = [...ordered, ...rest];
+      const selection = merged.filter((f) => f.key === '_selection');
+      const others = merged.filter((f) => f.key !== '_selection');
+      return {
+        ...s,
+        fields: [...selection, ...others].map((f, i) => ({
+          ...f,
+          order: (i + 1) * 10,
+        })),
+      };
+    }),
+  };
+  assignInner(moduleKey, next);
+}
+
+/**
+ * 表头列拖排序 + 接收左侧列控件克隆
+ */
+async function initTableSortable() {
+  tableSortables.forEach((s) => s.destroy());
+  tableSortables.length = 0;
+  if (designerStep.value !== 'edit') return;
+  const root = canvasPageRef.value;
+  if (!root) return;
+  const Sortable = await loadSortable();
+  if (!Sortable?.create) return;
+  root.querySelectorAll('.table-col-row').forEach((node) => {
+    const el = node as HTMLElement;
+    tableSortables.push(
+      Sortable.create(el, {
+        animation: 180,
+        group: 'agree-table-cols',
+        handle: '.col-drag',
+        draggable: '.table-col:not(.is-fixed)',
+        ghostClass: 'table-col-ghost',
+        onAdd(evt: { item: HTMLElement; newIndex: number | undefined }) {
+          const cellType = (evt.item.dataset.cellType ||
+            'text') as ModuleInnerCellType;
+          const sectionKey = el.dataset.sectionKey || '';
+          const moduleKey = el.dataset.moduleKey as AgreementModuleKey;
+          evt.item.remove();
+          if (moduleKey) selectedKey.value = moduleKey;
+          if (sectionKey) selectedSectionKey.value = sectionKey;
+          /** newIndex 相对可拖节点；勾选列不在 draggable 内，下标即插入位 */
+          addTableColumnWithType(
+            cellType,
+            evt.newIndex ?? undefined,
+            sectionKey,
+          );
+        },
+        onEnd(evt: {
+          from: HTMLElement;
+          pullMode?: boolean | string;
+          to: HTMLElement;
+        }) {
+          /** 来自面板的克隆已在 onAdd 处理；同表头内排序写回 */
+          if (evt.pullMode === 'clone') return;
+          if (evt.from === evt.to) syncColumnOrderFromHeader(el);
+        },
+      }),
+    );
+  });
+}
+
+/**
+ * 左侧列控件：拖出克隆到表头
+ */
+async function initColumnPaletteSortable() {
+  columnPaletteSortable?.destroy();
+  columnPaletteSortable = null;
+  if (designerStep.value !== 'edit' || !isTableContext()) return;
+  const el = columnPaletteRef.value;
+  if (!el) return;
+  const Sortable = await loadSortable();
+  if (!Sortable?.create) return;
+  columnPaletteSortable = Sortable.create(el, {
+    animation: 160,
+    group: { name: 'agree-table-cols', pull: 'clone', put: false },
+    sort: false,
+    draggable: '.col-palette-item',
+  });
+}
+
+/**
  * 拖右侧把手改占宽（吸附 8/12/16/24）
  * @param e 鼠标按下
  * @param moduleKey 模块
@@ -544,7 +722,11 @@ function patchField(patch: Partial<ModuleInnerFieldItem>) {
   commitInner(next);
 }
 
-function setFieldEnabled(sectionKey: string, fieldKey: string, enabled: boolean) {
+function setFieldEnabled(
+  sectionKey: string,
+  fieldKey: string,
+  enabled: boolean,
+) {
   const next: ModuleInnerConfig = {
     sections: selectedInner.value.sections.map((s) => {
       if (s.key !== sectionKey) return s;
@@ -560,35 +742,75 @@ function setFieldEnabled(sectionKey: string, fieldKey: string, enabled: boolean)
 }
 
 /**
- * 表格：插入一列
+ * 按单元格类型插入一列（可指定插入位置）
+ * @param cellType 单元格类型
+ * @param insertIndex 插入下标（相对可拖列，不含勾选列）；缺省追加到末尾
+ * @param sectionKey 目标子块；缺省当前选中
  */
-function addTableColumn() {
-  const sec = currentSection.value;
+function addTableColumnWithType(
+  cellType: ModuleInnerCellType,
+  insertIndex?: number,
+  sectionKey?: string,
+) {
+  const targetKey =
+    sectionKey ||
+    currentSection.value?.key ||
+    selectedInner.value.sections[0]?.key;
+  if (!targetKey) return;
+  const sec = selectedInner.value.sections.find((s) => s.key === targetKey);
   if (!sec) return;
-  const maxOrder = Math.max(0, ...sec.fields.map((f) => f.order));
+
+  const label =
+    TABLE_CELL_OPTIONS.find((o) => o.value === cellType)?.label || '新列';
   const key = `col_${Date.now()}`;
+  const newField: ModuleInnerFieldItem = {
+    key,
+    label: `新${label}列`,
+    enabled: true,
+    order: 0,
+    minWidth: 120,
+    custom: true,
+    cellType,
+  };
+
   const next: ModuleInnerConfig = {
     sections: selectedInner.value.sections.map((s) => {
-      if (s.key !== sec.key) return s;
-      return {
-        ...s,
-        fields: [
-          ...s.fields,
-          {
-            key,
-            label: '新列',
-            enabled: true,
-            order: maxOrder + 10,
-            minWidth: 120,
-            custom: true,
-            cellType: 'text' as ModuleInnerCellType,
-          },
-        ],
-      };
+      if (s.key !== targetKey) return s;
+      const fixed = s.fields.filter((f) => f.key === '_selection');
+      const movable = s.fields.filter((f) => f.key !== '_selection');
+      const at =
+        typeof insertIndex === 'number'
+          ? Math.max(0, Math.min(insertIndex, movable.length))
+          : movable.length;
+      const merged = [
+        ...fixed,
+        ...movable.slice(0, at),
+        newField,
+        ...movable.slice(at),
+      ].map((f, i) => ({ ...f, order: (i + 1) * 10 }));
+      return { ...s, fields: merged };
     }),
   };
   commitInner(next);
+  selectedSectionKey.value = targetKey;
   selectedFieldKey.value = key;
+}
+
+/** 表格：插入文本列（兼容右侧按钮） */
+function addTableColumn() {
+  addTableColumnWithType('text');
+}
+
+/**
+ * 单元格类型展示文案
+ * @param field 列配置
+ */
+function cellTypeLabel(field: ModuleInnerFieldItem) {
+  if (field.key === '_selection') return '勾选';
+  const t = field.cellType || field.controlType || 'text';
+  if (t === 'select') return '下拉';
+  if (t === 'yesno') return '是否';
+  return '文本';
 }
 
 /**
@@ -655,7 +877,7 @@ function renameCustomFieldKey(raw: string) {
   const field = currentField.value;
   const nextKey = String(raw || '')
     .trim()
-    .replace(/\s+/g, '_');
+    .replaceAll(/\s+/g, '_');
   if (!sec || !field?.custom || !nextKey || nextKey === field.key) return;
   if (sec.fields.some((f) => f.key === nextKey)) return;
   const next: ModuleInnerConfig = {
@@ -749,15 +971,26 @@ async function initTabSortable() {
 }
 
 onMounted(() => {
+  void getFcSchemaList({ status: 1 })
+    .then((list) => {
+      fcSchemaList.value = list;
+    })
+    .catch(() => {
+      fcSchemaList.value = [];
+    });
   void nextTick().then(() => {
     void initTabSortable();
     void initFormSortable();
+    void initTableSortable();
+    void initColumnPaletteSortable();
   });
 });
 
 onBeforeUnmount(() => {
   tabSortable?.destroy();
   formSortables.forEach((s) => s.destroy());
+  tableSortables.forEach((s) => s.destroy());
+  columnPaletteSortable?.destroy();
 });
 
 watch(
@@ -772,15 +1005,19 @@ watch(
     [
       designerStep.value,
       selectedKey.value,
+      selectedSectionKey.value,
+      isTableContext() ? 'table' : 'form',
       mounted.value.map((r) => r.key).join(','),
       selectedInner.value.sections
-        .flatMap((s) => s.fields.map((f) => f.key))
+        .flatMap((s) => s.fields.map((f) => `${f.key}:${f.cellType || ''}`))
         .join(','),
     ].join('|'),
   () => {
     void nextTick().then(() => {
       void initTabSortable();
       void initFormSortable();
+      void initTableSortable();
+      void initColumnPaletteSortable();
     });
   },
 );
@@ -789,50 +1026,108 @@ watch(
 <template>
   <div class="detail-designer">
     <aside class="designer-pane designer-palette">
-      <div class="pane-title">业务组件</div>
-      <p class="pane-hint">
-        点组件挂到本场景；已挂的点「编辑」才改字段或列。本场景一份拷贝，改这里不影响其他场景。
-      </p>
-      <button
-        v-for="item in palette"
-        :key="item.key"
-        type="button"
-        class="palette-item"
-        :class="{ 'is-on': isMounted(item.key) }"
-        @click="onPaletteClick(item.key)"
-      >
-        <div class="flex items-center justify-between gap-1">
-          <span class="font-medium">{{ item.label }}</span>
-          <ElTag
-            size="small"
-            :type="item.widgetKind === 'table' ? 'success' : 'primary'"
-          >
-            {{ item.widgetKind === 'table' ? '表格' : '表单' }}
-          </ElTag>
-        </div>
-        <div class="mt-0.5 text-[11px] text-gray-400">{{ item.desc }}</div>
-      </button>
-      <div class="palette-create">
-        <div class="mb-1 text-xs font-medium text-gray-600">新建业务组件</div>
-        <ElInput
-          v-model="newComponentName"
-          size="small"
-          class="mb-1.5"
-          placeholder="名称，如评估信息"
-        />
-        <ElSelect v-model="newComponentKind" size="small" class="mb-1.5 w-full">
-          <ElOption label="空白表单" value="form" />
-          <ElOption label="空白表格" value="table" />
-        </ElSelect>
-        <ElButton
-          type="primary"
-          size="small"
-          class="w-full"
-          @click="createCustomComponent"
+      <!-- 组装：挂业务组件 -->
+      <template v-if="designerStep === 'assemble'">
+        <div class="pane-title">业务组件</div>
+        <p class="pane-hint">
+          点组件挂到本场景；已挂的在右侧选择「表单模板」。改字段请到系统管理 →
+          表单模板。
+        </p>
+        <button
+          v-for="item in palette"
+          :key="item.key"
+          type="button"
+          class="palette-item"
+          :class="{ 'is-on': isMounted(item.key) }"
+          @click="onPaletteClick(item.key)"
         >
-          创建并挂到场景
+          <div class="flex items-center justify-between gap-1">
+            <span class="font-medium">{{ item.label }}</span>
+            <ElTag
+              size="small"
+              :type="item.widgetKind === 'table' ? 'success' : 'primary'"
+            >
+              {{ item.widgetKind === 'table' ? '表格' : '表单' }}
+            </ElTag>
+          </div>
+          <div class="mt-0.5 text-[11px] text-gray-400">{{ item.desc }}</div>
+        </button>
+        <div class="palette-create">
+          <div class="mb-1 text-xs font-medium text-gray-600">新建业务组件</div>
+          <ElInput
+            v-model="newComponentName"
+            size="small"
+            class="mb-1.5"
+            placeholder="名称，如评估信息"
+          />
+          <ElSelect
+            v-model="newComponentKind"
+            size="small"
+            class="mb-1.5 w-full"
+          >
+            <ElOption label="空白表单" value="form" />
+            <ElOption label="空白表格" value="table" />
+          </ElSelect>
+          <ElButton
+            type="primary"
+            size="small"
+            class="w-full"
+            @click="createCustomComponent"
+          >
+            创建并挂到场景
+          </ElButton>
+        </div>
+      </template>
+
+      <!-- 表格编辑：列控件面板（拖入表头或点击新增） -->
+      <template v-else-if="isTableContext()">
+        <div class="pane-title">列控件</div>
+        <p class="pane-hint">
+          拖到中间表头即可加列，也可点击新增；表头内左右拖改顺序，右侧改显示名/列宽。
+        </p>
+        <div ref="columnPaletteRef" class="col-palette-list">
+          <button
+            v-for="item in columnPaletteItems"
+            :key="item.value"
+            type="button"
+            class="col-palette-item"
+            :data-cell-type="item.value"
+            @click="addTableColumnWithType(item.value)"
+          >
+            <GripVertical class="size-3.5 shrink-0 text-gray-400" />
+            <div class="min-w-0 flex-1 text-left">
+              <div class="text-xs font-medium">{{ item.label }}列</div>
+              <div class="text-[11px] text-gray-400">{{ item.tip }}</div>
+            </div>
+          </button>
+        </div>
+        <ElButton
+          class="mt-3 w-full"
+          size="small"
+          type="primary"
+          plain
+          @click="addTableColumn"
+        >
+          快速插入文本列
         </ElButton>
-      </div>
+      </template>
+
+      <!-- 表单编辑：提示（基础信息走 Epic） -->
+      <template v-else>
+        <div class="pane-title">表单字段</div>
+        <p class="pane-hint">
+          {{
+            selectedKey === 'basic'
+              ? '基础信息请用场景上方「Epic 设计基础信息表单」拖拽；此处仅保留自定义子表时切到表格列面板。'
+              : '中间画布拖格子改顺序/占宽；右侧改显示名与控件。也可用右侧「新增字段」。'
+          }}
+        </p>
+        <div
+          class="rounded-md border border-dashed border-gray-200 bg-gray-50 px-2 py-3 text-[11px] text-gray-500"
+        >
+          表单控件库后续可与 Epic 对齐；当前以画布拖拽 + 右侧属性为主。
+        </div>
+      </template>
     </aside>
 
     <div class="designer-pane designer-canvas">
@@ -850,9 +1145,9 @@ watch(
           <p class="pane-hint">
             {{
               designerStep === 'assemble'
-                ? '拖胶囊改模块顺序；点卡片「编辑」进入该块。此处不改字段。'
+                ? '拖胶囊改模块顺序；每块选择表单模板库中的模板。'
                 : isTableWidget(selectedKey)
-                  ? '拖列表头改顺序，右侧改列宽/单元格。'
+                  ? '从左侧拖列到表头，或表头内拖排序；点列后右侧改显示名/列宽/单元格类型。'
                   : '拖格子改字段顺序和占宽，右侧改显示名/控件。'
             }}
           </p>
@@ -921,13 +1216,25 @@ watch(
                 </ElTag>
               </div>
               <div class="mt-0.5 text-[11px] text-gray-400">
-                {{ fieldCountOf(row.key) }}
-                个{{ isTableWidget(row.key) ? '列' : '字段' }} · 双击胶囊也可进入
+                模板：{{ boundSchemaName(row.key) }}
               </div>
             </div>
-            <ElButton size="small" type="primary" @click.stop="enterEdit(row.key)">
-              编辑{{ widgetLabelOf(row.key) }}
-            </ElButton>
+            <ElSelect
+              :model-value="bindingOf(row.key)"
+              class="w-[180px]"
+              placeholder="选择模板"
+              size="small"
+              filterable
+              @click.stop
+              @update:model-value="setBinding(row.key, $event)"
+            >
+              <ElOption
+                v-for="opt in fcSchemaOptionsFor(row.key)"
+                :key="opt.id"
+                :label="opt.name"
+                :value="opt.id"
+              />
+            </ElSelect>
           </div>
           <div
             v-if="!mounted.length"
@@ -939,85 +1246,78 @@ watch(
 
         <!-- 编辑：只渲染当前模块的表单或表格 -->
         <template v-else>
-        <div
-          v-if="basicOnCanvas && selectedKey === 'basic'"
-          class="canvas-block"
-          :class="{ 'is-selected': selectedKey === 'basic' && !selectedFieldKey }"
-          @click.stop="selectBlock('basic')"
-        >
-          <div class="canvas-block__head">基础信息</div>
-          <template v-for="sec in formSectionsOf('basic')" :key="sec.key">
-            <div class="mb-1 text-[11px] text-gray-500">{{ sec.label }}</div>
-            <div
-              class="form-grid mb-2"
-              data-module-key="basic"
-              :data-section-key="sec.key"
-            >
-              <button
-                v-for="f in previewFields(sec)"
-                :key="f.key"
-                type="button"
-                class="form-cell"
-                :class="{
-                  'is-hit':
-                    selectedKey === 'basic' &&
-                    selectedSectionKey === sec.key &&
-                    selectedFieldKey === f.key,
-                }"
-                :data-field-key="f.key"
-                :style="{ gridColumn: `span ${colSpan(f)}` }"
-                @click.stop="selectField('basic', sec.key, f.key)"
-              >
-                <GripVertical class="cell-drag size-3.5 text-gray-400" />
-                <div class="min-w-0 flex-1">
-                  <div class="text-[11px] text-gray-500">
-                    {{ f.label }}
-                    <span v-if="f.required" class="text-red-500">*</span>
-                    <span class="ml-1 text-gray-300">{{ colSpan(f) }}</span>
-                  </div>
-                  <div class="form-ctrl">{{ controlPreview(f) }}</div>
-                </div>
-                <i
-                  class="span-handle"
-                  title="拖动改占宽"
-                  @mousedown.stop="
-                    onSpanResizeStart($event, 'basic', sec.key, f.key)
-                  "
-                />
-              </button>
-            </div>
-          </template>
           <div
-            v-for="sec in customSectionsOf('basic')"
-            :key="sec.key"
-            class="mb-2"
+            v-if="basicOnCanvas && selectedKey === 'basic'"
+            class="canvas-block"
+            :class="{
+              'is-selected': selectedKey === 'basic' && !selectedFieldKey,
+            }"
+            @click.stop="selectBlock('basic')"
           >
-            <div class="mb-1 text-[11px] text-gray-500">{{ sec.label }}</div>
-            <div class="canvas-table-preview">
-              <button
-                v-for="f in previewFields(sec)"
-                :key="f.key"
-                type="button"
-                class="table-col"
-                :class="{
-                  'is-hit':
-                    selectedKey === 'basic' &&
-                    selectedSectionKey === sec.key &&
-                    selectedFieldKey === f.key,
-                }"
-                @click.stop="selectField('basic', sec.key, f.key)"
-              >
-                {{ f.label }}
-              </button>
-              <div class="table-row-ghost">自定义表格</div>
+            <div class="canvas-block__head">基础信息</div>
+            <!-- 表单字段走 Epic，避免与旧 moduleInner 栅格双轨编辑 -->
+            <div
+              class="epic-basic-hint mb-3 rounded-md border border-dashed border-blue-200 bg-blue-50/60 px-3 py-3 text-xs text-gray-600"
+            >
+              <div class="mb-1 font-medium text-gray-800">
+                基础信息表单请用上方「Epic 设计基础信息表单」
+              </div>
+              <div>
+                拖拽控件、改
+                label/占宽后点「保存到本场景」，再点页面配置「确认」落库；详情页用
+                EBuilder 按 epicSchemas.basic
+                渲染。此处仅可管理下方自定义子表（若有）。
+              </div>
+            </div>
+            <div
+              v-for="sec in customSectionsOf('basic')"
+              :key="sec.key"
+              class="mb-2"
+            >
+              <div class="mb-1 text-[11px] text-gray-500">{{ sec.label }}</div>
+              <div class="canvas-table-preview">
+                <div
+                  class="table-col-row"
+                  data-module-key="basic"
+                  :data-section-key="sec.key"
+                >
+                  <button
+                    v-for="f in previewFields(sec)"
+                    :key="f.key"
+                    type="button"
+                    class="table-col"
+                    :class="{
+                      'is-hit':
+                        selectedKey === 'basic' &&
+                        selectedSectionKey === sec.key &&
+                        selectedFieldKey === f.key,
+                      'is-fixed': f.key === '_selection',
+                    }"
+                    :data-field-key="f.key"
+                    :style="{ minWidth: `${f.minWidth || 80}px` }"
+                    @click.stop="selectField('basic', sec.key, f.key)"
+                  >
+                    <GripVertical
+                      v-if="f.key !== '_selection'"
+                      class="col-drag size-3.5 shrink-0 text-gray-400"
+                    />
+                    <div class="min-w-0 flex-1 text-left">
+                      <div class="truncate">{{ f.label }}</div>
+                      <div class="mt-0.5 text-[10px] font-normal text-gray-400">
+                        {{ cellTypeLabel(f) }}
+                      </div>
+                    </div>
+                  </button>
+                </div>
+                <div class="table-row-ghost">自定义表格 · 可拖列排序</div>
+              </div>
             </div>
           </div>
-        </div>
 
-        <div
-          v-if="selectedKey !== 'basic' && isMounted(selectedKey)"
-          class="canvas-tabs-wrap"
-        >
+          <div
+            v-if="selectedKey !== 'basic' && isMounted(selectedKey)"
+            class="canvas-tabs-wrap"
+          >
             <div class="canvas-block__head">
               {{ metaOf(selectedKey)?.label || selectedKey }}
             </div>
@@ -1027,7 +1327,9 @@ watch(
                 v-for="sec in formSectionsOf(selectedKey)"
                 :key="sec.key"
               >
-                <div class="mb-1 text-[11px] text-gray-500">{{ sec.label }}</div>
+                <div class="mb-1 text-[11px] text-gray-500">
+                  {{ sec.label }}
+                </div>
                 <div
                   class="form-grid mb-2"
                   :data-module-key="selectedKey"
@@ -1060,44 +1362,78 @@ watch(
                       class="span-handle"
                       title="拖动改占宽"
                       @mousedown.stop="
-                        onSpanResizeStart(
-                          $event,
-                          selectedKey,
-                          sec.key,
-                          f.key,
-                        )
+                        onSpanResizeStart($event, selectedKey, sec.key, f.key)
                       "
-                    />
+                    ></i>
                   </button>
                 </div>
               </template>
             </div>
-            <!-- 表格表头 -->
+            <!-- 表格表头：可拖排序 / 接收左侧列控件 -->
             <div v-else>
               <div
                 v-for="sec in previewSections(selectedKey)"
                 :key="sec.key"
-                class="canvas-table-preview"
+                class="mb-3"
               >
-                <button
-                  v-for="f in previewFields(sec)"
-                  :key="f.key"
-                  type="button"
-                  class="table-col"
-                  :class="{
-                    'is-hit':
-                      selectedSectionKey === sec.key &&
-                      selectedFieldKey === f.key,
-                  }"
-                  :style="{ minWidth: `${f.minWidth || 80}px` }"
-                  @click.stop="selectField(selectedKey, sec.key, f.key)"
-                >
-                  {{ f.label }}
-                </button>
-                <div class="table-row-ghost">示例行 · 点「新增列」可插列</div>
+                <div class="mb-1 text-[11px] text-gray-500">
+                  {{ sec.label }}
+                </div>
+                <div class="canvas-table-preview">
+                  <div
+                    class="table-col-row"
+                    :data-module-key="selectedKey"
+                    :data-section-key="sec.key"
+                  >
+                    <button
+                      v-for="f in previewFields(sec)"
+                      :key="f.key"
+                      type="button"
+                      class="table-col"
+                      :class="{
+                        'is-hit':
+                          selectedSectionKey === sec.key &&
+                          selectedFieldKey === f.key,
+                        'is-fixed': f.key === '_selection',
+                      }"
+                      :data-field-key="f.key"
+                      :style="{ minWidth: `${f.minWidth || 80}px` }"
+                      @click.stop="selectField(selectedKey, sec.key, f.key)"
+                    >
+                      <GripVertical
+                        v-if="f.key !== '_selection'"
+                        class="col-drag size-3.5 shrink-0 text-gray-400"
+                      />
+                      <div class="min-w-0 flex-1 text-left">
+                        <div class="truncate">
+                          {{ f.label }}
+                          <span v-if="f.required" class="text-red-500">*</span>
+                        </div>
+                        <div
+                          class="mt-0.5 text-[10px] font-normal text-gray-400"
+                        >
+                          {{ cellTypeLabel(f) }}
+                        </div>
+                      </div>
+                    </button>
+                    <div
+                      v-if="
+                        !previewFields(sec).filter(
+                          (f) => f.key !== '_selection',
+                        ).length
+                      "
+                      class="table-col-drop-hint"
+                    >
+                      将左侧列控件拖到此处
+                    </div>
+                  </div>
+                  <div class="table-row-ghost">
+                    示例行 · 左侧拖入加列 · 表头拖排序
+                  </div>
+                </div>
               </div>
             </div>
-        </div>
+          </div>
         </template>
       </div>
     </div>
@@ -1110,14 +1446,30 @@ watch(
           {{ widgetLabelOf(selectedKey) }} · 本场景独立配置
         </p>
         <template v-if="isMounted(selectedKey)">
-          <ElButton
-            size="small"
-            type="primary"
+          <div class="mb-2 text-xs text-gray-500">
+            {{ widgetLabelOf(selectedKey) }}模板
+          </div>
+          <ElSelect
+            :model-value="bindingOf(selectedKey)"
             class="mb-2 w-full"
-            @click="enterEdit(selectedKey)"
+            placeholder="选择模板"
+            filterable
+            @update:model-value="setBinding(selectedKey, $event)"
           >
-            编辑{{ widgetLabelOf(selectedKey) }}
-          </ElButton>
+            <ElOption
+              v-for="opt in fcSchemaOptionsFor(selectedKey)"
+              :key="opt.id"
+              :label="`${opt.name} (${opt.id})`"
+              :value="opt.id"
+            />
+          </ElSelect>
+          <RouterLink
+            class="mb-2 block text-xs text-primary"
+            target="_blank"
+            :to="{ name: 'SystemFcSchema' }"
+          >
+            去表单模板管理新建 / 编辑 →
+          </RouterLink>
           <ElButton
             size="small"
             class="mb-2 w-full"
@@ -1139,261 +1491,315 @@ watch(
         <div v-else class="text-xs text-gray-400">从左侧点组件挂到本场景</div>
       </template>
       <template v-else>
-      <div class="flex items-center justify-between gap-2">
-        <div class="pane-title mb-0">
-          {{ isTableContext() ? '表格属性' : '表单属性' }}
-        </div>
-        <ElButton
-          v-if="isMounted(selectedKey)"
-          link
-          type="danger"
-          size="small"
-          @click="removeFromCanvas(selectedKey)"
-        >
-          卸下
-        </ElButton>
-        <ElButton
-          v-if="isCustomAgreeModule(String(selectedKey))"
-          link
-          type="danger"
-          size="small"
-          @click="deleteCustomComponent(selectedKey)"
-        >
-          删除组件
-        </ElButton>
-      </div>
-      <p class="pane-hint">
-        {{ metaOf(selectedKey)?.label }} ·
-        {{
-          isTableContext()
-            ? '点表头配列，可插列/删列'
-            : '可新增或删除字段（如删签约日期、加用户名）'
-        }}
-      </p>
-
-      <template v-if="isMounted(selectedKey)">
-        <!-- 表格：整表行操作 -->
-        <div v-if="isTableContext()" class="prop-card">
-          <div class="prop-label">行操作</div>
-          <div class="mb-2 flex items-center justify-between text-xs">
-            <span>允许新增行</span>
-            <ElSwitch
-              size="small"
-              :model-value="currentSection?.tableOptions?.allowAdd !== false"
-              @change="(v: boolean) => patchTableOptions({ allowAdd: v })"
-            />
-          </div>
-          <div class="mb-2 flex items-center justify-between text-xs">
-            <span>允许删除行</span>
-            <ElSwitch
-              size="small"
-              :model-value="currentSection?.tableOptions?.allowRemove !== false"
-              @change="(v: boolean) => patchTableOptions({ allowRemove: v })"
-            />
-          </div>
-          <div class="flex items-center justify-between gap-2 text-xs">
-            <span>至少保留</span>
-            <ElInputNumber
-              size="small"
-              :min="0"
-              :max="9"
-              :model-value="currentSection?.tableOptions?.minRows ?? 1"
-              @change="(v: number | undefined) => patchTableOptions({ minRows: v ?? 1 })"
-            />
+        <div class="flex items-center justify-between gap-2">
+          <div class="pane-title mb-0">
+            {{ isTableContext() ? '表格属性' : '表单属性' }}
           </div>
           <ElButton
-            class="mt-2"
-            size="small"
-            type="primary"
-            plain
-            @click="addTableColumn"
-          >
-            插入列
-          </ElButton>
-        </div>
-
-        <div v-else class="prop-card">
-          <div class="prop-label">字段操作</div>
-          <ElButton size="small" type="primary" plain @click="addFormField">
-            新增字段
-          </ElButton>
-          <p class="mt-1 text-[11px] text-gray-400">
-            新增后改显示名/控件；删除内置字段（如签约日期）保存后不会再补回来。
-          </p>
-        </div>
-
-        <!-- 未点字段：列出可点项 -->
-        <div v-if="!currentField" class="prop-card">
-          <div class="prop-label">
-            {{ isTableContext() ? '列（点击画布表头）' : '字段（拖格子 / 点选）' }}
-          </div>
-          <button
-            v-for="sec in selectedSections"
-            :key="sec.key"
-            class="hidden"
-            type="button"
-          />
-          <div
-            v-for="sec in selectedSections"
-            :key="sec.key"
-            class="mb-2"
-          >
-            <div class="mb-1 text-[11px] text-gray-400">{{ sec.label }}</div>
-            <div class="flex flex-wrap gap-1">
-              <button
-                v-for="f in sec.fields"
-                :key="f.key"
-                type="button"
-                class="mini-chip"
-                :class="{ 'is-off': !f.enabled }"
-                @click="selectField(selectedKey, sec.key, f.key)"
-              >
-                {{ f.label }}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <!-- 点中某一项 -->
-        <div v-else class="prop-card">
-          <div class="mb-2 flex items-center justify-between">
-            <div class="prop-label mb-0">{{ currentField.label }}</div>
-            <ElSwitch
-              size="small"
-              :model-value="currentField.enabled"
-              @change="
-                (v: boolean) =>
-                  setFieldEnabled(
-                    currentSection!.key,
-                    currentField!.key,
-                    v,
-                  )
-              "
-            />
-          </div>
-          <div class="prop-label">显示名</div>
-          <ElInput
-            size="small"
-            class="mb-2"
-            :model-value="currentField.label"
-            @update:model-value="(v: string) => patchField({ label: v })"
-          />
-          <div class="text-[11px] text-gray-400 mb-2">编码 {{ currentField.key }}</div>
-          <template v-if="currentField.custom">
-            <div class="prop-label">数据字段名</div>
-            <ElInput
-              size="small"
-              class="mb-2"
-              :model-value="currentField.key"
-              placeholder="如 username"
-              @change="(v: string) => renameCustomFieldKey(v)"
-            />
-          </template>
-          <ElButton
-            v-if="currentField.key !== '_selection'"
-            class="mb-2"
-            size="small"
+            v-if="isMounted(selectedKey)"
+            link
             type="danger"
-            plain
-            @click="removeCurrentField"
+            size="small"
+            @click="removeFromCanvas(selectedKey)"
           >
-            删除{{ isTableContext() ? '本列' : '本字段' }}
+            卸下
           </ElButton>
+          <ElButton
+            v-if="isCustomAgreeModule(String(selectedKey))"
+            link
+            type="danger"
+            size="small"
+            @click="deleteCustomComponent(selectedKey)"
+          >
+            删除组件
+          </ElButton>
+        </div>
+        <p class="pane-hint">
+          {{ metaOf(selectedKey)?.label }} ·
+          {{
+            selectedKey === 'basic' && !isTableContext()
+              ? '表单字段请用「Epic 设计基础信息表单」；自定义子表仍可在此配列'
+              : isTableContext()
+                ? '左侧拖列 / 表头排序；点列后改显示名、列宽、单元格'
+                : '可新增或删除字段（如删签约日期、加用户名）'
+          }}
+        </p>
 
-          <template v-if="!isTableContext()">
-            <div class="prop-label">控件</div>
-            <ElSelect
-              size="small"
-              class="mb-2 w-full"
-              :model-value="currentField.controlType || 'input'"
-              @change="(v: ModuleInnerControlType) => patchField({ controlType: v })"
-            >
-              <ElOption
-                v-for="opt in FORM_CONTROL_OPTIONS"
-                :key="opt.value"
-                :label="opt.label"
-                :value="opt.value"
-              />
-            </ElSelect>
-            <div class="prop-label">占宽</div>
-            <ElSelect
-              size="small"
-              class="mb-2 w-full"
-              :model-value="colSpan(currentField)"
-              @change="(v: number) => patchField({ span: v })"
-            >
-              <ElOption
-                v-for="opt in FORM_SPAN_OPTIONS"
-                :key="opt.value"
-                :label="opt.label"
-                :value="opt.value"
-              />
-            </ElSelect>
+        <template v-if="isMounted(selectedKey)">
+          <!-- 基础信息表单：改走 Epic，右侧不再编内置字段 -->
+          <div
+            v-if="selectedKey === 'basic' && !isTableContext()"
+            class="prop-card text-xs text-gray-600"
+          >
+            关闭本面板后，在场景表单上方点击「Epic
+            设计基础信息表单」进行拖拽设计。
+          </div>
+
+          <!-- 表格：整表行操作 -->
+          <div v-else-if="isTableContext()" class="prop-card">
+            <div class="prop-label">行操作</div>
             <div class="mb-2 flex items-center justify-between text-xs">
-              <span>必填</span>
+              <span>允许新增行</span>
               <ElSwitch
                 size="small"
-                :model-value="!!currentField.required"
-                @change="(v: boolean) => patchField({ required: v })"
+                :model-value="currentSection?.tableOptions?.allowAdd !== false"
+                @change="
+                  (v: boolean | number | string) =>
+                    patchTableOptions({ allowAdd: asSwitchOn(v) })
+                "
               />
             </div>
-            <div class="prop-label">占位提示</div>
+            <div class="mb-2 flex items-center justify-between text-xs">
+              <span>允许删除行</span>
+              <ElSwitch
+                size="small"
+                :model-value="
+                  currentSection?.tableOptions?.allowRemove !== false
+                "
+                @change="
+                  (v: boolean | number | string) =>
+                    patchTableOptions({ allowRemove: asSwitchOn(v) })
+                "
+              />
+            </div>
+            <div class="flex items-center justify-between gap-2 text-xs">
+              <span>至少保留</span>
+              <ElInputNumber
+                size="small"
+                :min="0"
+                :max="9"
+                :model-value="currentSection?.tableOptions?.minRows ?? 1"
+                @change="
+                  (v: number | undefined) =>
+                    patchTableOptions({ minRows: v ?? 1 })
+                "
+              />
+            </div>
+            <ElButton
+              class="mt-2"
+              size="small"
+              type="primary"
+              plain
+              @click="addTableColumn"
+            >
+              插入文本列
+            </ElButton>
+            <p class="mt-2 text-[11px] text-gray-400">
+              也可从左侧「列控件」拖入表头，或拖表头把手改顺序。
+            </p>
+          </div>
+
+          <div v-else-if="selectedKey !== 'basic'" class="prop-card">
+            <div class="prop-label">字段操作</div>
+            <ElButton size="small" type="primary" plain @click="addFormField">
+              新增字段
+            </ElButton>
+            <p class="mt-1 text-[11px] text-gray-400">
+              新增后改显示名/控件；删除内置字段（如签约日期）保存后不会再补回来。
+            </p>
+          </div>
+
+          <!-- 未点字段：列出可点项（基础信息表单字段改由 Epic，跳过） -->
+          <div
+            v-if="
+              !currentField && !(selectedKey === 'basic' && !isTableContext())
+            "
+            class="prop-card"
+          >
+            <div class="prop-label">
+              {{
+                isTableContext()
+                  ? '列（点击画布表头）'
+                  : '字段（拖格子 / 点选）'
+              }}
+            </div>
+            <button
+              v-for="sec in selectedSections"
+              :key="sec.key"
+              class="hidden"
+              type="button"
+            ></button>
+            <div v-for="sec in selectedSections" :key="sec.key" class="mb-2">
+              <div class="mb-1 text-[11px] text-gray-400">{{ sec.label }}</div>
+              <div class="flex flex-wrap gap-1">
+                <button
+                  v-for="f in sec.fields"
+                  :key="f.key"
+                  type="button"
+                  class="mini-chip"
+                  :class="{ 'is-off': !f.enabled }"
+                  @click="selectField(selectedKey, sec.key, f.key)"
+                >
+                  {{ f.label }}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 点中某一项（基础信息内置表单字段不在此编辑） -->
+          <div
+            v-else-if="
+              currentField && !(selectedKey === 'basic' && !isTableContext())
+            "
+            class="prop-card"
+          >
+            <div class="mb-2 flex items-center justify-between">
+              <div class="prop-label mb-0">{{ currentField.label }}</div>
+              <ElSwitch
+                size="small"
+                :model-value="currentField.enabled"
+                @change="
+                  (v: boolean | number | string) => {
+                    const sec = currentSection;
+                    const field = currentField;
+                    if (!sec || !field) return;
+                    setFieldEnabled(sec.key, field.key, asSwitchOn(v));
+                  }
+                "
+              />
+            </div>
+            <div class="prop-label">显示名</div>
             <ElInput
               size="small"
-              :model-value="currentField.placeholder || ''"
-              @update:model-value="(v: string) => patchField({ placeholder: v })"
-            />
-          </template>
-
-          <template v-else>
-            <div class="prop-label">列宽</div>
-            <ElInputNumber
-              size="small"
               class="mb-2"
-              :min="60"
-              :max="400"
-              :step="20"
-              :model-value="currentField.minWidth || 120"
-              @change="(v: number | undefined) => patchField({ minWidth: v || 120 })"
+              :model-value="currentField.label"
+              @update:model-value="(v: string) => patchField({ label: v })"
             />
-            <div class="prop-label">单元格</div>
-            <ElSelect
-              size="small"
-              class="mb-2 w-full"
-              :model-value="
-                currentField.cellType ||
-                (currentField.controlType === 'yesno' ||
-                currentField.controlType === 'select'
-                  ? currentField.controlType
-                  : 'text')
-              "
-              @change="
-                (v: ModuleInnerCellType) =>
-                  patchField({
-                    cellType: v,
-                    controlType: v === 'text' ? 'input' : v,
-                  })
-              "
-            >
-              <ElOption
-                v-for="opt in TABLE_CELL_OPTIONS"
-                :key="opt.value"
-                :label="opt.label"
-                :value="opt.value"
-              />
-            </ElSelect>
-            <div class="flex items-center justify-between text-xs">
-              <span>必填</span>
-              <ElSwitch
-                size="small"
-                :model-value="!!currentField.required"
-                @change="(v: boolean) => patchField({ required: v })"
-              />
+            <div class="text-[11px] text-gray-400 mb-2">
+              编码 {{ currentField.key }}
             </div>
-          </template>
-        </div>
-      </template>
-      <div v-else class="text-xs text-gray-400">请先放到画布</div>
+            <template v-if="currentField.custom">
+              <div class="prop-label">数据字段名</div>
+              <ElInput
+                size="small"
+                class="mb-2"
+                :model-value="currentField.key"
+                placeholder="如 username"
+                @change="(v: string) => renameCustomFieldKey(v)"
+              />
+            </template>
+            <ElButton
+              v-if="currentField.key !== '_selection'"
+              class="mb-2"
+              size="small"
+              type="danger"
+              plain
+              @click="removeCurrentField"
+            >
+              删除{{ isTableContext() ? '本列' : '本字段' }}
+            </ElButton>
+
+            <template v-if="!isTableContext()">
+              <div class="prop-label">控件</div>
+              <ElSelect
+                size="small"
+                class="mb-2 w-full"
+                :model-value="currentField.controlType || 'input'"
+                @change="
+                  (v: string | number) =>
+                    patchField({
+                      controlType: String(v) as ModuleInnerControlType,
+                    })
+                "
+              >
+                <ElOption
+                  v-for="opt in FORM_CONTROL_OPTIONS"
+                  :key="opt.value"
+                  :label="opt.label"
+                  :value="opt.value"
+                />
+              </ElSelect>
+              <div class="prop-label">占宽</div>
+              <ElSelect
+                size="small"
+                class="mb-2 w-full"
+                :model-value="currentField ? colSpan(currentField) : 8"
+                @change="
+                  (v: string | number) => patchField({ span: Number(v) })
+                "
+              >
+                <ElOption
+                  v-for="opt in FORM_SPAN_OPTIONS"
+                  :key="opt.value"
+                  :label="opt.label"
+                  :value="opt.value"
+                />
+              </ElSelect>
+              <div class="mb-2 flex items-center justify-between text-xs">
+                <span>必填</span>
+                <ElSwitch
+                  size="small"
+                  :model-value="!!currentField.required"
+                  @change="
+                    (v: boolean | number | string) =>
+                      patchField({ required: asSwitchOn(v) })
+                  "
+                />
+              </div>
+              <div class="prop-label">占位提示</div>
+              <ElInput
+                size="small"
+                :model-value="currentField.placeholder || ''"
+                @update:model-value="
+                  (v: string) => patchField({ placeholder: v })
+                "
+              />
+            </template>
+
+            <template v-else>
+              <div class="prop-label">列宽</div>
+              <ElInputNumber
+                size="small"
+                class="mb-2"
+                :min="60"
+                :max="400"
+                :step="20"
+                :model-value="currentField.minWidth || 120"
+                @change="
+                  (v: number | undefined) => patchField({ minWidth: v || 120 })
+                "
+              />
+              <div class="prop-label">单元格</div>
+              <ElSelect
+                size="small"
+                class="mb-2 w-full"
+                :model-value="
+                  currentField.cellType ||
+                  (currentField.controlType === 'yesno' ||
+                  currentField.controlType === 'select'
+                    ? currentField.controlType
+                    : 'text')
+                "
+                @change="
+                  (v: ModuleInnerCellType) =>
+                    patchField({
+                      cellType: v,
+                      controlType: v === 'text' ? 'input' : v,
+                    })
+                "
+              >
+                <ElOption
+                  v-for="opt in TABLE_CELL_OPTIONS"
+                  :key="opt.value"
+                  :label="opt.label"
+                  :value="opt.value"
+                />
+              </ElSelect>
+              <div class="flex items-center justify-between text-xs">
+                <span>必填</span>
+                <ElSwitch
+                  size="small"
+                  :model-value="!!currentField.required"
+                  @change="
+                    (v: boolean | number | string) =>
+                      patchField({ required: asSwitchOn(v) })
+                  "
+                />
+              </div>
+            </template>
+          </div>
+        </template>
+        <div v-else class="text-xs text-gray-400">请先放到画布</div>
       </template>
     </aside>
   </div>
@@ -1452,8 +1858,8 @@ watch(
   position: sticky;
   bottom: 0;
   z-index: 1;
-  margin-top: auto;
   padding-top: 10px;
+  margin-top: auto;
   background: #fff;
   border-top: 1px dashed #e5e7eb;
 }
@@ -1487,10 +1893,10 @@ watch(
   padding: 6px;
   margin-bottom: 8px;
   overflow-x: auto;
+  scrollbar-width: thin;
   background: #fff;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
-  scrollbar-width: thin;
 }
 
 .canvas-pill {
@@ -1619,8 +2025,8 @@ watch(
 }
 
 .form-ctrl {
-  margin-top: 4px;
   padding: 4px 6px;
+  margin-top: 4px;
   font-size: 11px;
   color: #9ca3af;
   background: #fff;
@@ -1655,16 +2061,29 @@ watch(
 
 .canvas-table-preview {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   overflow: hidden;
   border: 1px solid #e5e7eb;
   border-radius: 6px;
 }
 
+.table-col-row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  min-height: 48px;
+  overflow-x: auto;
+  background: #f9fafb;
+}
+
 .table-col {
-  flex: 1;
-  min-width: 72px;
-  padding: 6px 8px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  align-items: flex-start;
+  min-width: 88px;
+  max-width: 180px;
+  padding: 8px 10px;
   font-size: 11px;
   font-weight: 600;
   text-align: left;
@@ -1673,12 +2092,67 @@ watch(
   border-right: 1px solid #e5e7eb;
 }
 
+.table-col.is-fixed {
+  cursor: default;
+  background: #f3f4f6;
+  opacity: 0.85;
+}
+
+.table-col-ghost {
+  background: #dbeafe !important;
+  border: 1px dashed #2563eb !important;
+  opacity: 0.9;
+}
+
+.col-drag {
+  margin-top: 2px;
+  cursor: grab;
+}
+
+.table-col-drop-hint {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  min-width: 160px;
+  padding: 8px 12px;
+  margin: 6px;
+  font-size: 11px;
+  color: #9ca3af;
+  border: 1px dashed #cbd5e1;
+  border-radius: 4px;
+}
+
+.col-palette-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.col-palette-item {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  padding: 8px 10px;
+  cursor: grab;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.col-palette-item:hover {
+  background: #f8fbff;
+  border-color: #93c5fd;
+}
+
 .table-row-ghost {
   width: 100%;
   padding: 10px;
   font-size: 11px;
   color: #9ca3af;
   text-align: center;
+  background: #fff;
   border-top: 1px solid #e5e7eb;
 }
 

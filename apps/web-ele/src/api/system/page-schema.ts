@@ -4,7 +4,7 @@ import { requestClient } from '#/api/request';
 
 /** 配置化列表 - 页面字段 Schema */
 export namespace PageSchemaApi {
-  export type ColumnType = 'text' | 'status' | 'tag';
+  export type ColumnType = 'status' | 'tag' | 'text';
 
   export interface Column {
     field: string;
@@ -21,7 +21,7 @@ export namespace PageSchemaApi {
     field: string;
     title: string;
     component: 'Input' | 'Select';
-    options?: { label: string; value: string | number }[];
+    options?: { label: string; value: number | string }[];
   }
 
   export interface ButtonBind {
@@ -47,94 +47,114 @@ export namespace PageSchemaApi {
     columnTemplateId?: string;
     scene?: string;
     buttons?: {
-      code: string;
-      label: string;
-      type?: string;
-      group?: string;
       /** 差异化操作绑定 */
       bind?: ButtonBind;
+      code: string;
+      group?: string;
+      label: string;
+      type?: string;
     }[];
     /** 场景数据范围：允许的状态值（后端可按 scene 或本字段过滤） */
     statusIn?: string[];
     /** 字段显隐/可编辑规则（通常配在列模板上，场景继承） */
     fieldRules?: {
-      field: string;
-      hidden?: boolean;
-      visibleCodes?: string[];
-      editableCodes?: string[];
-      remark?: string;
       /** 展示格式：金额/日期等 */
       displayFormat?: {
-        type?: 'date' | 'money' | 'text';
         datePattern?: 'YYYY-MM-DD' | 'YYYY年MM月DD日';
-        thousandSeparator?: boolean;
         decimals?: number;
         prefix?: string;
+        thousandSeparator?: boolean;
+        type?: 'date' | 'money' | 'text';
       };
+      editableCodes?: string[];
+      field: string;
+      hidden?: boolean;
+      remark?: string;
+      visibleCodes?: string[];
     }[];
     /**
      * 详情页挂载的业务模块（场景配置）
      * 未配置则详情默认挂载全部模块，再与角色 Agree:Module:* 求交
      */
     modules?: {
-      key: string;
+      authCode?: string;
+      custom?: boolean;
+      desc?: string;
       enabled: boolean;
+      key: string;
+      label?: string;
       order?: number;
       span?: number;
-      label?: string;
-      desc?: string;
       widgetKind?: 'form' | 'table';
-      custom?: boolean;
-      authCode?: string;
     }[];
+    /**
+     * Epic 低代码表单 Schema（历史字段，读时忽略，新配置走 fcRules）
+     */
+    epicSchemas?: {
+      [key: string]: Record<string, any> | undefined;
+      basic?: Record<string, any>;
+      population?: Record<string, any>;
+    };
+    /**
+     * FormCreate 规则：详情每块一份（历史内嵌，新配置走 fcBindings）
+     */
+    fcRules?: {
+      [moduleKey: string]: Record<string, any>[] | undefined;
+    };
+    /**
+     * FormCreate 模板引用：moduleKey → fc-schema id
+     */
+    fcBindings?: {
+      [moduleKey: string]: string | undefined;
+    };
     /**
      * 模块内部字段/子块配置（场景级）
      * 5 块：basic / houses / compensation / rewards / population
      */
     moduleInner?: {
+      /** 配置台新建的业务组件 */
+      [key: string]: ModuleInnerBlock | undefined;
       basic?: ModuleInnerBlock;
-      houses?: ModuleInnerBlock;
+      certifyMaterial?: ModuleInnerBlock;
       compensation?: ModuleInnerBlock;
-      rewards?: ModuleInnerBlock;
+      houses?: ModuleInnerBlock;
+      material?: ModuleInnerBlock;
       population?: ModuleInnerBlock;
+      rewards?: ModuleInnerBlock;
       /** 以下为旧字段，读时忽略 */
       rightHolders?: ModuleInnerBlock;
       signing?: ModuleInnerBlock;
-      material?: ModuleInnerBlock;
       signMaterial?: ModuleInnerBlock;
-      certifyMaterial?: ModuleInnerBlock;
-      /** 配置台新建的业务组件 */
-      [key: string]: ModuleInnerBlock | undefined;
     };
   }
 
   /** 模块内部配置块 */
   export interface ModuleInnerBlock {
     sections: {
-      key: string;
-      label: string;
-      subtitle?: string;
-      enabled: boolean;
-      order: number;
       /** 配置台新增的自定义表格子块 */
       custom?: boolean;
+      enabled: boolean;
       fields: {
+        accessField?: string;
+        cellType?: string;
+        controlType?: string;
+        custom?: boolean;
+        enabled: boolean;
         key: string;
         label: string;
-        enabled: boolean;
-        order: number;
         minWidth?: number;
-        accessField?: string;
-        controlType?: string;
-        span?: number;
         options?: { label: string; value: string }[];
-        required?: boolean;
+        order: number;
         placeholder?: string;
-        cellType?: string;
-        custom?: boolean;
+        required?: boolean;
+        span?: number;
       }[];
+      key: string;
+      label: string;
+      order: number;
       /** 本场景已删除的内置字段，normalize 不再补回 */
       removedFieldKeys?: string[];
+      subtitle?: string;
       tableOptions?: {
         allowAdd?: boolean;
         allowRemove?: boolean;
@@ -160,9 +180,7 @@ async function getPageSchema(id: string) {
 }
 
 /** 创建页面配置 */
-async function createPageSchema(
-  data: Omit<PageSchemaApi.PageSchema, 'id'>,
-) {
+async function createPageSchema(data: Omit<PageSchemaApi.PageSchema, 'id'>) {
   return requestClient.post('/system/page-schema', data);
 }
 

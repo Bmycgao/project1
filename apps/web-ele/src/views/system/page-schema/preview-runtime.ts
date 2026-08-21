@@ -1,3 +1,10 @@
+import type {
+  AgreeButtonBind,
+  AgreeToolbarButton,
+} from '../../biz/agreement/actions';
+import type { AgreeFieldRule } from '../../biz/agreement/field-access';
+import type { AgreeModuleMount } from '../../biz/agreement/module-access';
+
 /**
  * 页面配置可视化预览：按「当前草稿配置 + 某角色权限码」模拟列表列/按钮/字段/模块效果
  * 不落库、不调业务接口，仅前端计算
@@ -7,14 +14,11 @@ import type { PageSchemaApi } from '#/api';
 import {
   filterButtonsByAccessCodes,
   resolveToolbarButtons,
-  type AgreeButtonBind,
-  type AgreeToolbarButton,
 } from '../../biz/agreement/actions';
 import {
   filterColumnsByFieldRules,
   formatAgreeFieldValue,
   resolveFieldAccess,
-  type AgreeFieldRule,
 } from '../../biz/agreement/field-access';
 import {
   AGREE_DETAIL_MODULES,
@@ -22,7 +26,6 @@ import {
   normalizeAgreeModuleMounts,
   normalizeModuleSpan,
   resolveAgreeModulesForPage,
-  type AgreeModuleMount,
 } from '../../biz/agreement/module-access';
 
 /** 预览入参（表单草稿） */
@@ -117,9 +120,7 @@ export function buildSchemaPreview(
     const access = resolveFieldAccess(c.field, rules, accessCodes);
     let reason = '可见';
     if (!shown) {
-      reason = access.visible
-        ? '列配置隐藏'
-        : '缺少字段可见权限码';
+      reason = access.visible ? '列配置隐藏' : '缺少字段可见权限码';
     }
     return {
       field: c.field,
@@ -135,9 +136,7 @@ export function buildSchemaPreview(
       code,
       bind: input.actionBinds?.[code],
     }));
-    const resolved = resolveToolbarButtons(
-      withBind as AgreeToolbarButton[],
-    );
+    const resolved = resolveToolbarButtons(withBind as AgreeToolbarButton[]);
     const byAccess = filterButtonsByAccessCodes(resolved, accessCodes);
     const accessMap = new Map(byAccess.map((b) => [b.code, b]));
 
@@ -170,7 +169,7 @@ export function buildSchemaPreview(
       const showWhen = b.bind?.showWhenStatusIn;
       if (
         showWhen?.length &&
-        sampleSelected.length &&
+        sampleSelected.length > 0 &&
         !sampleSelected.every((row) =>
           showWhen.includes(String(row.statusValue || '')),
         )
@@ -183,7 +182,7 @@ export function buildSchemaPreview(
         });
         continue;
       }
-      if (showWhen?.length && !sampleSelected.length) {
+      if (showWhen?.length && sampleSelected.length === 0) {
         buttons.push({
           code: b.code,
           label: b.label,
@@ -212,7 +211,7 @@ export function buildSchemaPreview(
     }
     let formatSample = '—';
     if (r.displayFormat?.type === 'money') {
-      formatSample = formatAgreeFieldValue(1234567.8, r.displayFormat);
+      formatSample = formatAgreeFieldValue(1_234_567.8, r.displayFormat);
     } else if (r.displayFormat?.type === 'date') {
       formatSample = formatAgreeFieldValue('2026-03-15', r.displayFormat);
     }
@@ -229,20 +228,16 @@ export function buildSchemaPreview(
   const modules: PreviewModuleRow[] = [];
   if (input.schemaKind === 'scene') {
     const normalized = normalizeAgreeModuleMounts(input.modules);
-    const shownList = resolveAgreeModulesForPage(
-      input.modules,
-      accessCodes,
-    );
+    const shownList = resolveAgreeModulesForPage(input.modules, accessCodes);
     const shownMap = new Map(shownList.map((m) => [m.key, m]));
-    for (const mount of [...normalized].sort(
+    for (const mount of [...normalized].toSorted(
       (a, b) => (a.order ?? 0) - (b.order ?? 0),
     )) {
-      const meta =
-        AGREE_DETAIL_MODULES.find((m) => m.key === mount.key) || {
-          key: mount.key,
-          label: mount.label || '自定义组件',
-          authCode: mount.authCode || 'Agree:Module:custom',
-        };
+      const meta = AGREE_DETAIL_MODULES.find((m) => m.key === mount.key) || {
+        key: mount.key,
+        label: mount.label || '自定义组件',
+        authCode: mount.authCode || 'Agree:Module:custom',
+      };
       const layout = shownMap.get(mount.key);
       if (!mount.enabled) {
         modules.push({

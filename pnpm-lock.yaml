@@ -183,9 +183,6 @@ catalogs:
     '@vueuse/motion':
       specifier: ^3.0.3
       version: 3.0.3
-    ant-design-vue:
-      specifier: ^4.2.6
-      version: 4.2.6
     antdv-next:
       specifier: ^1.4.5
       version: 1.4.5
@@ -321,9 +318,6 @@ catalogs:
     medium-zoom:
       specifier: ^1.1.0
       version: 1.1.0
-    naive-ui:
-      specifier: ^2.44.1
-      version: 2.44.1
     nitropack:
       specifier: ^2.13.4
       version: 2.13.4
@@ -423,9 +417,6 @@ catalogs:
     tailwindcss:
       specifier: ^4.3.3
       version: 4.3.3
-    tdesign-vue-next:
-      specifier: ^1.20.3
-      version: 1.20.3
     theme-colors:
       specifier: ^0.1.0
       version: 0.1.0
@@ -782,6 +773,15 @@ importers:
 
   apps/web-ele:
     dependencies:
+      '@epic-designer/element-plus':
+        specifier: ^1.1.13
+        version: 1.1.13(element-plus@2.14.3(vue@3.5.40(typescript@6.0.3)))(epic-designer@1.1.13(@types/sortablejs@1.15.9)(ant-design-vue@4.2.6(vue@3.5.40(typescript@6.0.3)))(element-plus@2.14.3(vue@3.5.40(typescript@6.0.3)))(monaco-editor@0.56.0)(naive-ui@2.44.1(vue@3.5.40(typescript@6.0.3)))(vue@3.5.40(typescript@6.0.3)))(vue@3.5.40(typescript@6.0.3))
+      '@form-create/designer':
+        specifier: ^3.5.0
+        version: 3.5.0(vue@3.5.40(typescript@6.0.3))
+      '@form-create/element-ui':
+        specifier: ^3.3.3
+        version: 3.3.3(vue@3.5.40(typescript@6.0.3))
       '@vben/access':
         specifier: workspace:*
         version: link:../../packages/effects/access
@@ -833,6 +833,12 @@ importers:
       element-plus:
         specifier: 'catalog:'
         version: 2.14.3(vue@3.5.40(typescript@6.0.3))
+      epic-designer:
+        specifier: ^1.1.13
+        version: 1.1.13(@types/sortablejs@1.15.9)(ant-design-vue@4.2.6(vue@3.5.40(typescript@6.0.3)))(element-plus@2.14.3(vue@3.5.40(typescript@6.0.3)))(monaco-editor@0.56.0)(naive-ui@2.44.1(vue@3.5.40(typescript@6.0.3)))(vue@3.5.40(typescript@6.0.3))
+      monaco-editor:
+        specifier: ^0.56.0
+        version: 0.56.0
       pinia:
         specifier: ^4.0.2
         version: 4.0.2(@vue/devtools-api@8.1.5)(typescript@6.0.3)(vue@3.5.40(typescript@6.0.3))
@@ -846,6 +852,9 @@ importers:
       unplugin-element-plus:
         specifier: 'catalog:'
         version: 0.11.2(magic-string@0.30.21)(magicast@0.5.3)(oxc-parser@0.140.0)(rolldown@1.2.0)
+      vite-plugin-monaco-editor:
+        specifier: ^1.1.0
+        version: 1.1.0(monaco-editor@0.56.0)
 
   apps/web-naive:
     dependencies:
@@ -2759,6 +2768,10 @@ packages:
     peerDependencies:
       '@babel/core': ^7.0.0-0
 
+  '@babel/runtime-corejs3@7.29.7':
+    resolution: {integrity: sha512-ppj9ouYku+RX0ljtgZd+KMO5mkM2bCqg8H2PYAFWnLsHEIKIdRojqbJ2i3eVHrisuxy7nOFCmngTDdWtUCdXUQ==}
+    engines: {node: '>=6.9.0'}
+
   '@babel/runtime@7.29.7':
     resolution: {integrity: sha512-Nq8OhGWiZIZGV6hLHoyAKLLcJihP/xFeBMGJoUrxTX2psI8dCifzLhZISFb+VWS3wFMRDmCGw5R+dOySCqPLhw==}
     engines: {node: '>=6.9.0'}
@@ -3282,6 +3295,27 @@ packages:
   '@emotion/unitless@0.8.1':
     resolution: {integrity: sha512-KOEGMu6dmJZtpadb476IsZBclKvILjopjUii3V+7MnXIQCYh8W3NgNcgwo21n9LXZX6EDIKvqfjYxXebDwxKmQ==}
 
+  '@epic-designer/antd@1.1.13':
+    resolution: {integrity: sha512-8st8PJaa+kAAxDk0rlJyZkZBWcLgR1BST8ThbvcN0+5Wr89L5BarmdRXOFrXnzMUnnXsnarPkOKfjmJLL6nV/A==}
+    peerDependencies:
+      ant-design-vue: '>=3.2.20'
+      epic-designer: '>=1.1.2'
+      vue: ^3.5.40
+
+  '@epic-designer/element-plus@1.1.13':
+    resolution: {integrity: sha512-mCRrwsYfAVCQeMHtSUjXqIpzpdGRjGibha7XA4ptvyYVZGgooykWhirwsn0p4NntjRPVN8zsM67bAnxSll+kzw==}
+    peerDependencies:
+      element-plus: '>=2.11.9'
+      epic-designer: '>=1.1.2'
+      vue: ^3.5.40
+
+  '@epic-designer/naive-ui@1.1.13':
+    resolution: {integrity: sha512-VaR14ooDTprTu+vGNpLvPQnTvt0LH+wbzePJ8qi7k3ZQdGOGHiPZzhCwxsYRqWQsM9x5KML9tbpEsH9yjAv0zQ==}
+    peerDependencies:
+      epic-designer: '>=1.1.2'
+      naive-ui: '>=2.34.3'
+      vue: ^3.5.40
+
   '@epic-web/invariant@1.0.0':
     resolution: {integrity: sha512-lrTPqgvfFQtR/eY/qkIzp98OGdNJu0m5ji3q/nJI8v3SXkRKEnWiOxMmbvcSoAIzv/cGiuvRy57k4suKQSAdwA==}
 
@@ -3665,6 +3699,69 @@ packages:
 
   '@floating-ui/vue@1.1.11':
     resolution: {integrity: sha512-HzHKCNVxnGS35r9fCHBc3+uCnjw9IWIlCPL683cGgM9Kgj2BiAl8x1mS7vtvP6F9S/e/q4O6MApwSHj8hNLGfw==}
+
+  '@form-create/component-elm-checkbox@3.3.0':
+    resolution: {integrity: sha512-BNJcJ8SXtDOJCy8OXLstn6ZIbvEVAObiSJfazIW3AmAVuu958qlw6896dvQqZK0zTBpgOl3hRmMNjoFguglJfg==}
+    peerDependencies:
+      vue: ^3.5.40
+
+  '@form-create/component-elm-frame@3.3.0':
+    resolution: {integrity: sha512-4iFyg7Jaqv/Q8Lq24XEoQOBClflmMSNxh83KV+cgH3afDIJYHngVSbCqrflaB+lWyMHzIPA3cVrgRbkhkw1eyA==}
+    peerDependencies:
+      vue: ^3.5.40
+
+  '@form-create/component-elm-group@3.3.0':
+    resolution: {integrity: sha512-9lJKkEH+hCet27WkXEX6vRf1Kc01Sj4lcEksfKHmNJe/aP+Zp6D96kmYt5M6Ew9aKSNNAPdpkkLae9AUCAz4YQ==}
+    peerDependencies:
+      vue: ^3.5.40
+
+  '@form-create/component-elm-radio@3.3.0':
+    resolution: {integrity: sha512-b3v/3ytifIc4+y3KCkZjo9X//66yY5k8MHysKqtsmRMx73cAgmHzz3wtpR773zr78xrHGnZH1mE7apdecoJoPQ==}
+    peerDependencies:
+      vue: ^3.5.40
+
+  '@form-create/component-elm-select@3.3.0':
+    resolution: {integrity: sha512-uBE1rwm4/loVOjWn5/tVMaT8/BFLS6U5nieFNO+ChDJ6HwwbAjr/wXXYKPchoLzLAiDV4Tysvydkpz22hYOnjw==}
+    peerDependencies:
+      vue: ^3.5.40
+
+  '@form-create/component-elm-tree@3.3.0':
+    resolution: {integrity: sha512-C2cAxTL8zHrt2LC1HLyp+kxhXgfGU71pkv2hCM+kleU+eJ6Ly4TQoaACUwf9oCZexxjCe1dA+zq0HZ/osQdYrQ==}
+    peerDependencies:
+      vue: ^3.5.40
+
+  '@form-create/component-elm-upload@3.3.0':
+    resolution: {integrity: sha512-oIRpa2cEpHyBtsQh00BpCoD8R2tmQmQ+X6p8Oa3wD9OjGOfKJD7cAKp3bV798/uCXu3LzIh6PyQJQ0Iwjvqhtg==}
+    peerDependencies:
+      vue: ^3.5.40
+
+  '@form-create/component-subform@3.3.0':
+    resolution: {integrity: sha512-y8F6LxvVZIiHa5Jwur6xKGfxuWFuiFzR4vhwPWTXsRbARLqaPV5OVPhB3gQWjbOjoJ2cnercEEhOFvvXf99WWQ==}
+    peerDependencies:
+      vue: ^3.5.40
+
+  '@form-create/component-wangeditor@3.3.0':
+    resolution: {integrity: sha512-yQaYFVbLNcbsiujsJfeDd5vcvZNhHDUUyezTCf5w5JbhIeFUNXnVLRqUFD2iwyKhTy7RsUUzW2QhEiXxtYqOow==}
+    peerDependencies:
+      vue: ^3.5.40
+
+  '@form-create/core@3.3.3':
+    resolution: {integrity: sha512-41lEdJs4pd/+fc3lv6EKN2pzcoX8pmZDYi/CUrNp9jovOhGLEwq+/FCUfWbT6wp4CBQ4A/RIwNOa5lmD/3iWTQ==}
+    peerDependencies:
+      vue: ^3.5.40
+
+  '@form-create/designer@3.5.0':
+    resolution: {integrity: sha512-IWtbx/C08kZHGfvT8oyKKyz2v/HJ7FKQzGN1ULbYhNW3o08b6ayTtr9/yA9HlsQfxJoqiUp4gWO9RWvtF/Dw9A==}
+    peerDependencies:
+      vue: ^3.5.40
+
+  '@form-create/element-ui@3.3.3':
+    resolution: {integrity: sha512-Xz1S9NjuRxsEblUriggWP9Mx8Hmok8Zixyj0VKINFVHUVgt3nV8ySMMWNFmim5yXe844GUkBMb5koehVkAlyIw==}
+    peerDependencies:
+      vue: ^3.5.40
+
+  '@form-create/utils@3.3.0':
+    resolution: {integrity: sha512-4VGI3Qowkc0HsrxmC6NT1eUlEnN2xURqStjJXD+PjgbYKqzR01pNHJbz1UyfkrmcFE9HTUaWrH7IgPPxjlSo2g==}
 
   '@humanfs/core@0.19.2':
     resolution: {integrity: sha512-UhXNm+CFMWcbChXywFwkmhqjs3PRCmcSa/hfBgLIb7oQ5HNb1wS0icWsGtSAUNgefHeI+eBrA8I1fxmbHsGdvA==}
@@ -6660,6 +6757,10 @@ packages:
     resolution: {integrity: sha512-rwHwUfXL40Chm1r08yrhU3qpUvdVlgkKNeyeGPOxnW8/SyVDvgRaed/Uz54AqWNaTCAThlj6QAs3TZcKI0xDEw==}
     engines: {node: '>=0.10.0'}
 
+  codemirror@6.65.7:
+    resolution: {integrity: sha512-HcfnUFJwI2FvH73YWVbbMh7ObWxZiHIycEhv9ZEXy6e8ZKDjtZKbbYFUtsLN46HFXPvU5V2Uvc2d55Z//oFW5A==}
+    deprecated: This is an accidentally mis-tagged instance of 5.65.7
+
   color-convert@2.0.1:
     resolution: {integrity: sha512-RRECPsj7iu/xb5oKYcsFHSppFNnsj/52OVTRKb4zP5onXwVF3zVmmToNcOfGC+CRDpfK/U584fMg38ZHCaElKQ==}
     engines: {node: '>=7.0.0'}
@@ -6787,6 +6888,9 @@ packages:
 
   core-js-compat@3.49.0:
     resolution: {integrity: sha512-VQXt1jr9cBz03b331DFDCCP90b3fanciLkgiOoy8SBHy06gNf+vQ1A3WFLqG7I8TipYIKeYK9wxd0tUrvHcOZA==}
+
+  core-js-pure@3.50.0:
+    resolution: {integrity: sha512-6GP3Pxz4IKyWjAfa747vIu/jilB5z29JWROLqH/b+pXVcpgh6tM06ZIBwSuglgVqzDYURhOK6oEzTrG0bCHitA==}
 
   core-js@3.49.0:
     resolution: {integrity: sha512-es1U2+YTtzpwkxVLwAFdSpaIMyQaq0PBgm3YD1W3Qpsn1NAmO3KSgZfu+oGSWVu6NvLHoHCV/aYcsE5wiB7ALg==}
@@ -7114,6 +7218,9 @@ packages:
     resolution: {integrity: sha512-cgwlv/1iFQiFnU96XXgROh8xTeetsnJiDsTc7TYCLFd9+/WNkIqPTxiM/8pSd8VIrhXGTf1Ny1q1hquVqDJB5w==}
     engines: {node: '>= 4'}
 
+  dompurify@3.4.8:
+    resolution: {integrity: sha512-yb1cEmaOum7wFvOCSQxyfgVlv5D47Rc30iZWoMpbDIWTnJ6grDDQyu2KFJzB2k7u0pMuJcQ1zphH//fFnw2tjQ==}
+
   domutils@3.2.2:
     resolution: {integrity: sha512-6kZKyUajlDuqlHKVX1w7gyslj9MPIXzIFiz/rGu35uC1wMi+kMhQwGhl4lt9unC9Vb9INnY9Z3/ZA3+FhASLaw==}
 
@@ -7233,6 +7340,12 @@ packages:
   environment@1.1.0:
     resolution: {integrity: sha512-xUtoPkMggbz0MPyPiIWr1Kp4aeWJjDZ6SMvURhimjdZgsRuDplF5/s9hcgGhyXMhs+6vpnuoiZ2kFiu3FMnS8Q==}
     engines: {node: '>=18'}
+
+  epic-designer@1.1.13:
+    resolution: {integrity: sha512-DWTS3pp8acBB3MkAdjw4v1ihp6rLX/hnX8m+TaqDQee7z5HE/QsJcYHQfODhJ0sb048t+KpVMDPg19xBNWBSKA==}
+    peerDependencies:
+      monaco-editor: '>=0.48.0'
+      vue: ^3.5.40
 
   errno@0.1.8:
     resolution: {integrity: sha512-dJ6oBr5SQ1VSd9qkk7ByRgb/1SH4JZjCHSW/mr63/QcXO9zLVxvJ6Oy13nio03rxpSnVDDjFor75SjVeZWPW/A==}
@@ -8747,6 +8860,16 @@ packages:
   mark.js@8.11.1:
     resolution: {integrity: sha512-1I+1qpDt4idfgLQG+BNWmrqku+7/2bi5nLf4YwF8y8zXvmfiTBY3PV3ZibfrjBueCByROpuBjLLFCajqkgYoLQ==}
 
+  marked@14.0.0:
+    resolution: {integrity: sha512-uIj4+faQ+MgHgwUW1l2PsPglZLOLOT1uErt06dAPtx2kjteLAkbsd/0FiYg/MGS+i7ZKLb7w2WClxHkzOOuryQ==}
+    engines: {node: '>= 18'}
+    hasBin: true
+
+  marked@17.0.6:
+    resolution: {integrity: sha512-gB0gkNafnonOw0obSTEGZTT86IuhILt2Wfx0mWH/1Au83kybTayroZ/V6nS25mN7u8ASy+5fMhgB3XPNrOZdmA==}
+    engines: {node: '>= 20'}
+    hasBin: true
+
   math-intrinsics@1.1.0:
     resolution: {integrity: sha512-/IXtbwEk5HTPyEwyKX6hGkYXxM9nbj64B+ilVJnC/R6B0pH5G4V3b0pVbL7DBj4tkhBAppbQUlf6F6Xl9LHu1g==}
     engines: {node: '>= 0.4'}
@@ -8864,6 +8987,9 @@ packages:
   modern-tar@0.7.7:
     resolution: {integrity: sha512-t9VmxaqrmANnEOBhpSDI6HD192Ge48k8vmWqQQL7hSFEqHEYwZbbsu49+aKLWZeRvFs3j1pMhXOqqF4kPlvjkQ==}
     engines: {node: '>=18.0.0'}
+
+  monaco-editor@0.56.0:
+    resolution: {integrity: sha512-sXboRm3BeBeLm938eaiyLMe0OxzfXIlZvbv4ir/jVgQy1zDhWjgmny0WoN45fuDKhCCQsYMbBJrv/A6jd8aCUg==}
 
   mri@1.2.0:
     resolution: {integrity: sha512-tzzskb3bG8LvYGFF/mDTpq3jpI6Q9wc3LEmBaghu+DdCssd1FakN7Bc0hVNmEyGq1bq3RgfkCb3cmQLpNPOroA==}
@@ -9945,6 +10071,9 @@ packages:
     resolution: {integrity: sha512-bzyZ1e88w9O1iNJbKnOlvYTrWPDl46O1bG0D3XInv+9tkPrxrN8jUUTiFlDkkmKWgn1M6CfIA13SuGqOa9Korw==}
     engines: {node: '>=14'}
 
+  signature_pad@5.1.4:
+    resolution: {integrity: sha512-q0wO5a+U+AWPVcVmiNXz7FY4Ad1QiE8wto/3Yn41WVqepoVVYMvkb1CTokaWPUUAHWDLLabH3/acODeWM9jCrg==}
+
   sirv@3.0.2:
     resolution: {integrity: sha512-2wcC/oGxHis/BoHkkPwldgiPSYcpZK3JU28WoMVv55yHJgcZ8rlXvuG9iZggz+sU1d4bRgIGASwyWqjxu3FM0g==}
     engines: {node: '>=18'}
@@ -9979,6 +10108,9 @@ packages:
   smol-toml@1.7.0:
     resolution: {integrity: sha512-aqVvWoyO21L23mb+drl4RmMXbf6N7FdHjAhTRA9ZBL7apWBgfWC16KjrASI+1p9GAroljyMHj6fK67i0UiTNvQ==}
     engines: {node: '>= 18'}
+
+  sortablejs@1.14.0:
+    resolution: {integrity: sha512-pBXvQCs5/33fdN1/39pPL0NZF20LeRbLQ5jtnheIPN9JQAaufGjKdWduZn4U7wCtVuzKhmRkI0DFYHYRbB2H1w==}
 
   sortablejs@1.15.7:
     resolution: {integrity: sha512-Kk8wLQPlS+yi1ZEf48a4+fzHa4yxjC30M/Sr2AnQu+f/MPwvvX9XjZ6OWejiz8crBsLwSq8GHqaxaET7u6ux0A==}
@@ -10828,6 +10960,11 @@ packages:
   vite-plugin-lazy-import@1.0.7:
     resolution: {integrity: sha512-mE6oAObOb4wqso4AoUGi9cLjdR+4vay1RCaKJvziBuFPlziZl7J0aw2hsqRTokLVRx3bli0a0VyjMOwsNDv58A==}
 
+  vite-plugin-monaco-editor@1.1.0:
+    resolution: {integrity: sha512-IvtUqZotrRoVqwT0PBBDIZPNraya3BxN/bfcNfnxZ5rkJiGcNtO5eAOWWSgT7zullIAEqQwxMU83yL9J5k7gww==}
+    peerDependencies:
+      monaco-editor: '>=0.33.0'
+
   vite-plugin-pwa@1.3.0:
     resolution: {integrity: sha512-c5kMgN+ITrOtHXp8PAtk2uOIEea6XjP/unCGxOWWBzQ6qa65qj/awHg0wf+QF9E/2u9vh86LqxPwzEPNbM2r5A==}
     engines: {node: '>=16.0.0'}
@@ -10980,6 +11117,15 @@ packages:
       '@vue/composition-api':
         optional: true
 
+  vue-draggable-plus@0.6.1:
+    resolution: {integrity: sha512-FbtQ/fuoixiOfTZzG3yoPl4JAo9HJXRHmBQZFB9x2NYCh6pq0TomHf7g5MUmpaDYv+LU2n6BPq2YN9sBO+FbIg==}
+    peerDependencies:
+      '@types/sortablejs': ^1.15.0
+      '@vue/composition-api': '*'
+    peerDependenciesMeta:
+      '@vue/composition-api':
+        optional: true
+
   vue-eslint-parser@10.4.1:
     resolution: {integrity: sha512-Gk6gRDj0n/fkRa3C3l0bBheoBckUq/Rs0F/TvMWIS6nzzx67amAViMe9CkNgsP2tXyQONvGiHQESHwFtZ3aYDA==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
@@ -11041,6 +11187,11 @@ packages:
       typescript:
         optional: true
 
+  vuedraggable@4.1.0:
+    resolution: {integrity: sha512-FU5HCWBmsf20GpP3eudURW3WdWTKIbEIQxh9/8GE806hydR9qZqRRxRE3RjqX7PkuLuMQG/A7n3cfj9rCEchww==}
+    peerDependencies:
+      vue: ^3.5.40
+
   vueuc@0.4.65:
     resolution: {integrity: sha512-lXuMl+8gsBmruudfxnMF9HW4be8rFziylXFu1VHVNbLVhRTXXV4njvpRuJapD/8q+oFEMSfQMH16E/85VoWRyQ==}
     peerDependencies:
@@ -11058,6 +11209,9 @@ packages:
   walk-up-path@4.0.0:
     resolution: {integrity: sha512-3hu+tD8YzSLGuFYtPRb48vdhKMi0KQV5sn+uWr8+7dMEq/2G/dtLrdDinkLjqq5TIbIBjYJ4Ax/n3YiaW7QM8A==}
     engines: {node: 20 || >=22}
+
+  wangeditor@4.7.15:
+    resolution: {integrity: sha512-aPTdREd8BxXVyJ5MI+LU83FQ7u1EPd341iXIorRNYSOvoimNoZ4nPg+yn3FGbB93/owEa6buLw8wdhYnMCJQLg==}
 
   warning@4.0.3:
     resolution: {integrity: sha512-rpJyN222KWIvHJ/F53XSZv0Zl/accqHR8et1kpaMTD/fLCRxtV8iX8czMzY7sVZupTI3zcUTg8eycS2kNF9l6w==}
@@ -12132,6 +12286,10 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  '@babel/runtime-corejs3@7.29.7':
+    dependencies:
+      core-js-pure: 3.50.0
+
   '@babel/runtime@7.29.7': {}
 
   '@babel/template@7.29.7':
@@ -12776,6 +12934,26 @@ snapshots:
 
   '@emotion/unitless@0.8.1': {}
 
+  '@epic-designer/antd@1.1.13(ant-design-vue@4.2.6(vue@3.5.40(typescript@6.0.3)))(epic-designer@1.1.13(@types/sortablejs@1.15.9)(ant-design-vue@4.2.6(vue@3.5.40(typescript@6.0.3)))(element-plus@2.14.3(vue@3.5.40(typescript@6.0.3)))(monaco-editor@0.56.0)(naive-ui@2.44.1(vue@3.5.40(typescript@6.0.3)))(vue@3.5.40(typescript@6.0.3)))(vue@3.5.40(typescript@6.0.3))':
+    dependencies:
+      ant-design-vue: 4.2.6(vue@3.5.40(typescript@6.0.3))
+      epic-designer: 1.1.13(@types/sortablejs@1.15.9)(ant-design-vue@4.2.6(vue@3.5.40(typescript@6.0.3)))(element-plus@2.14.3(vue@3.5.40(typescript@6.0.3)))(monaco-editor@0.56.0)(naive-ui@2.44.1(vue@3.5.40(typescript@6.0.3)))(vue@3.5.40(typescript@6.0.3))
+      vue: 3.5.40(typescript@6.0.3)
+    optional: true
+
+  '@epic-designer/element-plus@1.1.13(element-plus@2.14.3(vue@3.5.40(typescript@6.0.3)))(epic-designer@1.1.13(@types/sortablejs@1.15.9)(ant-design-vue@4.2.6(vue@3.5.40(typescript@6.0.3)))(element-plus@2.14.3(vue@3.5.40(typescript@6.0.3)))(monaco-editor@0.56.0)(naive-ui@2.44.1(vue@3.5.40(typescript@6.0.3)))(vue@3.5.40(typescript@6.0.3)))(vue@3.5.40(typescript@6.0.3))':
+    dependencies:
+      element-plus: 2.14.3(vue@3.5.40(typescript@6.0.3))
+      epic-designer: 1.1.13(@types/sortablejs@1.15.9)(ant-design-vue@4.2.6(vue@3.5.40(typescript@6.0.3)))(element-plus@2.14.3(vue@3.5.40(typescript@6.0.3)))(monaco-editor@0.56.0)(naive-ui@2.44.1(vue@3.5.40(typescript@6.0.3)))(vue@3.5.40(typescript@6.0.3))
+      vue: 3.5.40(typescript@6.0.3)
+
+  '@epic-designer/naive-ui@1.1.13(epic-designer@1.1.13(@types/sortablejs@1.15.9)(ant-design-vue@4.2.6(vue@3.5.40(typescript@6.0.3)))(element-plus@2.14.3(vue@3.5.40(typescript@6.0.3)))(monaco-editor@0.56.0)(naive-ui@2.44.1(vue@3.5.40(typescript@6.0.3)))(vue@3.5.40(typescript@6.0.3)))(naive-ui@2.44.1(vue@3.5.40(typescript@6.0.3)))(vue@3.5.40(typescript@6.0.3))':
+    dependencies:
+      epic-designer: 1.1.13(@types/sortablejs@1.15.9)(ant-design-vue@4.2.6(vue@3.5.40(typescript@6.0.3)))(element-plus@2.14.3(vue@3.5.40(typescript@6.0.3)))(monaco-editor@0.56.0)(naive-ui@2.44.1(vue@3.5.40(typescript@6.0.3)))(vue@3.5.40(typescript@6.0.3))
+      naive-ui: 2.44.1(vue@3.5.40(typescript@6.0.3))
+      vue: 3.5.40(typescript@6.0.3)
+    optional: true
+
   '@epic-web/invariant@1.0.0': {}
 
   '@es-joy/jsdoccomment@0.88.0':
@@ -13008,6 +13186,85 @@ snapshots:
     transitivePeerDependencies:
       - '@vue/composition-api'
       - vue
+
+  '@form-create/component-elm-checkbox@3.3.0(vue@3.5.40(typescript@6.0.3))':
+    dependencies:
+      '@form-create/utils': 3.3.0
+      vue: 3.5.40(typescript@6.0.3)
+
+  '@form-create/component-elm-frame@3.3.0(vue@3.5.40(typescript@6.0.3))':
+    dependencies:
+      '@form-create/utils': 3.3.0
+      vue: 3.5.40(typescript@6.0.3)
+
+  '@form-create/component-elm-group@3.3.0(vue@3.5.40(typescript@6.0.3))':
+    dependencies:
+      '@form-create/utils': 3.3.0
+      vue: 3.5.40(typescript@6.0.3)
+
+  '@form-create/component-elm-radio@3.3.0(vue@3.5.40(typescript@6.0.3))':
+    dependencies:
+      '@form-create/utils': 3.3.0
+      vue: 3.5.40(typescript@6.0.3)
+
+  '@form-create/component-elm-select@3.3.0(vue@3.5.40(typescript@6.0.3))':
+    dependencies:
+      '@form-create/utils': 3.3.0
+      vue: 3.5.40(typescript@6.0.3)
+
+  '@form-create/component-elm-tree@3.3.0(vue@3.5.40(typescript@6.0.3))':
+    dependencies:
+      '@form-create/utils': 3.3.0
+      vue: 3.5.40(typescript@6.0.3)
+
+  '@form-create/component-elm-upload@3.3.0(vue@3.5.40(typescript@6.0.3))':
+    dependencies:
+      '@form-create/utils': 3.3.0
+      vue: 3.5.40(typescript@6.0.3)
+
+  '@form-create/component-subform@3.3.0(vue@3.5.40(typescript@6.0.3))':
+    dependencies:
+      vue: 3.5.40(typescript@6.0.3)
+
+  '@form-create/component-wangeditor@3.3.0(vue@3.5.40(typescript@6.0.3))':
+    dependencies:
+      vue: 3.5.40(typescript@6.0.3)
+      wangeditor: 4.7.15
+
+  '@form-create/core@3.3.3(vue@3.5.40(typescript@6.0.3))':
+    dependencies:
+      '@form-create/utils': 3.3.0
+      vue: 3.5.40(typescript@6.0.3)
+
+  '@form-create/designer@3.5.0(vue@3.5.40(typescript@6.0.3))':
+    dependencies:
+      '@form-create/component-wangeditor': 3.3.0(vue@3.5.40(typescript@6.0.3))
+      '@form-create/element-ui': 3.3.3(vue@3.5.40(typescript@6.0.3))
+      '@form-create/utils': 3.3.0
+      codemirror: 6.65.7
+      element-plus: 2.14.3(vue@3.5.40(typescript@6.0.3))
+      js-beautify: 1.15.4
+      marked: 17.0.6
+      signature_pad: 5.1.4
+      sortablejs: 1.14.0
+      vue: 3.5.40(typescript@6.0.3)
+      vuedraggable: 4.1.0(vue@3.5.40(typescript@6.0.3))
+
+  '@form-create/element-ui@3.3.3(vue@3.5.40(typescript@6.0.3))':
+    dependencies:
+      '@form-create/component-elm-checkbox': 3.3.0(vue@3.5.40(typescript@6.0.3))
+      '@form-create/component-elm-frame': 3.3.0(vue@3.5.40(typescript@6.0.3))
+      '@form-create/component-elm-group': 3.3.0(vue@3.5.40(typescript@6.0.3))
+      '@form-create/component-elm-radio': 3.3.0(vue@3.5.40(typescript@6.0.3))
+      '@form-create/component-elm-select': 3.3.0(vue@3.5.40(typescript@6.0.3))
+      '@form-create/component-elm-tree': 3.3.0(vue@3.5.40(typescript@6.0.3))
+      '@form-create/component-elm-upload': 3.3.0(vue@3.5.40(typescript@6.0.3))
+      '@form-create/component-subform': 3.3.0(vue@3.5.40(typescript@6.0.3))
+      '@form-create/core': 3.3.3(vue@3.5.40(typescript@6.0.3))
+      '@form-create/utils': 3.3.0
+      vue: 3.5.40(typescript@6.0.3)
+
+  '@form-create/utils@3.3.0': {}
 
   '@humanfs/core@0.19.2':
     dependencies:
@@ -15872,6 +16129,8 @@ snapshots:
 
   cluster-key-slot@1.1.1: {}
 
+  codemirror@6.65.7: {}
+
   color-convert@2.0.1:
     dependencies:
       color-name: 1.1.4
@@ -15983,6 +16242,8 @@ snapshots:
   core-js-compat@3.49.0:
     dependencies:
       browserslist: 4.28.7
+
+  core-js-pure@3.50.0: {}
 
   core-js@3.49.0: {}
 
@@ -16295,6 +16556,10 @@ snapshots:
     dependencies:
       domelementtype: 2.3.0
 
+  dompurify@3.4.8:
+    optionalDependencies:
+      '@types/trusted-types': 2.0.7
+
   domutils@3.2.2:
     dependencies:
       dom-serializer: 2.0.0
@@ -16413,6 +16678,22 @@ snapshots:
       is-safe-filename: 0.1.1
 
   environment@1.1.0: {}
+
+  epic-designer@1.1.13(@types/sortablejs@1.15.9)(ant-design-vue@4.2.6(vue@3.5.40(typescript@6.0.3)))(element-plus@2.14.3(vue@3.5.40(typescript@6.0.3)))(monaco-editor@0.56.0)(naive-ui@2.44.1(vue@3.5.40(typescript@6.0.3)))(vue@3.5.40(typescript@6.0.3)):
+    dependencies:
+      monaco-editor: 0.56.0
+      vue: 3.5.40(typescript@6.0.3)
+      vue-draggable-plus: 0.6.1(@types/sortablejs@1.15.9)
+    optionalDependencies:
+      '@epic-designer/antd': 1.1.13(ant-design-vue@4.2.6(vue@3.5.40(typescript@6.0.3)))(epic-designer@1.1.13(@types/sortablejs@1.15.9)(ant-design-vue@4.2.6(vue@3.5.40(typescript@6.0.3)))(element-plus@2.14.3(vue@3.5.40(typescript@6.0.3)))(monaco-editor@0.56.0)(naive-ui@2.44.1(vue@3.5.40(typescript@6.0.3)))(vue@3.5.40(typescript@6.0.3)))(vue@3.5.40(typescript@6.0.3))
+      '@epic-designer/element-plus': 1.1.13(element-plus@2.14.3(vue@3.5.40(typescript@6.0.3)))(epic-designer@1.1.13(@types/sortablejs@1.15.9)(ant-design-vue@4.2.6(vue@3.5.40(typescript@6.0.3)))(element-plus@2.14.3(vue@3.5.40(typescript@6.0.3)))(monaco-editor@0.56.0)(naive-ui@2.44.1(vue@3.5.40(typescript@6.0.3)))(vue@3.5.40(typescript@6.0.3)))(vue@3.5.40(typescript@6.0.3))
+      '@epic-designer/naive-ui': 1.1.13(epic-designer@1.1.13(@types/sortablejs@1.15.9)(ant-design-vue@4.2.6(vue@3.5.40(typescript@6.0.3)))(element-plus@2.14.3(vue@3.5.40(typescript@6.0.3)))(monaco-editor@0.56.0)(naive-ui@2.44.1(vue@3.5.40(typescript@6.0.3)))(vue@3.5.40(typescript@6.0.3)))(naive-ui@2.44.1(vue@3.5.40(typescript@6.0.3)))(vue@3.5.40(typescript@6.0.3))
+    transitivePeerDependencies:
+      - '@types/sortablejs'
+      - '@vue/composition-api'
+      - ant-design-vue
+      - element-plus
+      - naive-ui
 
   errno@0.1.8:
     dependencies:
@@ -18056,6 +18337,10 @@ snapshots:
 
   mark.js@8.11.1: {}
 
+  marked@14.0.0: {}
+
+  marked@17.0.6: {}
+
   math-intrinsics@1.1.0: {}
 
   mathml-tag-names@4.0.0: {}
@@ -18159,6 +18444,11 @@ snapshots:
       ufo: 1.6.4
 
   modern-tar@0.7.7: {}
+
+  monaco-editor@0.56.0:
+    dependencies:
+      dompurify: 3.4.8
+      marked: 14.0.0
 
   mri@1.2.0: {}
 
@@ -19495,6 +19785,8 @@ snapshots:
 
   signal-exit@4.1.0: {}
 
+  signature_pad@5.1.4: {}
+
   sirv@3.0.2:
     dependencies:
       '@polka/url': 1.0.0-next.29
@@ -19526,6 +19818,8 @@ snapshots:
   smob@1.6.2: {}
 
   smol-toml@1.7.0: {}
+
+  sortablejs@1.14.0: {}
 
   sortablejs@1.15.7: {}
 
@@ -20428,6 +20722,10 @@ snapshots:
       rollup: 4.62.2
       xe-utils: 3.9.1
 
+  vite-plugin-monaco-editor@1.1.0(monaco-editor@0.56.0):
+    dependencies:
+      monaco-editor: 0.56.0
+
   vite-plugin-pwa@1.3.0(supports-color@10.2.2)(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(less@4.8.0(supports-color@10.2.2))(sass-embedded@1.100.0)(sass@1.101.6)(terser@5.49.0)(yaml@2.9.0))(workbox-build@7.4.1(supports-color@10.2.2))(workbox-window@7.4.1):
     dependencies:
       debug: 4.4.3(supports-color@10.2.2)
@@ -20604,6 +20902,10 @@ snapshots:
     dependencies:
       vue: 3.5.40(typescript@6.0.3)
 
+  vue-draggable-plus@0.6.1(@types/sortablejs@1.15.9):
+    dependencies:
+      '@types/sortablejs': 1.15.9
+
   vue-eslint-parser@10.4.1(eslint@10.7.0(jiti@2.7.0)(supports-color@10.2.2))(supports-color@10.2.2):
     dependencies:
       debug: 4.4.3(supports-color@10.2.2)
@@ -20689,6 +20991,11 @@ snapshots:
     optionalDependencies:
       typescript: 6.0.3
 
+  vuedraggable@4.1.0(vue@3.5.40(typescript@6.0.3)):
+    dependencies:
+      sortablejs: 1.14.0
+      vue: 3.5.40(typescript@6.0.3)
+
   vueuc@0.4.65(vue@3.5.40(typescript@6.0.3)):
     dependencies:
       '@css-render/vue3-ssr': 0.15.14(vue@3.5.40(typescript@6.0.3))
@@ -20711,6 +21018,12 @@ snapshots:
   w3c-keyname@2.2.8: {}
 
   walk-up-path@4.0.0: {}
+
+  wangeditor@4.7.15:
+    dependencies:
+      '@babel/runtime': 7.29.7
+      '@babel/runtime-corejs3': 7.29.7
+      tslib: 2.8.1
 
   warning@4.0.3:
     dependencies:

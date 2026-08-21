@@ -98,7 +98,11 @@ const statusOptions = computed(() => {
  */
 function statusType(status: string) {
   if (status.includes('确认') || status.includes('通过')) return 'success';
-  if (status.includes('复核') || status.includes('审核') || status.includes('待'))
+  if (
+    status.includes('复核') ||
+    status.includes('审核') ||
+    status.includes('待')
+  )
     return 'warning';
   if (status.includes('锁定')) return 'danger';
   return 'info';
@@ -136,10 +140,9 @@ async function loadList() {
   } catch {
     const { MOCK_AGREEMENT_LIST } = await import('../mock-data');
     let list = [...MOCK_AGREEMENT_LIST];
-    if (runtime.value.statusIn) {
-      list = list.filter((r) =>
-        runtime.value!.statusIn!.includes(r.statusValue),
-      );
+    const statusIn = runtime.value?.statusIn || [];
+    if (statusIn.length > 0) {
+      list = list.filter((r) => statusIn.includes(r.statusValue));
     }
     const kw = keyword.value.trim();
     if (kw) {
@@ -163,14 +166,15 @@ async function loadList() {
  * 进入详情（带上来源菜单 path，供侧栏高亮）
  * @param row 行数据
  */
-function goDetail(row: AgreementListItem) {
+function goDetail(row: AgreementListItem | Record<string, unknown>) {
+  const item = row as unknown as AgreementListItem;
   router.push({
     name: 'BizAgreementDetail',
-    params: { agreementNo: row.agreementNo },
+    params: { agreementNo: item.agreementNo },
     query: {
-      id: row.id,
-      compensatee: row.compensatee,
-      houseAddress: row.houseAddress,
+      id: item.id,
+      compensatee: item.compensatee,
+      houseAddress: item.houseAddress,
       mode: runtime.value?.detailMode || 'view',
       scene: runtime.value?.scene,
       schemaId: runtime.value?.schemaId || '',
@@ -308,21 +312,14 @@ watch(
           :key="btn.code"
           :type="btn.type === 'default' ? undefined : btn.type"
           :plain="btn.plain"
-          :disabled="
-            btn.disabled || !isAgreeActionRegistered(btn.code)
-          "
+          :disabled="btn.disabled || !isAgreeActionRegistered(btn.code)"
           :title="
-            btn.disabled
-              ? '仅可见，无操作权限（Agree:View:*）'
-              : undefined
+            btn.disabled ? '仅可见，无操作权限（Agree:View:*）' : undefined
           "
           @click="onToolbar(btn)"
         >
           {{ btn.label }}
-          <span
-            v-if="btn.disabled"
-            class="ml-1 text-xs opacity-70"
-          >
+          <span v-if="btn.disabled" class="ml-1 text-xs opacity-70">
             (只读)
           </span>
         </ElButton>
@@ -337,15 +334,10 @@ watch(
                 v-for="btn in moreButtons"
                 :key="btn.code"
                 :command="btn"
-                :disabled="
-                  btn.disabled || !isAgreeActionRegistered(btn.code)
-                "
+                :disabled="btn.disabled || !isAgreeActionRegistered(btn.code)"
               >
                 {{ btn.label }}
-                <span
-                  v-if="btn.disabled"
-                  class="ml-1 text-xs text-gray-400"
-                >
+                <span v-if="btn.disabled" class="ml-1 text-xs text-gray-400">
                   （只读）
                 </span>
                 <span
@@ -389,11 +381,7 @@ watch(
           :min-width="col.minWidth || 100"
         >
           <template v-if="col.field === 'agreementNo'" #default="{ row }">
-            <ElLink
-              type="primary"
-              :underline="'never'"
-              @click="goDetail(row)"
-            >
+            <ElLink type="primary" underline="never" @click="goDetail(row)">
               {{ row.agreementNo }}
             </ElLink>
           </template>

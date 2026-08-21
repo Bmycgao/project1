@@ -56,16 +56,25 @@
     "operation": "Actions",
     "permissions": "Permissions",
     "setPermissions": "Authorize",
-    "permTabsHint": "Authorize by resource tabs: Menu, Button, Field, Module (spec 2.6). Users get updates after refresh.",
+    "permTabsHint": "Menus control which pages a role can open; buttons/fields/modules control actions and sensitive data. List status filtering is configured in Page Schema scenes, not here. Refresh after save.",
     "permTabMenu": "Menu",
     "permTabButton": "Button",
     "permTabField": "Field",
     "permTabModule": "Module",
-    "permTabButtonTip": "Action buttons and view-only codes (Agree:View:*).",
-    "permTabFieldTip": "Field codes Agree:Field:* for column/detail visibility.",
-    "permTabModuleTip": "Detail module codes Agree:Module:*."
+    "permTabButtonTip": "Grouped by menu. Clickable buttons = role codes ∩ scene buttons from Page Schema. Includes view-only codes (Agree:View:*).",
+    "permTabFieldTip": "Sensitive fields (phone, ID, amount, etc.). Unchecked → hidden/readonly; intersected with page schema field rules.",
+    "permTabModuleTip": "Agreement detail modules. Unchecked → hidden; intersected with scene module mounts.",
+    "permSearchPlaceholder": "Search by label / auth code / menu path",
+    "permViewOnly": "View only",
+    "permEmptyFilter": "No matches. Clear the search or try another keyword."
   },
   "pageSchema": {
     "title": "Page Schema"
+  },
+  "fcSchema": {
+    "title": "Form Templates",
+    "editTitle": "Edit Form Template",
+    "kindForm": "Form",
+    "kindTable": "Table"
   }
 }

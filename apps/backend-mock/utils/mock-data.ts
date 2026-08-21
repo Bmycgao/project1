@@ -544,6 +544,35 @@ export const MOCK_MENU_LIST: any[] = [
         },
         component: '/system/page-schema/list',
       },
+      {
+        id: 207,
+        pid: 2,
+        path: 'fc-schema',
+        name: 'SystemFcSchema',
+        authCode: 'System:FcSchema:List',
+        status: 1,
+        type: 'menu',
+        meta: {
+          icon: 'mdi:form-select',
+          title: 'system.fcSchema.title',
+        },
+        component: '/system/fc-schema/list',
+      },
+      {
+        id: 2071,
+        pid: 2,
+        path: 'fc-schema/edit/:id',
+        name: 'SystemFcSchemaEdit',
+        authCode: 'System:FcSchema:List',
+        status: 1,
+        type: 'menu',
+        meta: {
+          hideInMenu: true,
+          activePath: '/system/fc-schema',
+          title: 'system.fcSchema.editTitle',
+        },
+        component: '/system/fc-schema/edit',
+      },
     ],
   },
   /** 电子协议：同一列表组件 + 不同 scene（按钮/数据不同） */
@@ -892,36 +921,36 @@ export const MOCK_MENU_LIST: any[] = [
  * 按用户限制可见菜单 name（任意层级）
  * all = 全量菜单；否则只保留名单内节点（父级有子则保留）
  */
-const USER_MENU_NAME_ACCESS: Record<string, Set<string> | 'all'> = {
+const USER_MENU_NAME_ACCESS: Record<string, 'all' | Set<string>> = {
   vben: 'all',
   admin: 'all',
-  jack: new Set(['Dashboard', 'Analytics', 'Workspace']),
+  jack: new Set(['Analytics', 'Dashboard', 'Workspace']),
   entry: new Set([
-    'Dashboard',
     'Analytics',
-    'Workspace',
-    'EAgreement',
-    'EAgreeEntry',
     'BizAgreementDetail',
+    'Dashboard',
+    'EAgreeEntry',
+    'EAgreement',
+    'Workspace',
   ]),
   lawyer: new Set([
-    'Dashboard',
     'Analytics',
-    'Workspace',
-    'EAgreement',
-    'EAgreeLawyerAudit',
     'BizAgreementDetail',
+    'Dashboard',
+    'EAgreeLawyerAudit',
+    'EAgreement',
+    'Workspace',
   ]),
   viewer: new Set([
-    'Dashboard',
     'Analytics',
-    'Workspace',
-    'EQuery',
-    'EAgreePreview',
-    'EAgreeView',
+    'BizAgreementDetail',
+    'Dashboard',
     // 详情路由挂在电子协议下，查询岗也需注册该隐藏路由
     'EAgreement',
-    'BizAgreementDetail',
+    'EAgreePreview',
+    'EAgreeView',
+    'EQuery',
+    'Workspace',
   ]),
 };
 
@@ -944,7 +973,7 @@ function convertMenuNodeToRoute(node: any): any | null {
     .map((child: any) => convertMenuNodeToRoute(child))
     .filter(Boolean);
 
-  const meta = { ...(node.meta || {}) };
+  const meta = { ...node.meta };
   const route: Record<string, any> = {
     name: node.name,
     path,
@@ -1014,7 +1043,10 @@ sanitizeMenuTree();
  * @param list 菜单树
  * @param allowedNames 允许的 name 集合
  */
-function filterMenusByAllowedNames(list: any[], allowedNames: Set<string>): any[] {
+function filterMenusByAllowedNames(
+  list: any[],
+  allowedNames: Set<string>,
+): any[] {
   const result: any[] = [];
   for (const node of list) {
     const rawChildren: any[] = node.children || [];

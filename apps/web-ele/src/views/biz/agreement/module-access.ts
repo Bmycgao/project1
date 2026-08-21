@@ -132,8 +132,8 @@ export function inferCustomWidgetKind(key: string): AgreeModuleWidgetKind {
  */
 export function createCustomAgreeModule(opts: {
   label: string;
-  widgetKind: AgreeModuleWidgetKind;
   order: number;
+  widgetKind: AgreeModuleWidgetKind;
 }): AgreeModuleMount {
   const widgetKind = opts.widgetKind;
   const key = `custom_${widgetKind}_${Date.now()}`;
@@ -167,9 +167,7 @@ export function metaFromMount(mount: AgreeModuleMount): AgreeModuleMeta {
   return {
     key: mount.key,
     label: mount.label || '自定义组件',
-    desc:
-      mount.desc ||
-      (widgetKind === 'table' ? '自定义表格' : '自定义表单'),
+    desc: mount.desc || (widgetKind === 'table' ? '自定义表格' : '自定义表单'),
     authCode: mount.authCode || 'Agree:Module:custom',
     widgetKind,
   };
@@ -208,7 +206,7 @@ export function buildAgreeModuleMounts(
  * @param modules 原始配置
  */
 export function normalizeAgreeModuleMounts(
-  modules: AgreeModuleMount[] | undefined | null,
+  modules: AgreeModuleMount[] | null | undefined,
 ): AgreeModuleMount[] {
   if (!modules?.length) {
     return buildAgreeModuleMounts();
@@ -232,22 +230,25 @@ export function normalizeAgreeModuleMounts(
         (meta.key === 'rewards' && !!compRaw && compRaw.enabled !== false));
     const basicOrder =
       typeof basicRaw?.order === 'number' ? basicRaw.order : 10;
+    /** 从 basic 继承时的相对顺序偏移 */
+    const inheritOffsetMap: Record<string, number> = {
+      houses: 1,
+      compensation: 2,
+      rewards: 3,
+      population: 4,
+    };
+    let order: number;
+    if (typeof raw?.order === 'number' && Number.isFinite(raw.order)) {
+      order = raw.order;
+    } else if (inherited) {
+      order = basicOrder + (inheritOffsetMap[meta.key] ?? 4);
+    } else {
+      order = (index + 1) * 10;
+    }
     return {
       key: meta.key,
       enabled: raw ? raw.enabled !== false : inherited,
-      order:
-        typeof raw?.order === 'number' && Number.isFinite(raw.order)
-          ? raw.order
-          : inherited
-            ? basicOrder +
-              (meta.key === 'houses'
-                ? 1
-                : meta.key === 'compensation'
-                  ? 2
-                  : meta.key === 'rewards'
-                    ? 3
-                    : 4)
-            : (index + 1) * 10,
+      order,
       span: normalizeModuleSpan(raw?.span),
       widgetKind: meta.widgetKind,
       label: meta.label,
@@ -275,8 +276,7 @@ export function normalizeAgreeModuleMounts(
         span: normalizeModuleSpan(item.span),
         label: item.label || '自定义组件',
         desc:
-          item.desc ||
-          (widgetKind === 'table' ? '自定义表格' : '自定义表单'),
+          item.desc || (widgetKind === 'table' ? '自定义表格' : '自定义表单'),
         widgetKind,
         custom: true,
         authCode: item.authCode || 'Agree:Module:custom',
@@ -290,15 +290,15 @@ export function normalizeAgreeModuleMounts(
  * @param modules 页面配置 modules
  */
 export function resolveMountedModuleKeys(
-  modules: AgreeModuleMount[] | undefined | null,
+  modules: AgreeModuleMount[] | null | undefined,
 ): AgreementModuleKey[] {
   const normalized = normalizeAgreeModuleMounts(modules);
   const keys = normalized
     .filter((m) => m.enabled)
-    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+    .toSorted((a, b) => (a.order ?? 0) - (b.order ?? 0))
     .map((m) => m.key);
   // 全关时兜底基础信息，避免详情空白
-  return keys.length ? keys : (['basic'] as AgreementModuleKey[]);
+  return keys.length > 0 ? keys : (['basic'] as AgreementModuleKey[]);
 }
 
 /**
@@ -343,7 +343,7 @@ export function filterAgreeModulesByAccess(
  * @param accessCodes 用户权限码
  */
 export function resolveAgreeModulesForPage(
-  modules: AgreeModuleMount[] | undefined | null,
+  modules: AgreeModuleMount[] | null | undefined,
   accessCodes: string[] | undefined,
 ): AgreeModuleLayoutItem[] {
   const normalized = normalizeAgreeModuleMounts(modules);
@@ -351,7 +351,7 @@ export function resolveAgreeModulesForPage(
     normalized.filter((m) => m.enabled).map((m) => m.key),
   );
   // 全关兜底
-  if (!enabledKeys.size) {
+  if (enabledKeys.size === 0) {
     enabledKeys.add('basic');
   }
 
@@ -366,7 +366,7 @@ export function resolveAgreeModulesForPage(
       span: normalizeModuleSpan(mount.span),
     });
   }
-  return result.sort((a, b) => a.order - b.order);
+  return result.toSorted((a, b) => a.order - b.order);
 }
 
 /**

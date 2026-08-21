@@ -15,6 +15,7 @@ import { $t, setupI18n } from '#/locales';
 import { initComponentAdapter } from './adapter/component';
 import { initSetupVbenForm } from './adapter/form';
 import App from './app.vue';
+import { setupFormCreate } from './plugins/form-create';
 import { router } from './router';
 
 async function bootstrap(namespace: string) {
@@ -23,7 +24,6 @@ async function bootstrap(namespace: string) {
 
   // 初始化表单组件
   await initSetupVbenForm();
-
   // // 设置弹窗的默认配置
   // setDefaultModalProps({
   //   fullscreenButton: false,
@@ -33,6 +33,9 @@ async function bootstrap(namespace: string) {
   //   zIndex: 2000,
   // });
   const app = createApp(App);
+
+  // FormCreate：须在 mount 前注册，供 fc-designer / form-create 使用
+  setupFormCreate(app);
 
   // 注册Element Plus提供的v-loading指令
   app.directive('loading', ElLoading.directive);

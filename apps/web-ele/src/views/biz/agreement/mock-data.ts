@@ -86,8 +86,10 @@ export function buildAgreementDetail(
   const row =
     listRow ||
     MOCK_AGREEMENT_LIST.find((i) => i.agreementNo === agreementNo) ||
-    MOCK_AGREEMENT_LIST[0]!;
-
+    MOCK_AGREEMENT_LIST[0];
+  if (!row) {
+    throw new Error('演示协议列表为空，无法构建详情');
+  }
   return {
     id: row.id || `A-${agreementNo}`,
     agreementNo,
@@ -101,7 +103,7 @@ export function buildAgreementDetail(
       department: '征收事务部',
       acquirer: '市土地储备中心',
       compensatee: row.compensatee || '陈爱然',
-      amount: 5880000,
+      amount: 5_880_000,
       signDate: '2026-03-15',
       statusValue: row.statusValue || '告知单',
       remark: '',
@@ -127,7 +129,7 @@ export function buildAgreementDetail(
         structure: '钢混',
         yearBuilt: '2012',
         floor: '2',
-        evalValue: 4586400,
+        evalValue: 4_586_400,
       },
     ],
     /** 自定义子块默认空：由页面配置新增子块后，详情里点「新增」加行 */
@@ -138,7 +140,7 @@ export function buildAgreementDetail(
       decorateEval: '否',
       hasMortgage: '否',
       mortgagee: '',
-      debtAmount: 1280000.5,
+      debtAmount: 1_280_000.5,
       hasSeal: '否',
       sealCourt: '',
       signDate: '2026-03-15',
@@ -177,7 +179,7 @@ export function buildAgreementDetail(
     compensation: {
       settleType: '产权调换',
       settleAddress: '',
-      amount: 4586400,
+      amount: 4_586_400,
       remark: '',
     },
     compensationItems: [
@@ -186,8 +188,8 @@ export function buildAgreementDetail(
         name: '房屋补偿',
         calcType: '面积×单价',
         quantity: 128.6,
-        unitPrice: 20000,
-        amount: 2572000,
+        unitPrice: 20_000,
+        amount: 2_572_000,
         remark: '',
       },
       {
@@ -195,8 +197,8 @@ export function buildAgreementDetail(
         name: '装修补偿',
         calcType: '评估',
         quantity: 1,
-        unitPrice: 860000,
-        amount: 860000,
+        unitPrice: 860_000,
+        amount: 860_000,
         remark: '',
       },
       {
@@ -204,8 +206,8 @@ export function buildAgreementDetail(
         name: '搬迁补助',
         calcType: '定额',
         quantity: 1,
-        unitPrice: 50000,
-        amount: 50000,
+        unitPrice: 50_000,
+        amount: 50_000,
         remark: '',
       },
       {
@@ -213,8 +215,8 @@ export function buildAgreementDetail(
         name: '临时安置',
         calcType: '定额',
         quantity: 6,
-        unitPrice: 18400,
-        amount: 110400,
+        unitPrice: 18_400,
+        amount: 110_400,
         remark: '',
       },
     ],
@@ -223,21 +225,21 @@ export function buildAgreementDetail(
         id: 'ri-1',
         name: '签约奖励',
         condition: '约定期内签约',
-        amount: 80000,
+        amount: 80_000,
         remark: '',
       },
       {
         id: 'ri-2',
         name: '搬迁奖励',
         condition: '按期腾空',
-        amount: 30000,
+        amount: 30_000,
         remark: '',
       },
       {
         id: 'ri-3',
         name: '配合征收奖励',
         condition: '无信访',
-        amount: 20000,
+        amount: 20_000,
         remark: '',
       },
     ],

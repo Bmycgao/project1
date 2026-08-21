@@ -1,16 +1,25 @@
 <script lang="ts" setup>
+import type { PermResourceKind } from '../permission-tabs';
+
 /**
  * 角色表单：基本信息 + 四类资源分 Tab 授权（菜单/按钮/字段/模块）
- * 保存仍写入统一的 permissions: id[]
+ * 按钮/字段/模块按菜单分组展示，支持关键字筛选；保存仍写入统一的 permissions: id[]
  */
 import type { SystemRoleApi } from '#/api/system/role';
 
-import { computed, nextTick, ref } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 
 import { Tree, useVbenDrawer } from '@vben/common-ui';
 import { IconifyIcon } from '@vben/icons';
 
-import { ElAlert, ElTabPane, ElTabs, ElTag } from 'element-plus';
+import {
+  ElAlert,
+  ElEmpty,
+  ElInput,
+  ElTabPane,
+  ElTabs,
+  ElTag,
+} from 'element-plus';
 
 import { useVbenForm } from '#/adapter/form';
 import { getMenuList } from '#/api/system/menu';
@@ -19,12 +28,11 @@ import { $t } from '#/locales';
 
 import { useFormSchema } from '../data';
 import {
-  buildFlatResourceTree,
+  buildGroupedResourceTree,
   buildMenuResourceTree,
   collectPermIdsByKind,
   mergePermSelection,
   pickPermSelection,
-  type PermResourceKind,
 } from '../permission-tabs';
 
 const emits = defineEmits<{ success: [] }>();
@@ -38,6 +46,8 @@ const loadingPermissions = ref(false);
 const activePermTab = ref<PermResourceKind>('menu');
 /** 统一已选权限 ID（四 Tab 共用） */
 const selectedPermIds = ref<Array<number | string>>([]);
+/** 按钮/字段/模块关键字筛选 */
+const resourceKeyword = ref('');
 
 const [Form, formApi] = useVbenForm({
   schema: useFormSchema(),
@@ -46,22 +56,27 @@ const [Form, formApi] = useVbenForm({
 
 /** 菜单资源树 */
 const menuTree = computed(() => buildMenuResourceTree(permissions.value));
-/** 按钮资源（扁平） */
-const buttonTree = computed(() =>
-  buildFlatResourceTree(permissions.value, 'button'),
-);
-/** 字段资源（扁平） */
-const fieldTree = computed(() =>
-  buildFlatResourceTree(permissions.value, 'field'),
-);
-/** 模块资源（扁平） */
-const moduleTree = computed(() =>
-  buildFlatResourceTree(permissions.value, 'module'),
-);
 
-const menuIds = computed(() =>
-  collectPermIdsByKind(permissions.value, 'menu'),
-);
+/**
+ * 构建当前 Tab 的分组资源树
+ * @param kind 按钮/字段/模块
+ */
+function groupedTree(kind: Exclude<PermResourceKind, 'menu'>) {
+  return buildGroupedResourceTree(
+    permissions.value,
+    kind,
+    resourceKeyword.value,
+  );
+}
+
+/** 按钮资源（按菜单分组） */
+const buttonTree = computed(() => groupedTree('button'));
+/** 字段资源（按菜单分组） */
+const fieldTree = computed(() => groupedTree('field'));
+/** 模块资源（按菜单分组） */
+const moduleTree = computed(() => groupedTree('module'));
+
+const menuIds = computed(() => collectPermIdsByKind(permissions.value, 'menu'));
 const buttonIds = computed(() =>
   collectPermIdsByKind(permissions.value, 'button'),
 );
@@ -118,6 +133,11 @@ function onKindCheck(
   void kind;
 }
 
+/** 切换 Tab 时清空筛选，避免跨 Tab 残留关键字 */
+watch(activePermTab, () => {
+  resourceKeyword.value = '';
+});
+
 /** 加载菜单树作为授权数据源 */
 async function loadPermissions() {
   loadingPermissions.value = true;
@@ -129,22 +149,19 @@ async function loadPermissions() {
 }
 
 const [Drawer, drawerApi] = useVbenDrawer({
-  class: 'w-[820px]',
+  class: 'w-[920px]',
   /** 保存角色及菜单授权 */
   async onConfirm() {
     const { valid } = await formApi.validate();
     if (!valid) return;
-    // 以分 Tab 汇总结果为准写回
     syncFormPermissions();
     const values = await formApi.getValues();
     values.permissions = [...selectedPermIds.value];
     drawerApi.lock();
     try {
-      if (id.value) {
-        await updateRole(id.value, values as any);
-      } else {
-        await createRole(values as any);
-      }
+      await (id.value
+        ? updateRole(id.value, values as any)
+        : createRole(values as any));
       emits('success');
       drawerApi.close();
     } catch {
@@ -158,6 +175,7 @@ const [Drawer, drawerApi] = useVbenDrawer({
     formData.value = data;
     id.value = data?.id;
     activePermTab.value = 'menu';
+    resourceKeyword.value = '';
     if (permissions.value.length === 0) {
       await loadPermissions();
     }
@@ -204,18 +222,20 @@ const getDrawerTitle = computed(() =>
                   </ElTag>
                 </span>
               </template>
+              <!-- 菜单：父子联动，勾「系统管理」即全选其下子菜单 -->
               <Tree
                 :tree-data="menuTree"
                 multiple
                 bordered
-                check-strictly
+                :check-strictly="false"
                 :default-expanded-level="2"
                 :model-value="menuChecked"
                 value-field="id"
                 label-field="meta.title"
                 icon-field="meta.icon"
                 @update:model-value="
-                  (v) => onKindCheck('menu', menuIds, v as any)
+                  (v: Array<number | string> | number | string | undefined) =>
+                    onKindCheck('menu', menuIds, v)
                 "
               >
                 <template #node="{ value }">
@@ -241,21 +261,62 @@ const getDrawerTitle = computed(() =>
               <p class="mb-2 text-xs text-gray-500">
                 {{ $t('system.role.permTabButtonTip') }}
               </p>
+              <ElInput
+                v-model="resourceKeyword"
+                clearable
+                class="mb-2"
+                :placeholder="$t('system.role.permSearchPlaceholder')"
+              />
+              <ElEmpty
+                v-if="buttonTree.length === 0"
+                :description="$t('system.role.permEmptyFilter')"
+                :image-size="64"
+              />
               <Tree
+                v-else
                 :tree-data="buttonTree"
                 multiple
                 bordered
                 check-strictly
-                :default-expanded-level="1"
+                :auto-check-parent="false"
+                :default-expanded-level="2"
                 :model-value="buttonChecked"
                 value-field="id"
                 label-field="meta.title"
+                disabled-field="disabled"
                 @update:model-value="
-                  (v) => onKindCheck('button', buttonIds, v as any)
+                  (v: Array<number | string> | number | string | undefined) =>
+                    onKindCheck('button', buttonIds, v)
                 "
               >
                 <template #node="{ value }">
-                  {{ value.meta?.title || value.name }}
+                  <div
+                    v-if="value.disabled"
+                    class="text-foreground/80 flex min-w-0 items-center gap-2 font-medium"
+                  >
+                    <span class="truncate">{{ value.meta?.title }}</span>
+                    <ElTag size="small" type="info">
+                      {{ value.meta?.leafCount || 0 }}
+                    </ElTag>
+                  </div>
+                  <div v-else class="flex min-w-0 flex-col leading-tight">
+                    <span class="inline-flex items-center gap-1.5">
+                      <span>{{ value.meta?.title || value.name }}</span>
+                      <ElTag
+                        v-if="value.meta?.viewOnly"
+                        size="small"
+                        type="warning"
+                      >
+                        {{ $t('system.role.permViewOnly') }}
+                      </ElTag>
+                    </span>
+                    <span
+                      v-if="value.meta?.authCode || value.authCode"
+                      class="text-muted-foreground font-mono text-[11px]"
+                    >
+                      {{ value.meta?.authCode || value.authCode }}
+                    </span>
+                  </div>
                 </template>
               </Tree>
             </ElTabPane>
@@ -272,21 +333,53 @@ const getDrawerTitle = computed(() =>
               <p class="mb-2 text-xs text-gray-500">
                 {{ $t('system.role.permTabFieldTip') }}
               </p>
+              <ElInput
+                v-model="resourceKeyword"
+                clearable
+                class="mb-2"
+                :placeholder="$t('system.role.permSearchPlaceholder')"
+              />
+              <ElEmpty
+                v-if="fieldTree.length === 0"
+                :description="$t('system.role.permEmptyFilter')"
+                :image-size="64"
+              />
               <Tree
+                v-else
                 :tree-data="fieldTree"
                 multiple
                 bordered
                 check-strictly
-                :default-expanded-level="1"
+                :auto-check-parent="false"
+                :default-expanded-level="2"
                 :model-value="fieldChecked"
                 value-field="id"
                 label-field="meta.title"
+                disabled-field="disabled"
                 @update:model-value="
-                  (v) => onKindCheck('field', fieldIds, v as any)
+                  (v: Array<number | string> | number | string | undefined) =>
+                    onKindCheck('field', fieldIds, v)
                 "
               >
                 <template #node="{ value }">
-                  {{ value.meta?.title || value.name }}
+                  <div
+                    v-if="value.disabled"
+                    class="text-foreground/80 flex min-w-0 items-center gap-2 font-medium"
+                  >
+                    <span class="truncate">{{ value.meta?.title }}</span>
+                    <ElTag size="small" type="info">
+                      {{ value.meta?.leafCount || 0 }}
+                    </ElTag>
+                  </div>
+                  <div v-else class="flex min-w-0 flex-col leading-tight">
+                    <span>{{ value.meta?.title || value.name }}</span>
+                    <span
+                      v-if="value.meta?.authCode || value.authCode"
+                      class="text-muted-foreground font-mono text-[11px]"
+                    >
+                      {{ value.meta?.authCode || value.authCode }}
+                    </span>
+                  </div>
                 </template>
               </Tree>
             </ElTabPane>
@@ -303,21 +396,53 @@ const getDrawerTitle = computed(() =>
               <p class="mb-2 text-xs text-gray-500">
                 {{ $t('system.role.permTabModuleTip') }}
               </p>
+              <ElInput
+                v-model="resourceKeyword"
+                clearable
+                class="mb-2"
+                :placeholder="$t('system.role.permSearchPlaceholder')"
+              />
+              <ElEmpty
+                v-if="moduleTree.length === 0"
+                :description="$t('system.role.permEmptyFilter')"
+                :image-size="64"
+              />
               <Tree
+                v-else
                 :tree-data="moduleTree"
                 multiple
                 bordered
                 check-strictly
-                :default-expanded-level="1"
+                :auto-check-parent="false"
+                :default-expanded-level="2"
                 :model-value="moduleChecked"
                 value-field="id"
                 label-field="meta.title"
+                disabled-field="disabled"
                 @update:model-value="
-                  (v) => onKindCheck('module', moduleIds, v as any)
+                  (v: Array<number | string> | number | string | undefined) =>
+                    onKindCheck('module', moduleIds, v)
                 "
               >
                 <template #node="{ value }">
-                  {{ value.meta?.title || value.name }}
+                  <div
+                    v-if="value.disabled"
+                    class="text-foreground/80 flex min-w-0 items-center gap-2 font-medium"
+                  >
+                    <span class="truncate">{{ value.meta?.title }}</span>
+                    <ElTag size="small" type="info">
+                      {{ value.meta?.leafCount || 0 }}
+                    </ElTag>
+                  </div>
+                  <div v-else class="flex min-w-0 flex-col leading-tight">
+                    <span>{{ value.meta?.title || value.name }}</span>
+                    <span
+                      v-if="value.meta?.authCode || value.authCode"
+                      class="text-muted-foreground font-mono text-[11px]"
+                    >
+                      {{ value.meta?.authCode || value.authCode }}
+                    </span>
+                  </div>
                 </template>
               </Tree>
             </ElTabPane>

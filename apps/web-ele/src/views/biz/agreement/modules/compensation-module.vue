@@ -1,18 +1,23 @@
 <script lang="ts" setup>
-/**
- * 补偿安置：项目表格（对标参考页 Tab）
- */
-import type { AgreementDetail, CompensationRow } from '../types';
+import type { Ref } from 'vue';
+
 import type {
   ModuleInnerConfig,
   ModuleInnerFieldItem,
   ModuleInnerSection,
 } from '../module-inner-config';
+/**
+ * 补偿安置：浏览只读表；有权限时抽屉新增/编辑行
+ */
+import type { AgreementDetail, CompensationRow } from '../types';
 
-import { computed, inject, ref, type Ref, watch } from 'vue';
+import { computed, inject, reactive, ref, watch } from 'vue';
 
 import {
   ElButton,
+  ElDrawer,
+  ElForm,
+  ElFormItem,
   ElInput,
   ElMessage,
   ElOption,
@@ -21,8 +26,8 @@ import {
   ElTableColumn,
 } from 'element-plus';
 
-import SectionCard from '../components/section-card.vue';
 import { cloneJson } from '../clone';
+import SectionCard from '../components/section-card.vue';
 import {
   normalizeCompensationModuleInner,
   resolveEnabledFields,
@@ -30,10 +35,13 @@ import {
 } from '../module-inner-config';
 import { useAgreeFieldAccess } from '../use-field-access';
 
-const props = defineProps<{ detail: AgreementDetail | null }>();
+const props = defineProps<{
+  canEdit?: boolean;
+  detail: AgreementDetail | null;
+}>();
 const emit = defineEmits<{ dirty: [] }>();
 
-const { fieldVisible, fieldEditable } = useAgreeFieldAccess();
+const { fieldVisible, fieldFormat } = useAgreeFieldAccess();
 
 const injectedInner = inject<Ref<ModuleInnerConfig | null>>(
   'agreeModuleInnerCompensation',
@@ -43,7 +51,6 @@ const injectedInner = inject<Ref<ModuleInnerConfig | null>>(
 const innerConfig = computed(() =>
   normalizeCompensationModuleInner(injectedInner.value),
 );
-
 const section = computed(() => {
   const secs = resolveEnabledSections(innerConfig.value);
   return secs.find((s) => s.key === 'compensation') || secs[0] || null;
@@ -51,19 +58,22 @@ const section = computed(() => {
 
 const rows = ref<CompensationRow[]>([]);
 const dirty = ref(false);
+const drawerOpen = ref(false);
+const drawerIndex = ref(-1);
+const draft = reactive<Record<string, unknown>>({});
 
 watch(
   () => props.detail,
   (val) => {
     rows.value = val ? cloneJson(val.compensationItems || []) : [];
-    if (!rows.value.length && val?.compensation?.amount) {
+    if (rows.value.length === 0 && val?.compensation?.amount) {
       rows.value = [
         {
           id: 'cp-legacy',
           name: val.compensation.settleType || '补偿',
           calcType: '',
           quantity: 1,
-          unitPrice: val.compensation.amount,
+          unitPrice: '',
           amount: val.compensation.amount,
           remark: val.compensation.remark || '',
         },
@@ -75,6 +85,7 @@ watch(
 );
 
 function markDirty() {
+  if (dirty.value) return;
   dirty.value = true;
   emit('dirty');
 }
@@ -85,11 +96,6 @@ function columnVisible(field: ModuleInnerFieldItem) {
   return true;
 }
 
-function columnEditable(field: ModuleInnerFieldItem) {
-  if (field.accessField) return fieldEditable(field.accessField);
-  return true;
-}
-
 function sectionFields(sec: ModuleInnerSection) {
   return resolveEnabledFields(sec).filter((f) => columnVisible(f));
 }
@@ -97,6 +103,28 @@ function sectionFields(sec: ModuleInnerSection) {
 function isSelectCol(field: ModuleInnerFieldItem) {
   const cell = field.cellType || field.controlType;
   return cell === 'select' || cell === 'yesno';
+}
+
+function cellValue(row: CompensationRow, key: string) {
+  return (row as Record<string, unknown>)[key];
+}
+
+function displayCell(row: unknown, col: ModuleInnerFieldItem) {
+  const rec = (row ?? {}) as CompensationRow;
+  const raw = cellValue(rec, col.key);
+  if (col.accessField) return fieldFormat(col.accessField, raw);
+  return raw === undefined || raw === null || raw === '' ? '—' : String(raw);
+}
+
+/**
+ * 用新对象覆盖抽屉草稿，避免动态 delete
+ * @param next 下一份草稿
+ */
+function replaceDraft(next: Record<string, unknown>) {
+  for (const k of Object.keys(draft)) {
+    draft[k] = undefined;
+  }
+  Object.assign(draft, next);
 }
 
 function emptyRow(): CompensationRow {
@@ -111,13 +139,41 @@ function emptyRow(): CompensationRow {
   };
 }
 
-function addRow() {
-  if (section.value?.tableOptions?.allowAdd === false) return;
-  rows.value.push(emptyRow());
+function openDrawer(index: number) {
+  if (!props.canEdit) return;
+  const current = index < 0 ? emptyRow() : rows.value[index];
+  if (!current) return;
+  drawerIndex.value = index;
+  replaceDraft(cloneJson(current) as unknown as Record<string, unknown>);
+  drawerOpen.value = true;
+}
+
+function closeDrawer() {
+  drawerOpen.value = false;
+  drawerIndex.value = -1;
+}
+
+function confirmDrawer() {
+  if (!section.value) return;
+  for (const col of sectionFields(section.value).filter((f) => f.required)) {
+    if (!String(draft[col.key] ?? '').trim()) {
+      ElMessage.warning(`请填写「${col.label}」`);
+      return;
+    }
+  }
+  const row = {
+    ...emptyRow(),
+    ...(cloneJson(draft) as unknown as Record<string, unknown>),
+  } as unknown as CompensationRow;
+  if (!row.id) row.id = `cp-${Date.now()}`;
+  if (drawerIndex.value < 0) rows.value.push(row);
+  else rows.value[drawerIndex.value] = row;
   markDirty();
+  closeDrawer();
 }
 
 function removeRow(index: number) {
+  if (!props.canEdit) return;
   if (section.value?.tableOptions?.allowRemove === false) return;
   const minRows = section.value?.tableOptions?.minRows ?? 1;
   if (rows.value.length <= minRows) {
@@ -128,23 +184,13 @@ function removeRow(index: number) {
   markDirty();
 }
 
-function cellValue(row: CompensationRow, key: string) {
-  return (row as Record<string, unknown>)[key];
-}
-
-function setCell(row: CompensationRow, key: string, val: string) {
-  (row as Record<string, unknown>)[key] = val;
-  markDirty();
-}
-
 const totalAmount = computed(() =>
   rows.value.reduce((sum, r) => sum + (Number(r.amount) || 0), 0),
 );
 
 async function validate() {
   if (!section.value) return true;
-  const required = sectionFields(section.value).filter((f) => f.required);
-  for (const col of required) {
+  for (const col of sectionFields(section.value).filter((f) => f.required)) {
     if (rows.value.some((r) => !String(cellValue(r, col.key) ?? '').trim())) {
       ElMessage.warning(`请填写「${col.label}」`);
       return false;
@@ -174,75 +220,65 @@ defineExpose({ validate, getValues, isDirty: () => dirty.value });
 </script>
 
 <template>
-  <div @input="markDirty">
-    <SectionCard
-      v-if="section"
-      :title="section.label"
-      :subtitle="section.subtitle"
-    >
+  <div>
+    <SectionCard v-if="section" :title="section.label" subtitle="">
       <template #extra>
         <ElButton
-          v-if="section.tableOptions?.allowAdd !== false"
+          v-if="canEdit && section.tableOptions?.allowAdd !== false"
           size="small"
           type="primary"
           link
-          @click="addRow"
+          @click="openDrawer(-1)"
         >
-          新增
+          + 添加
         </ElButton>
       </template>
       <ElTable :data="rows" border size="small" row-key="id">
+        <ElTableColumn type="index" label="#" width="48" />
         <ElTableColumn
           v-for="col in sectionFields(section)"
           :key="col.key"
           :label="col.label"
           :min-width="col.minWidth || 100"
+          show-overflow-tooltip
         >
           <template #default="{ row }">
-            <ElSelect
-              v-if="isSelectCol(col)"
-              size="small"
-              class="w-full"
-              :disabled="!columnEditable(col)"
-              :model-value="String(cellValue(row, col.key) ?? '')"
-              @update:model-value="(v: string) => setCell(row, col.key, v)"
-            >
-              <ElOption
-                v-for="opt in col.options || [
-                  { label: '是', value: '是' },
-                  { label: '否', value: '否' },
-                ]"
-                :key="opt.value"
-                :label="opt.label"
-                :value="opt.value"
-              />
-            </ElSelect>
-            <ElInput
-              v-else
-              size="small"
-              :disabled="!columnEditable(col)"
-              :placeholder="col.placeholder"
-              :model-value="String(cellValue(row, col.key) ?? '')"
-              @update:model-value="(v: string) => setCell(row, col.key, v)"
-            />
+            {{ displayCell(row, col) }}
           </template>
         </ElTableColumn>
         <ElTableColumn
-          v-if="section.tableOptions?.allowRemove !== false"
+          v-if="canEdit"
           label="操作"
-          width="72"
+          width="120"
           fixed="right"
           align="center"
         >
           <template #default="{ $index }">
-            <ElButton type="danger" link size="small" @click="removeRow($index)">
+            <ElButton
+              type="primary"
+              link
+              size="small"
+              @click="openDrawer($index)"
+            >
+              编辑
+            </ElButton>
+            <ElButton
+              v-if="section.tableOptions?.allowRemove !== false"
+              type="danger"
+              link
+              size="small"
+              @click="removeRow($index)"
+            >
               删除
             </ElButton>
           </template>
         </ElTableColumn>
       </ElTable>
-      <div class="mt-2 text-right text-sm text-red-500">
-        补偿合计：¥
+      <div
+        v-if="rows.length"
+        class="mt-2 text-right text-sm font-medium text-gray-600"
+      >
+        合计金额：¥
         {{
           totalAmount.toLocaleString('zh-CN', {
             minimumFractionDigits: 2,
@@ -251,5 +287,50 @@ defineExpose({ validate, getValues, isDirty: () => dirty.value });
         }}
       </div>
     </SectionCard>
+
+    <ElDrawer
+      v-model="drawerOpen"
+      :title="drawerIndex < 0 ? '新增补偿项' : '编辑补偿项'"
+      size="420px"
+      destroy-on-close
+    >
+      <ElForm v-if="section" label-width="100px">
+        <ElFormItem
+          v-for="col in sectionFields(section)"
+          :key="col.key"
+          :label="col.label"
+          :required="col.required"
+        >
+          <ElSelect
+            v-if="isSelectCol(col)"
+            class="w-full"
+            :model-value="String(draft[col.key] ?? '')"
+            @update:model-value="(v: string) => (draft[col.key] = v)"
+          >
+            <ElOption
+              v-for="opt in col.options || [
+                { label: '是', value: '是' },
+                { label: '否', value: '否' },
+              ]"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </ElSelect>
+          <ElInput
+            v-else
+            :placeholder="col.placeholder || `请输入${col.label}`"
+            :model-value="String(draft[col.key] ?? '')"
+            @update:model-value="(v: string) => (draft[col.key] = v)"
+          />
+        </ElFormItem>
+      </ElForm>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <ElButton @click="closeDrawer">取消</ElButton>
+          <ElButton type="primary" @click="confirmDrawer">确定</ElButton>
+        </div>
+      </template>
+    </ElDrawer>
   </div>
 </template>

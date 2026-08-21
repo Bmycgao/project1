@@ -1,3 +1,4 @@
+import { buildDefaultFcBindingsForModules } from './mock-fc-schema';
 /**
  * 配置化列表：页面字段 Schema + 演示数据
  * 协议场景用 PS_AGREE_*；实体列表可由「页面配置」新建后挂到动态列表页
@@ -5,7 +6,7 @@
 import { readPersistJson, writePersistJson } from './mock-persist';
 
 /** 列渲染类型 */
-export type PageColumnType = 'text' | 'status' | 'tag';
+export type PageColumnType = 'status' | 'tag' | 'text';
 
 /** 单个列表字段配置 */
 export interface PageColumnSchema {
@@ -32,7 +33,7 @@ export interface PageQuerySchema {
   /** Input | Select */
   component: 'Input' | 'Select';
   /** Select 选项（status 等） */
-  options?: { label: string; value: string | number }[];
+  options?: { label: string; value: number | string }[];
 }
 
 /** 一整页列表配置 */
@@ -61,92 +62,106 @@ export interface PageSchema {
   scene?: string;
   /** 工具栏按钮（场景配置，可带差异化 bind） */
   buttons?: {
-    code: string;
-    label: string;
-    type?: string;
-    group?: string;
     bind?: {
       api?: string;
-      method?: 'DELETE' | 'GET' | 'POST' | 'PUT';
       confirmText?: string;
-      successMsg?: string;
+      method?: 'DELETE' | 'GET' | 'POST' | 'PUT';
       redirect?: string;
       showWhenStatusIn?: string[];
+      successMsg?: string;
     };
+    code: string;
+    group?: string;
+    label: string;
+    type?: string;
   }[];
   /** 场景允许的状态值（数据范围；未知 scene 时按此过滤） */
   statusIn?: string[];
   /** 字段显隐/可编辑规则（列模板上配置，scene 合并时继承） */
   fieldRules?: {
-    field: string;
-    hidden?: boolean;
-    visibleCodes?: string[];
-    editableCodes?: string[];
-    remark?: string;
     displayFormat?: {
-      type?: 'date' | 'money' | 'text';
       datePattern?: 'YYYY-MM-DD' | 'YYYY年MM月DD日';
-      thousandSeparator?: boolean;
       decimals?: number;
       prefix?: string;
+      thousandSeparator?: boolean;
+      type?: 'date' | 'money' | 'text';
     };
+    editableCodes?: string[];
+    field: string;
+    hidden?: boolean;
+    remark?: string;
+    visibleCodes?: string[];
   }[];
   /**
    * 详情业务模块挂载（场景配置）
    * key 对齐协议 Agree:Module:*；enabled=false 表示本场景不挂载
    */
   modules?: {
-    key: string;
+    authCode?: string;
+    custom?: boolean;
+    desc?: string;
     enabled: boolean;
+    key: string;
+    label?: string;
     order?: number;
     span?: number;
-    label?: string;
-    desc?: string;
     widgetKind?: 'form' | 'table';
-    custom?: boolean;
-    authCode?: string;
   }[];
   /**
    * 模块内部配置（场景）：5 块 basic / houses / compensation / rewards / population
    */
   moduleInner?: {
+    [key: string]: ModuleInnerSchema | undefined;
     basic?: ModuleInnerSchema;
-    houses?: ModuleInnerSchema;
+    certifyMaterial?: ModuleInnerSchema;
     compensation?: ModuleInnerSchema;
-    rewards?: ModuleInnerSchema;
+    houses?: ModuleInnerSchema;
+    material?: ModuleInnerSchema;
     population?: ModuleInnerSchema;
+    rewards?: ModuleInnerSchema;
     rightHolders?: ModuleInnerSchema;
     signing?: ModuleInnerSchema;
-    material?: ModuleInnerSchema;
     signMaterial?: ModuleInnerSchema;
-    certifyMaterial?: ModuleInnerSchema;
-    [key: string]: ModuleInnerSchema | undefined;
+  };
+  /** Epic 设计器导出的表单 JSON（历史，新配置用 fcRules） */
+  epicSchemas?: {
+    [key: string]: Record<string, any> | undefined;
+    basic?: Record<string, any>;
+    population?: Record<string, any>;
+  };
+  /** FormCreate 规则：详情每块一份（历史内嵌，新配置走 fcBindings） */
+  fcRules?: {
+    [moduleKey: string]: Record<string, any>[] | undefined;
+  };
+  /** FormCreate 模板引用：moduleKey → fc-schema id */
+  fcBindings?: {
+    [moduleKey: string]: string | undefined;
   };
 }
 
 /** 模块内部配置片段 */
 interface ModuleInnerSchema {
   sections: {
-    key: string;
-    label: string;
-    subtitle?: string;
     enabled: boolean;
-    order: number;
     fields: {
-      key: string;
-      label: string;
-      enabled: boolean;
-      order: number;
-      minWidth?: number;
       accessField?: string;
       controlType?: string;
-      span?: number;
-      options?: { label: string; value: string }[];
-      required?: boolean;
-      placeholder?: string;
       custom?: boolean;
+      enabled: boolean;
+      key: string;
+      label: string;
+      minWidth?: number;
+      options?: { label: string; value: string }[];
+      order: number;
+      placeholder?: string;
+      required?: boolean;
+      span?: number;
     }[];
+    key: string;
+    label: string;
+    order: number;
     removedFieldKeys?: string[];
+    subtitle?: string;
   }[];
 }
 
@@ -154,13 +169,7 @@ interface ModuleInnerSchema {
 function buildModules(
   enabledKeys: string[],
 ): NonNullable<PageSchema['modules']> {
-  const all = [
-    'basic',
-    'houses',
-    'compensation',
-    'rewards',
-    'population',
-  ];
+  const all = ['basic', 'houses', 'compensation', 'rewards', 'population'];
   const set = new Set(enabledKeys);
   return all.map((key, index) => ({
     key,
@@ -188,23 +197,92 @@ function buildBasicInnerFull(): ModuleInnerSchema {
         enabled: true,
         order: 10,
         fields: [
-          { key: 'agreementNo', label: '协议编号', enabled: true, order: 10, controlType: 'input', span: 8, required: true },
-          { key: 'agreementName', label: '协议名称', enabled: true, order: 20, controlType: 'input', span: 8, required: true },
-          { key: 'department', label: '所属部门', enabled: true, order: 30, controlType: 'input', span: 8 },
-          { key: 'acquirer', label: '征收人', enabled: true, order: 40, controlType: 'input', span: 8 },
-          { key: 'compensatee', label: '被征收人', enabled: true, order: 50, controlType: 'input', span: 8 },
-          { key: 'amount', label: '协议金额', enabled: true, order: 60, controlType: 'input', span: 8, accessField: 'amount' },
-          { key: 'signDate', label: '签约日期', enabled: true, order: 70, controlType: 'date', span: 8, accessField: 'signDate', placeholder: '选择日期' },
-          { key: 'statusValue', label: '状态', enabled: true, order: 80, controlType: 'radio', span: 8, options: statusOptions },
-          { key: 'remark', label: '备注', enabled: true, order: 90, controlType: 'textarea', span: 24 },
+          {
+            key: 'agreementNo',
+            label: '协议编号',
+            enabled: true,
+            order: 10,
+            controlType: 'input',
+            span: 8,
+            required: true,
+          },
+          {
+            key: 'agreementName',
+            label: '协议名称',
+            enabled: true,
+            order: 20,
+            controlType: 'input',
+            span: 8,
+            required: true,
+          },
+          {
+            key: 'department',
+            label: '所属部门',
+            enabled: true,
+            order: 30,
+            controlType: 'input',
+            span: 8,
+          },
+          {
+            key: 'acquirer',
+            label: '征收人',
+            enabled: true,
+            order: 40,
+            controlType: 'input',
+            span: 8,
+          },
+          {
+            key: 'compensatee',
+            label: '被征收人',
+            enabled: true,
+            order: 50,
+            controlType: 'input',
+            span: 8,
+          },
+          {
+            key: 'amount',
+            label: '协议金额',
+            enabled: true,
+            order: 60,
+            controlType: 'input',
+            span: 8,
+            accessField: 'amount',
+          },
+          {
+            key: 'signDate',
+            label: '签约日期',
+            enabled: true,
+            order: 70,
+            controlType: 'date',
+            span: 8,
+            accessField: 'signDate',
+            placeholder: '选择日期',
+          },
+          {
+            key: 'statusValue',
+            label: '状态',
+            enabled: true,
+            order: 80,
+            controlType: 'radio',
+            span: 8,
+            options: statusOptions,
+          },
+          {
+            key: 'remark',
+            label: '备注',
+            enabled: true,
+            order: 90,
+            controlType: 'textarea',
+            span: 24,
+          },
         ],
       },
     ],
   };
 }
 
-/** 权利人表格种子 */
-function buildRightHoldersInnerFull(): ModuleInnerSchema {
+/** 权利人表格种子（旧结构保留，供迁移对照） */
+function _buildRightHoldersInnerFull(): ModuleInnerSchema {
   return {
     sections: [
       {
@@ -214,8 +292,20 @@ function buildRightHoldersInnerFull(): ModuleInnerSchema {
         enabled: true,
         order: 10,
         fields: [
-          { key: 'agreementNo', label: '协议编号', enabled: true, order: 10, minWidth: 120 },
-          { key: 'name', label: '姓名', enabled: true, order: 20, minWidth: 100 },
+          {
+            key: 'agreementNo',
+            label: '协议编号',
+            enabled: true,
+            order: 10,
+            minWidth: 120,
+          },
+          {
+            key: 'name',
+            label: '姓名',
+            enabled: true,
+            order: 20,
+            minWidth: 100,
+          },
           {
             key: 'idNo',
             label: '身份证号/营业执照号',
@@ -249,17 +339,83 @@ function buildHousesInnerFull(): ModuleInnerSchema {
         enabled: true,
         order: 10,
         fields: [
-          { key: '_selection', label: '勾选', enabled: true, order: 5, minWidth: 48 },
-          { key: 'address', label: '房屋地址', enabled: true, order: 10, minWidth: 180 },
-          { key: 'buildArea', label: '建筑面积', enabled: true, order: 20, minWidth: 100 },
-          { key: 'expropriatedArea', label: '征收面积', enabled: true, order: 30, minWidth: 100 },
-          { key: 'houseType', label: '房屋类型', enabled: true, order: 40, minWidth: 100 },
-          { key: 'structure', label: '结构', enabled: true, order: 50, minWidth: 90 },
-          { key: 'yearBuilt', label: '建成年份', enabled: true, order: 60, minWidth: 90 },
-          { key: 'floor', label: '楼层', enabled: true, order: 70, minWidth: 80 },
-          { key: 'certNo', label: '产权证号', enabled: true, order: 80, minWidth: 160 },
-          { key: 'evalValue', label: '评估价值', enabled: true, order: 90, minWidth: 120 },
-          { key: 'propertyType', label: '产权类型', enabled: true, order: 100, minWidth: 140 },
+          {
+            key: '_selection',
+            label: '勾选',
+            enabled: true,
+            order: 5,
+            minWidth: 48,
+          },
+          {
+            key: 'address',
+            label: '房屋地址',
+            enabled: true,
+            order: 10,
+            minWidth: 180,
+          },
+          {
+            key: 'buildArea',
+            label: '建筑面积',
+            enabled: true,
+            order: 20,
+            minWidth: 100,
+          },
+          {
+            key: 'expropriatedArea',
+            label: '征收面积',
+            enabled: true,
+            order: 30,
+            minWidth: 100,
+          },
+          {
+            key: 'houseType',
+            label: '房屋类型',
+            enabled: true,
+            order: 40,
+            minWidth: 100,
+          },
+          {
+            key: 'structure',
+            label: '结构',
+            enabled: true,
+            order: 50,
+            minWidth: 90,
+          },
+          {
+            key: 'yearBuilt',
+            label: '建成年份',
+            enabled: true,
+            order: 60,
+            minWidth: 90,
+          },
+          {
+            key: 'floor',
+            label: '楼层',
+            enabled: true,
+            order: 70,
+            minWidth: 80,
+          },
+          {
+            key: 'certNo',
+            label: '产权证号',
+            enabled: true,
+            order: 80,
+            minWidth: 160,
+          },
+          {
+            key: 'evalValue',
+            label: '评估价值',
+            enabled: true,
+            order: 90,
+            minWidth: 120,
+          },
+          {
+            key: 'propertyType',
+            label: '产权类型',
+            enabled: true,
+            order: 100,
+            minWidth: 140,
+          },
         ],
       },
     ],
@@ -267,7 +423,7 @@ function buildHousesInnerFull(): ModuleInnerSchema {
 }
 
 /** 签约信息内部字段种子（全量） */
-function buildSigningInnerFull(): ModuleInnerSchema {
+function _buildSigningInnerFull(): ModuleInnerSchema {
   const yesNo = [
     { label: '是', value: '是' },
     { label: '否', value: '否' },
@@ -344,7 +500,7 @@ function buildSigningInnerFull(): ModuleInnerSchema {
             label: '签约日期',
             enabled: true,
             order: 70,
-    controlType: 'date',
+            controlType: 'date',
             span: 12,
             accessField: 'signDate',
             placeholder: '选择日期',
@@ -436,12 +592,50 @@ function buildCompensationInnerFull(): ModuleInnerSchema {
         enabled: true,
         order: 10,
         fields: [
-          { key: 'name', label: '补偿项目', enabled: true, order: 10, minWidth: 140, required: true },
-          { key: 'calcType', label: '计算方式', enabled: true, order: 20, minWidth: 120 },
-          { key: 'quantity', label: '数量', enabled: true, order: 30, minWidth: 80 },
-          { key: 'unitPrice', label: '单价', enabled: true, order: 40, minWidth: 100 },
-          { key: 'amount', label: '金额', enabled: true, order: 50, minWidth: 120, accessField: 'amount' },
-          { key: 'remark', label: '备注', enabled: true, order: 60, minWidth: 140 },
+          {
+            key: 'name',
+            label: '补偿项目',
+            enabled: true,
+            order: 10,
+            minWidth: 140,
+            required: true,
+          },
+          {
+            key: 'calcType',
+            label: '计算方式',
+            enabled: true,
+            order: 20,
+            minWidth: 120,
+          },
+          {
+            key: 'quantity',
+            label: '数量',
+            enabled: true,
+            order: 30,
+            minWidth: 80,
+          },
+          {
+            key: 'unitPrice',
+            label: '单价',
+            enabled: true,
+            order: 40,
+            minWidth: 100,
+          },
+          {
+            key: 'amount',
+            label: '金额',
+            enabled: true,
+            order: 50,
+            minWidth: 120,
+            accessField: 'amount',
+          },
+          {
+            key: 'remark',
+            label: '备注',
+            enabled: true,
+            order: 60,
+            minWidth: 140,
+          },
         ],
       },
     ],
@@ -459,10 +653,36 @@ function buildRewardsInnerFull(): ModuleInnerSchema {
         enabled: true,
         order: 10,
         fields: [
-          { key: 'name', label: '奖励项目', enabled: true, order: 10, minWidth: 140, required: true },
-          { key: 'condition', label: '发放条件', enabled: true, order: 20, minWidth: 160 },
-          { key: 'amount', label: '金额', enabled: true, order: 30, minWidth: 120, accessField: 'amount' },
-          { key: 'remark', label: '备注', enabled: true, order: 40, minWidth: 140 },
+          {
+            key: 'name',
+            label: '奖励项目',
+            enabled: true,
+            order: 10,
+            minWidth: 140,
+            required: true,
+          },
+          {
+            key: 'condition',
+            label: '发放条件',
+            enabled: true,
+            order: 20,
+            minWidth: 160,
+          },
+          {
+            key: 'amount',
+            label: '金额',
+            enabled: true,
+            order: 30,
+            minWidth: 120,
+            accessField: 'amount',
+          },
+          {
+            key: 'remark',
+            label: '备注',
+            enabled: true,
+            order: 40,
+            minWidth: 140,
+          },
         ],
       },
     ],
@@ -480,12 +700,58 @@ function buildPopulationInnerFull(): ModuleInnerSchema {
         enabled: true,
         order: 10,
         fields: [
-          { key: 'headName', label: '户主姓名', enabled: true, order: 10, controlType: 'input', span: 8, required: true },
-          { key: 'idNo', label: '身份证号', enabled: true, order: 20, controlType: 'input', span: 8, accessField: 'idNo' },
-          { key: 'familySize', label: '家庭人口', enabled: true, order: 30, controlType: 'input', span: 8, required: true },
-          { key: 'phone', label: '联系电话', enabled: true, order: 40, controlType: 'input', span: 8, accessField: 'phone' },
-          { key: 'hukouAddress', label: '户籍地址', enabled: true, order: 50, controlType: 'input', span: 16 },
-          { key: 'remark', label: '备注', enabled: true, order: 60, controlType: 'textarea', span: 24 },
+          {
+            key: 'headName',
+            label: '户主姓名',
+            enabled: true,
+            order: 10,
+            controlType: 'input',
+            span: 8,
+            required: true,
+          },
+          {
+            key: 'idNo',
+            label: '身份证号',
+            enabled: true,
+            order: 20,
+            controlType: 'input',
+            span: 8,
+            accessField: 'idNo',
+          },
+          {
+            key: 'familySize',
+            label: '家庭人口',
+            enabled: true,
+            order: 30,
+            controlType: 'input',
+            span: 8,
+            required: true,
+          },
+          {
+            key: 'phone',
+            label: '联系电话',
+            enabled: true,
+            order: 40,
+            controlType: 'input',
+            span: 8,
+            accessField: 'phone',
+          },
+          {
+            key: 'hukouAddress',
+            label: '户籍地址',
+            enabled: true,
+            order: 50,
+            controlType: 'input',
+            span: 16,
+          },
+          {
+            key: 'remark',
+            label: '备注',
+            enabled: true,
+            order: 60,
+            controlType: 'textarea',
+            span: 24,
+          },
         ],
       },
     ],
@@ -585,13 +851,17 @@ function buildHousesInnerViewSubset() {
 }
 
 /** 查看场景签约：卸下部分字段做演示 */
-function buildSigningInnerViewSubset() {
-  const full = buildSigningInnerFull();
+function _buildSigningInnerViewSubset() {
+  const full = _buildSigningInnerFull();
   return {
     sections: full.sections.map((sec) => ({
       ...sec,
       fields: sec.fields.map((f) => {
-        if (f.key === 'mortgagee' || f.key === 'sealCourt' || f.key === 'emergency') {
+        if (
+          f.key === 'mortgagee' ||
+          f.key === 'sealCourt' ||
+          f.key === 'emergency'
+        ) {
           return { ...f, enabled: false };
         }
         return f;
@@ -666,9 +936,7 @@ export const MOCK_PAGE_SCHEMAS: PageSchema[] = [
         order: 70,
       },
     ],
-    queryFields: [
-      { field: 'keyword', title: '关键字', component: 'Input' },
-    ],
+    queryFields: [{ field: 'keyword', title: '关键字', component: 'Input' }],
     /** 字段权限演示：无对应 Agree:Field:* 则列表/详情隐藏或只读 */
     fieldRules: [
       {
@@ -732,9 +1000,7 @@ export const MOCK_PAGE_SCHEMAS: PageSchema[] = [
     columnTemplateId: 'PS_AGREE_COLS',
     scene: 'entry',
     columns: [],
-    queryFields: [
-      { field: 'keyword', title: '关键字', component: 'Input' },
-    ],
+    queryFields: [{ field: 'keyword', title: '关键字', component: 'Input' }],
     statusIn: ['告知单', '待复核', '草稿'],
     buttons: [
       { code: 'add', label: '新增', type: 'primary', group: 'main' },
@@ -780,9 +1046,7 @@ export const MOCK_PAGE_SCHEMAS: PageSchema[] = [
     columnTemplateId: 'PS_AGREE_COLS',
     scene: 'lawyer_audit',
     columns: [],
-    queryFields: [
-      { field: 'keyword', title: '关键字', component: 'Input' },
-    ],
+    queryFields: [{ field: 'keyword', title: '关键字', component: 'Input' }],
     statusIn: ['组长已复核'],
     buttons: [
       {
@@ -836,9 +1100,7 @@ export const MOCK_PAGE_SCHEMAS: PageSchema[] = [
     columnTemplateId: 'PS_AGREE_COLS',
     scene: 'preview',
     columns: [],
-    queryFields: [
-      { field: 'keyword', title: '关键字', component: 'Input' },
-    ],
+    queryFields: [{ field: 'keyword', title: '关键字', component: 'Input' }],
     buttons: [
       { code: 'preSave', label: '协议预保存', group: 'main' },
       { code: 'companyAgree', label: '公司协议', group: 'main' },
@@ -848,7 +1110,13 @@ export const MOCK_PAGE_SCHEMAS: PageSchema[] = [
       { code: 'previewAgree', label: '协议预览', group: 'more' },
     ],
     /** 预览：5 块全部挂载 */
-    modules: buildModules(['basic', 'houses', 'compensation', 'rewards', 'population']),
+    modules: buildModules([
+      'basic',
+      'houses',
+      'compensation',
+      'rewards',
+      'population',
+    ]),
     moduleInner: buildModuleInnerFull(),
   },
   {
@@ -861,9 +1129,7 @@ export const MOCK_PAGE_SCHEMAS: PageSchema[] = [
     columnTemplateId: 'PS_AGREE_COLS',
     scene: 'view',
     columns: [],
-    queryFields: [
-      { field: 'keyword', title: '关键字', component: 'Input' },
-    ],
+    queryFields: [{ field: 'keyword', title: '关键字', component: 'Input' }],
     buttons: [
       { code: 'edit', label: '修改', group: 'main' },
       { code: 'export', label: '导出', group: 'main' },
@@ -896,10 +1162,32 @@ const HISTORY_LIMIT = 10;
 const PERSIST_FILE = 'page-schema.json';
 
 /** 运行时可变的 schema 列表（增删改直接改这份） */
-export let pageSchemaStore: PageSchema[] = structuredClone(MOCK_PAGE_SCHEMAS);
+export const pageSchemaStore: PageSchema[] = structuredClone(MOCK_PAGE_SCHEMAS);
 
 /** schemaId → 历史版本（新在前） */
-export let pageSchemaHistory: Record<string, PageSchemaHistoryItem[]> = {};
+export const pageSchemaHistory: Record<string, PageSchemaHistoryItem[]> = {};
+
+/**
+ * 原地替换页面配置列表，避免 export let 重赋值
+ * @param next 新列表
+ */
+function replacePageSchemaStore(next: PageSchema[]) {
+  pageSchemaStore.length = 0;
+  pageSchemaStore.push(...next);
+}
+
+/**
+ * 原地替换历史映射，避免动态 delete / 重赋值
+ * @param next 新历史
+ */
+function replacePageSchemaHistory(
+  next: Record<string, PageSchemaHistoryItem[]>,
+) {
+  for (const key of Object.keys(pageSchemaHistory)) {
+    pageSchemaHistory[key] = [];
+  }
+  Object.assign(pageSchemaHistory, next);
+}
 
 /** 下一新建 ID 从 PS1101 起 */
 let schemaIdSeed = 1101;
@@ -914,8 +1202,8 @@ function hydratePageSchemaFromDisk() {
     schemas?: PageSchema[];
   }>(PERSIST_FILE);
   if (!saved?.schemas?.length) return;
-  pageSchemaStore = saved.schemas;
-  pageSchemaHistory = saved.history || {};
+  replacePageSchemaStore(saved.schemas);
+  replacePageSchemaHistory(saved.history || {});
   if (typeof saved.schemaIdSeed === 'number') {
     schemaIdSeed = saved.schemaIdSeed;
   }
@@ -929,6 +1217,7 @@ function hydratePageSchemaFromDisk() {
   ensureFieldFormatsFromSeed();
   // 旧落盘列缺 order 时按种子/下标补齐
   ensureColumnOrderFromSeed();
+  ensureFcBindingsFromSeed();
 }
 
 /**
@@ -948,10 +1237,11 @@ function ensureModuleInnerFromSeed() {
     const idx = pageSchemaStore.findIndex(
       (s) => String(s.id) === String(seed.id),
     );
-    if (idx < 0) continue;
-    const current = pageSchemaStore[idx]!;
+    if (idx === -1) continue;
+    const current = pageSchemaStore[idx];
+    if (!current) continue;
     const nextInner = {
-      ...(current.moduleInner || {}),
+      ...current.moduleInner,
     } as NonNullable<PageSchema['moduleInner']>;
     let rowChanged = false;
     for (const key of keys) {
@@ -967,13 +1257,10 @@ function ensureModuleInnerFromSeed() {
       // 种子里新增的内置子块：按 key 合并，不覆盖已有子块配置
       const curKeys = new Set(curBlock.sections.map((s) => s.key));
       const missing = seedBlock.sections.filter((s) => !curKeys.has(s.key));
-      if (missing.length) {
+      if (missing.length > 0) {
         nextInner[key] = {
           ...curBlock,
-          sections: [
-            ...curBlock.sections,
-            ...structuredClone(missing),
-          ],
+          sections: [...curBlock.sections, ...structuredClone(missing)],
         };
         rowChanged = true;
       }
@@ -1003,7 +1290,8 @@ function migrateAgreeFiveModules() {
   ] as const;
   let changed = false;
   for (let idx = 0; idx < pageSchemaStore.length; idx++) {
-    const current = pageSchemaStore[idx]!;
+    const current = pageSchemaStore[idx];
+    if (!current) continue;
     if (current.schemaKind !== 'scene') continue;
     const seed = MOCK_PAGE_SCHEMAS.find(
       (s) => String(s.id) === String(current.id),
@@ -1014,16 +1302,16 @@ function migrateAgreeFiveModules() {
     const comp = byKey.get('compensation');
     const dropLegacy = new Set([
       'basic',
-      'houses',
-      'compensation',
-      'rewards',
-      'population',
-      'rightHolders',
-      'signMaterial',
       'certifyMaterial',
-      'signing',
-      'material',
+      'compensation',
       'contact',
+      'houses',
+      'material',
+      'population',
+      'rewards',
+      'rightHolders',
+      'signing',
+      'signMaterial',
     ]);
     const nextMods = five.map((key, i) => {
       const existing = byKey.get(key);
@@ -1032,7 +1320,8 @@ function migrateAgreeFiveModules() {
           ...existing,
           key,
           enabled: existing.enabled !== false,
-          order: typeof existing.order === 'number' ? existing.order : (i + 1) * 10,
+          order:
+            typeof existing.order === 'number' ? existing.order : (i + 1) * 10,
           span: existing.span || 24,
         };
       }
@@ -1061,7 +1350,7 @@ function migrateAgreeFiveModules() {
     const extraMods = mods.filter((m) => !dropLegacy.has(String(m.key)));
     nextMods.push(...extraMods);
     const nextInner = {
-      ...(current.moduleInner || {}),
+      ...current.moduleInner,
     } as NonNullable<PageSchema['moduleInner']>;
     if (!nextInner.population?.sections?.length) {
       nextInner.population = structuredClone(
@@ -1098,14 +1387,15 @@ function migrateAgreeFiveModules() {
 function migrateLegacyBasicTables() {
   let changed = false;
   for (let idx = 0; idx < pageSchemaStore.length; idx++) {
-    const current = pageSchemaStore[idx]!;
+    const current = pageSchemaStore[idx];
+    if (!current) continue;
     const inner = current.moduleInner;
     const sections = inner?.basic?.sections;
     if (!sections?.length) continue;
     const rh = sections.find((s) => s.key === 'rightHolders');
     const hs = sections.find((s) => s.key === 'houses');
     if (!rh && !hs) continue;
-    const nextInner = { ...(inner || {}) } as NonNullable<PageSchema['moduleInner']>;
+    const nextInner = { ...inner } as NonNullable<PageSchema['moduleInner']>;
     if (rh && !nextInner.rightHolders?.sections?.length) {
       nextInner.rightHolders = { sections: [structuredClone(rh)] };
     }
@@ -1133,7 +1423,8 @@ function migrateLegacyBasicTables() {
 function migrateLegacyMaterialModules() {
   let changed = false;
   for (let idx = 0; idx < pageSchemaStore.length; idx++) {
-    const current = pageSchemaStore[idx]!;
+    const current = pageSchemaStore[idx];
+    if (!current) continue;
     let rowChanged = false;
     let modules = current.modules ? [...current.modules] : [];
     const sign = modules.find((m) => m.key === 'signMaterial');
@@ -1173,38 +1464,42 @@ function migrateLegacyMaterialModules() {
         inner.certifyMaterial?.sections?.[0] ||
         materialSecs.find((s) => s.key === 'materials');
       const seed = buildMaterialInnerFull();
-      nextInner = {
-        ...inner,
-        material: {
-          sections: [
-            {
-              ...(signSec || seed.sections[0]!),
-              key: 'signMaterials',
-              label:
-                signSec && signSec.label !== '材料清单'
-                  ? signSec.label
-                  : '签约材料',
-              order: 10,
-            },
-            {
-              ...(certifySec || seed.sections[1]!),
-              key: 'certifyMaterials',
-              label:
-                certifySec && certifySec.label !== '材料清单'
-                  ? certifySec.label
-                  : '认定材料',
-              order: 20,
-            },
-          ],
-        },
-      };
-      rowChanged = true;
+      const signSeed = seed.sections[0];
+      const certifySeed = seed.sections[1];
+      if (signSeed && certifySeed) {
+        nextInner = {
+          ...inner,
+          material: {
+            sections: [
+              {
+                ...(signSec || signSeed),
+                key: 'signMaterials',
+                label:
+                  signSec && signSec.label !== '材料清单'
+                    ? signSec.label
+                    : '签约材料',
+                order: 10,
+              },
+              {
+                ...(certifySec || certifySeed),
+                key: 'certifyMaterials',
+                label:
+                  certifySec && certifySec.label !== '材料清单'
+                    ? certifySec.label
+                    : '认定材料',
+                order: 20,
+              },
+            ],
+          },
+        };
+        rowChanged = true;
+      }
     }
 
     if (rowChanged) {
       pageSchemaStore[idx] = {
         ...current,
-        modules: modules.length ? modules : current.modules,
+        modules: modules.length > 0 ? modules : current.modules,
         moduleInner: nextInner,
       };
       changed = true;
@@ -1223,8 +1518,9 @@ function ensureSceneModulesFromSeed() {
     const idx = pageSchemaStore.findIndex(
       (s) => String(s.id) === String(seed.id),
     );
-    if (idx < 0) continue;
-    const current = pageSchemaStore[idx]!;
+    if (idx === -1) continue;
+    const current = pageSchemaStore[idx];
+    if (!current) continue;
     if (!current.modules?.length) {
       pageSchemaStore[idx] = {
         ...current,
@@ -1242,14 +1538,12 @@ function ensureSceneModulesFromSeed() {
         typeof m.order === 'number'
           ? m.order
           : (seedItem?.order ?? (i + 1) * 10);
-      const span =
-        typeof m.span === 'number' ? m.span : (seedItem?.span ?? 24);
+      const span = typeof m.span === 'number' ? m.span : (seedItem?.span ?? 24);
       if (m.order === order && m.span === span) return m;
       rowChanged = true;
       return { ...m, order, span };
     });
-    const basicOrder =
-      next.find((m) => m.key === 'basic')?.order ?? 10;
+    const basicOrder = next.find((m) => m.key === 'basic')?.order ?? 10;
     let bump = 1;
     for (const seedItem of seed.modules || []) {
       if (byKey.has(seedItem.key)) continue;
@@ -1277,9 +1571,12 @@ function ensureSceneModulesFromSeed() {
 function ensureFieldFormatsFromSeed() {
   const seed = MOCK_PAGE_SCHEMAS.find((s) => s.id === 'PS_AGREE_COLS');
   if (!seed?.fieldRules?.length) return;
-  const idx = pageSchemaStore.findIndex((s) => String(s.id) === 'PS_AGREE_COLS');
-  if (idx < 0) return;
-  const cur = pageSchemaStore[idx]!;
+  const idx = pageSchemaStore.findIndex(
+    (s) => String(s.id) === 'PS_AGREE_COLS',
+  );
+  if (idx === -1) return;
+  const cur = pageSchemaStore[idx];
+  if (!cur) return;
   const curRules = cur.fieldRules || [];
   let changed = false;
   const next = structuredClone(curRules);
@@ -1313,8 +1610,9 @@ function ensureColumnOrderFromSeed() {
     const idx = pageSchemaStore.findIndex(
       (s) => String(s.id) === String(seed.id),
     );
-    if (idx < 0) continue;
-    const cur = pageSchemaStore[idx]!;
+    if (idx === -1) continue;
+    const cur = pageSchemaStore[idx];
+    if (!cur) continue;
     if (!cur.columns?.length) continue;
     let rowChanged = false;
     const next = cur.columns.map((c, i) => {
@@ -1332,6 +1630,28 @@ function ensureColumnOrderFromSeed() {
     }
   }
   if (anyChanged) persistPageSchemaStore();
+}
+
+/**
+ * 场景缺 fcBindings 时按已挂载模块写入默认模板引用
+ */
+function ensureFcBindingsFromSeed() {
+  let changed = false;
+  for (let i = 0; i < pageSchemaStore.length; i += 1) {
+    const schema = pageSchemaStore[i];
+    if (!schema) continue;
+    if (schema.schemaKind !== 'scene') continue;
+    if (schema.fcBindings && Object.keys(schema.fcBindings).length > 0)
+      continue;
+    const keys =
+      schema.modules?.filter((m) => m.enabled !== false).map((m) => m.key) ||
+      [];
+    const bindings = buildDefaultFcBindingsForModules(keys);
+    if (Object.keys(bindings).length === 0) continue;
+    pageSchemaStore[i] = { ...schema, fcBindings: { ...bindings } };
+    changed = true;
+  }
+  if (changed) persistPageSchemaStore();
 }
 
 /**
@@ -1393,8 +1713,10 @@ export function rollbackPageSchema(schemaId: string, versionId: string) {
   const idx = pageSchemaStore.findIndex(
     (item) => String(item.id) === String(schemaId),
   );
-  if (idx < 0) return null;
-  pushHistory(pageSchemaStore[idx]!);
+  if (idx === -1) return null;
+  const rolling = pageSchemaStore[idx];
+  if (!rolling) return null;
+  pushHistory(rolling);
   pageSchemaStore[idx] = {
     ...structuredClone(hit.snapshot),
     id: schemaId,
@@ -1478,6 +1800,17 @@ export function createPageSchema(data: Partial<PageSchema>) {
     fieldRules: data.fieldRules,
     modules: data.modules,
     moduleInner: data.moduleInner,
+    epicSchemas: data.epicSchemas,
+    fcRules: data.fcRules,
+    fcBindings:
+      data.fcBindings ||
+      (kind === 'scene'
+        ? buildDefaultFcBindingsForModules(
+            (data.modules || [])
+              .filter((m) => m.enabled !== false)
+              .map((m) => m.key),
+          )
+        : undefined),
     mockCount: data.mockCount ?? 40,
   };
   pageSchemaStore.push(node);
@@ -1491,9 +1824,12 @@ export function createPageSchema(data: Partial<PageSchema>) {
  * @param data 表单数据
  */
 export function updatePageSchema(id: string, data: Partial<PageSchema>) {
-  const idx = pageSchemaStore.findIndex((item) => String(item.id) === String(id));
-  if (idx < 0) return null;
-  const prev = pageSchemaStore[idx]!;
+  const idx = pageSchemaStore.findIndex(
+    (item) => String(item.id) === String(id),
+  );
+  if (idx === -1) return null;
+  const prev = pageSchemaStore[idx];
+  if (!prev) return null;
   pushHistory(prev);
   pageSchemaStore[idx] = {
     ...prev,
@@ -1502,10 +1838,15 @@ export function updatePageSchema(id: string, data: Partial<PageSchema>) {
     columns: data.columns ?? prev.columns,
     queryFields: data.queryFields ?? prev.queryFields,
     fieldRules:
-      data.fieldRules !== undefined ? data.fieldRules : prev.fieldRules,
-    modules: data.modules !== undefined ? data.modules : prev.modules,
+      data.fieldRules === undefined ? prev.fieldRules : data.fieldRules,
+    modules: data.modules === undefined ? prev.modules : data.modules,
     moduleInner:
-      data.moduleInner !== undefined ? data.moduleInner : prev.moduleInner,
+      data.moduleInner === undefined ? prev.moduleInner : data.moduleInner,
+    epicSchemas:
+      data.epicSchemas === undefined ? prev.epicSchemas : data.epicSchemas,
+    fcRules: data.fcRules === undefined ? prev.fcRules : data.fcRules,
+    fcBindings:
+      data.fcBindings === undefined ? prev.fcBindings : data.fcBindings,
   };
   persistPageSchemaStore();
   return pageSchemaStore[idx];
@@ -1517,8 +1858,10 @@ export function updatePageSchema(id: string, data: Partial<PageSchema>) {
  */
 export function removePageSchema(id: string) {
   const before = pageSchemaStore.length;
-  pageSchemaStore = pageSchemaStore.filter((item) => String(item.id) !== String(id));
-  delete pageSchemaHistory[String(id)];
+  replacePageSchemaStore(
+    pageSchemaStore.filter((item) => String(item.id) !== String(id)),
+  );
+  pageSchemaHistory[String(id)] = [];
   if (pageSchemaStore.length < before) {
     persistPageSchemaStore();
   }

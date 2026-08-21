@@ -2,6 +2,10 @@
  * 协议列表：共用列模板 + 多场景（按钮码 / 数据过滤不同，同一 list 接口）
  * 按钮只存动作码，文案与样式由 actions 注册表解析
  */
+import type { AgreeToolbarButton } from './actions';
+
+import { resolveToolbarButtons } from './actions';
+
 /** 场景配置 */
 export interface AgreeSceneConfig {
   /** 场景码，请求 list 时带上 */
@@ -160,7 +164,9 @@ export function getAgreeScene(scene: string): AgreeSceneConfig | null {
  * 按 schemaId 反查场景
  * @param schemaId 页面配置 ID
  */
-export function getAgreeSceneBySchemaId(schemaId: string): AgreeSceneConfig | null {
+export function getAgreeSceneBySchemaId(
+  schemaId: string,
+): AgreeSceneConfig | null {
   return (
     Object.values(AGREE_SCENES).find((s) => s.schemaId === schemaId) || null
   );

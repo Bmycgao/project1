@@ -4,10 +4,7 @@
 import type { EventHandlerRequest, H3Event } from 'h3';
 
 import { verifyAccessToken } from './jwt-utils';
-import {
-  findRbacUserByUsername,
-  resolveAccessCodes,
-} from './rbac-store';
+import { findRbacUserByUsername, resolveAccessCodes } from './rbac-store';
 import { forbiddenResponse, unAuthorizedResponse } from './response';
 
 /** 系统权限码常量（与 mock-data 菜单 button.authCode 一致） */
@@ -28,6 +25,7 @@ export const SYSTEM_AUTH = {
   deptDelete: 'System:Dept:Delete',
   deptList: 'System:Dept:List',
   pageSchemaList: 'System:PageSchema:List',
+  fcSchemaList: 'System:FcSchema:List',
 } as const;
 
 /**
@@ -37,10 +35,10 @@ export const SYSTEM_AUTH = {
  */
 export function matchSystemAccessCodes(
   accessCodes: string[] | undefined,
-  need: string[] | string,
+  need: string | string[],
 ) {
   const needList = Array.isArray(need) ? need : [need];
-  if (!needList.length) return true;
+  if (needList.length === 0) return true;
   const set = new Set(accessCodes || []);
   if (set.has('System:*')) return true;
   // 超管协议通配不直接放行系统写操作；超管实际会拥有全部 System: 码
@@ -54,7 +52,7 @@ export function matchSystemAccessCodes(
  */
 export function assertSystemAccess(
   event: H3Event<EventHandlerRequest>,
-  need: string[] | string,
+  need: string | string[],
 ) {
   const userinfo = verifyAccessToken(event);
   if (!userinfo) {
@@ -104,6 +102,38 @@ export function assertPageSchemaReadAccess(
       response: forbiddenResponse(
         event,
         `无权限读取页面配置（需要：${SYSTEM_AUTH.pageSchemaList} 或协议相关权限）`,
+      ),
+      userinfo,
+      codes,
+    };
+  }
+
+  return { ok: true as const, userinfo, codes };
+}
+
+/**
+ * FormCreate 模板「业务读」鉴权：管理端 FcSchema:List 或任一协议权限均可
+ * （协议详情按 fcBindings 拉模板；勿先 assertSystemAccess 再回落，会把 status 打成 403）
+ * @param event h3 事件
+ */
+export function assertFcSchemaReadAccess(event: H3Event<EventHandlerRequest>) {
+  const userinfo = verifyAccessToken(event);
+  if (!userinfo) {
+    return { ok: false as const, response: unAuthorizedResponse(event) };
+  }
+
+  const user = findRbacUserByUsername(userinfo.username);
+  const codes = user ? resolveAccessCodes(user) : [];
+  const canManage = matchSystemAccessCodes(codes, SYSTEM_AUTH.fcSchemaList);
+  const canBizRead = codes.some(
+    (c) => c === 'Agree:*' || String(c).startsWith('Agree:'),
+  );
+  if (!canManage && !canBizRead) {
+    return {
+      ok: false as const,
+      response: forbiddenResponse(
+        event,
+        `无权限读取表单模板（需要：${SYSTEM_AUTH.fcSchemaList} 或协议相关权限）`,
       ),
       userinfo,
       codes,

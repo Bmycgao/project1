@@ -130,7 +130,7 @@ export function formatAgreeFieldValue(
     const fixed = n.toFixed(decimals);
     const [intPart, decPart] = fixed.split('.');
     const intText = useSep
-      ? (intPart || '0').replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+      ? (intPart || '0').replaceAll(/\B(?=(\d{3})+(?!\d))/g, ',')
       : intPart || '0';
     const body =
       decimals > 0 && decPart !== undefined ? `${intText}.${decPart}` : intText;
@@ -141,9 +141,12 @@ export function formatAgreeFieldValue(
     const raw = String(value).trim();
     const m = raw.match(/^(\d{4})[-/]?(\d{1,2})[-/]?(\d{1,2})/);
     if (!m) return raw;
-    const y = m[1]!;
-    const mo = m[2]!.padStart(2, '0');
-    const d = m[3]!.padStart(2, '0');
+    const y = m[1];
+    const moRaw = m[2];
+    const dRaw = m[3];
+    if (!y || !moRaw || !dRaw) return raw;
+    const mo = moRaw.padStart(2, '0');
+    const d = dRaw.padStart(2, '0');
     if (format.datePattern === 'YYYY年MM月DD日') {
       return `${y}年${mo}月${d}日`;
     }

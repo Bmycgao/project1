@@ -26,6 +26,9 @@
     "#/*": "./src/*"
   },
   "dependencies": {
+    "@epic-designer/element-plus": "^1.1.13",
+    "@form-create/designer": "^3.5.0",
+    "@form-create/element-ui": "^3.3.3",
     "@vben/access": "workspace:*",
     "@vben/common-ui": "workspace:*",
     "@vben/constants": "workspace:*",
@@ -43,11 +46,15 @@
     "@vueuse/core": "catalog:",
     "dayjs": "catalog:",
     "element-plus": "catalog:",
+    "epic-designer": "^1.1.13",
+    "monaco-editor": "^0.56.0",
     "pinia": "catalog:",
+    "sortablejs": "catalog:",
     "vue": "catalog:",
     "vue-router": "catalog:"
   },
   "devDependencies": {
-    "unplugin-element-plus": "catalog:"
+    "unplugin-element-plus": "catalog:",
+    "vite-plugin-monaco-editor": "^1.1.0"
   }
 }

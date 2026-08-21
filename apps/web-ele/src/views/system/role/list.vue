@@ -1,9 +1,12 @@
 <script lang="ts" setup>
-import type { OnActionClickParams, VxeTableGridOptions } from '#/adapter/vxe-table';
+import type {
+  OnActionClickParams,
+  VxeTableGridOptions,
+} from '#/adapter/vxe-table';
 import type { SystemRoleApi } from '#/api';
 
-import { Page, useVbenDrawer } from '@vben/common-ui';
 import { AccessControl, useAccess } from '@vben/access';
+import { Page, useVbenDrawer } from '@vben/common-ui';
 import { Plus } from '@vben/icons';
 
 import { ElButton, ElMessage, ElMessageBox } from 'element-plus';
@@ -17,8 +20,6 @@ import Form from './modules/form.vue';
 
 const { hasAccessByCodes } = useAccess();
 
-/** 角色新建 */
-const canCreate = hasAccessByCodes(['System:Role:Create']);
 /** 角色编辑（删除菜单未挂独立码，与编辑共用） */
 const canEdit = hasAccessByCodes(['System:Role:Edit']);
 
@@ -80,11 +81,10 @@ const [Grid, gridApi] = useVbenVxeGrid({
     submitOnChange: true,
   },
   gridOptions: {
-    columns: useColumns(
-      onActionClick,
-      canEdit ? onStatusChange : undefined,
-      { canEdit, canDelete: canEdit },
-    ),
+    columns: useColumns(onActionClick, canEdit ? onStatusChange : undefined, {
+      canEdit,
+      canDelete: canEdit,
+    }),
     height: 'auto',
     keepSource: true,
     proxyConfig: {

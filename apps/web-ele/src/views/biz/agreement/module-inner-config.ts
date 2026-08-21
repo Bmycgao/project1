@@ -2,18 +2,19 @@
  * 详情模块「内部」配置：子块 + 字段显隐/顺序
  * 5 块：basic/population 表单可增删字段；houses/compensation/rewards 表格
  */
+import { cloneJson } from './clone';
 
 /** 表单控件类型（基础信息 / 签约 / 补偿） */
 export type ModuleInnerControlType =
-  | 'input'
-  | 'select'
-  | 'yesno'
-  | 'textarea'
   | 'date'
-  | 'radio';
+  | 'input'
+  | 'radio'
+  | 'select'
+  | 'textarea'
+  | 'yesno';
 
 /** 表格单元格类型 */
-export type ModuleInnerCellType = 'text' | 'select' | 'yesno';
+export type ModuleInnerCellType = 'select' | 'text' | 'yesno';
 
 /** 表格行操作（增删行） */
 export interface ModuleInnerTableOptions {
@@ -83,7 +84,7 @@ export interface ModuleInnerSection {
  * @param section 子块配置
  */
 export function isCustomBasicSection(
-  section: Pick<ModuleInnerSection, 'key' | 'custom'>,
+  section: Pick<ModuleInnerSection, 'custom' | 'key'>,
 ) {
   return section.custom === true;
 }
@@ -141,7 +142,7 @@ export function normalizeModuleInner(
   options?: { keepCustomSections?: boolean; keepExtraFields?: boolean },
 ): ModuleInnerConfig {
   if (!raw?.sections?.length) {
-    return structuredClone(defaults);
+    return cloneJson(defaults);
   }
 
   const rawByKey = new Map(raw.sections.map((s) => [s.key, s]));
@@ -149,35 +150,33 @@ export function normalizeModuleInner(
   const sections = defaults.sections.map((defSec, secIndex) => {
     const userSec = rawByKey.get(defSec.key);
     const removed = new Set(userSec?.removedFieldKeys || []);
-    const fieldByKey = new Map(
-      (userSec?.fields || []).map((f) => [f.key, f]),
-    );
+    const fieldByKey = new Map((userSec?.fields || []).map((f) => [f.key, f]));
     const fields = defSec.fields
       .filter((defField) => !removed.has(defField.key))
       .map((defField, fi) => {
-      const userField = fieldByKey.get(defField.key);
-      return {
-        ...defField,
-        enabled: userField ? userField.enabled !== false : defField.enabled,
-        order:
-          typeof userField?.order === 'number'
-            ? userField.order
-            : (defField.order ?? (fi + 1) * 10),
-        label: userField?.label || defField.label,
-        minWidth: userField?.minWidth ?? defField.minWidth,
-        accessField: defField.accessField,
-        controlType: userField?.controlType ?? defField.controlType,
-        cellType: userField?.cellType ?? defField.cellType,
-        span: userField?.span ?? defField.span,
-        options: userField?.options ?? defField.options,
-        required:
-          typeof userField?.required === 'boolean'
-            ? userField.required
-            : defField.required,
-        placeholder: userField?.placeholder ?? defField.placeholder,
-        custom: false,
-      };
-    });
+        const userField = fieldByKey.get(defField.key);
+        return {
+          ...defField,
+          enabled: userField ? userField.enabled !== false : defField.enabled,
+          order:
+            typeof userField?.order === 'number'
+              ? userField.order
+              : (defField.order ?? (fi + 1) * 10),
+          label: userField?.label || defField.label,
+          minWidth: userField?.minWidth ?? defField.minWidth,
+          accessField: defField.accessField,
+          controlType: userField?.controlType ?? defField.controlType,
+          cellType: userField?.cellType ?? defField.cellType,
+          span: userField?.span ?? defField.span,
+          options: userField?.options ?? defField.options,
+          required:
+            typeof userField?.required === 'boolean'
+              ? userField.required
+              : defField.required,
+          placeholder: userField?.placeholder ?? defField.placeholder,
+          custom: false,
+        };
+      });
     /** 表格插列 / 表单新增字段：目录里没有的一并保留 */
     const extraFields: ModuleInnerFieldItem[] = [];
     if (options?.keepExtraFields && userSec?.fields?.length) {
@@ -224,7 +223,7 @@ export function normalizeModuleInner(
         minRows:
           userSec?.tableOptions?.minRows ?? defSec.tableOptions?.minRows ?? 1,
       },
-      fields: [...fields, ...extraFields].sort((a, b) => a.order - b.order),
+      fields: [...fields, ...extraFields].toSorted((a, b) => a.order - b.order),
     };
   });
 
@@ -234,8 +233,7 @@ export function normalizeModuleInner(
     for (const userSec of raw.sections) {
       if (defaultKeys.has(userSec.key)) continue;
       const markedCustom =
-        userSec.custom === true ||
-        String(userSec.key).startsWith('custom_');
+        userSec.custom === true || String(userSec.key).startsWith('custom_');
       if (!markedCustom) continue;
       const fields = (userSec.fields || [])
         .map((f, fi) => ({
@@ -251,7 +249,7 @@ export function normalizeModuleInner(
           required: f.required,
           placeholder: f.placeholder,
         }))
-        .sort((a, b) => a.order - b.order);
+        .toSorted((a, b) => a.order - b.order);
       customSections.push({
         key: userSec.key,
         label: userSec.label || '新建子块',
@@ -268,7 +266,9 @@ export function normalizeModuleInner(
   }
 
   return {
-    sections: [...sections, ...customSections].sort((a, b) => a.order - b.order),
+    sections: [...sections, ...customSections].toSorted(
+      (a, b) => a.order - b.order,
+    ),
   };
 }
 
@@ -302,7 +302,7 @@ export function snapFieldSpan(cols: number) {
 }
 
 /** 旧版基础信息里的表格子块 key（已拆到独立模块） */
-const LEGACY_BASIC_TABLE_KEYS = new Set(['rightHolders', 'houses']);
+const LEGACY_BASIC_TABLE_KEYS = new Set(['houses', 'rightHolders']);
 
 /**
  * 从旧 basic 配置里抽出某个表格子块，供权利人/房屋模块回填
@@ -314,7 +314,7 @@ export function takeLegacyBasicSection(
   key: string,
 ): ModuleInnerConfig | null {
   const sec = raw?.sections?.find((s) => s.key === key);
-  return sec ? { sections: [structuredClone(sec)] } : null;
+  return sec ? { sections: [cloneJson(sec)] } : null;
 }
 
 /**
@@ -808,12 +808,50 @@ export function buildDefaultCompensationModuleInner(): ModuleInnerConfig {
         order: 10,
         tableOptions: { allowAdd: true, allowRemove: true, minRows: 1 },
         fields: [
-          { key: 'name', label: '补偿项目', enabled: true, order: 10, minWidth: 140, required: true },
-          { key: 'calcType', label: '计算方式', enabled: true, order: 20, minWidth: 120 },
-          { key: 'quantity', label: '数量', enabled: true, order: 30, minWidth: 80 },
-          { key: 'unitPrice', label: '单价', enabled: true, order: 40, minWidth: 100 },
-          { key: 'amount', label: '金额', enabled: true, order: 50, minWidth: 120, accessField: 'amount' },
-          { key: 'remark', label: '备注', enabled: true, order: 60, minWidth: 140 },
+          {
+            key: 'name',
+            label: '补偿项目',
+            enabled: true,
+            order: 10,
+            minWidth: 140,
+            required: true,
+          },
+          {
+            key: 'calcType',
+            label: '计算方式',
+            enabled: true,
+            order: 20,
+            minWidth: 120,
+          },
+          {
+            key: 'quantity',
+            label: '数量',
+            enabled: true,
+            order: 30,
+            minWidth: 80,
+          },
+          {
+            key: 'unitPrice',
+            label: '单价',
+            enabled: true,
+            order: 40,
+            minWidth: 100,
+          },
+          {
+            key: 'amount',
+            label: '金额',
+            enabled: true,
+            order: 50,
+            minWidth: 120,
+            accessField: 'amount',
+          },
+          {
+            key: 'remark',
+            label: '备注',
+            enabled: true,
+            order: 60,
+            minWidth: 140,
+          },
         ],
       },
     ],
@@ -834,10 +872,36 @@ export function buildDefaultRewardsModuleInner(): ModuleInnerConfig {
         order: 10,
         tableOptions: { allowAdd: true, allowRemove: true, minRows: 0 },
         fields: [
-          { key: 'name', label: '奖励项目', enabled: true, order: 10, minWidth: 140, required: true },
-          { key: 'condition', label: '发放条件', enabled: true, order: 20, minWidth: 160 },
-          { key: 'amount', label: '金额', enabled: true, order: 30, minWidth: 120, accessField: 'amount' },
-          { key: 'remark', label: '备注', enabled: true, order: 40, minWidth: 140 },
+          {
+            key: 'name',
+            label: '奖励项目',
+            enabled: true,
+            order: 10,
+            minWidth: 140,
+            required: true,
+          },
+          {
+            key: 'condition',
+            label: '发放条件',
+            enabled: true,
+            order: 20,
+            minWidth: 160,
+          },
+          {
+            key: 'amount',
+            label: '金额',
+            enabled: true,
+            order: 30,
+            minWidth: 120,
+            accessField: 'amount',
+          },
+          {
+            key: 'remark',
+            label: '备注',
+            enabled: true,
+            order: 40,
+            minWidth: 140,
+          },
         ],
       },
     ],
@@ -857,12 +921,58 @@ export function buildDefaultPopulationModuleInner(): ModuleInnerConfig {
         enabled: true,
         order: 10,
         fields: [
-          { key: 'headName', label: '户主姓名', enabled: true, order: 10, controlType: 'input', span: 8, required: true },
-          { key: 'idNo', label: '身份证号', enabled: true, order: 20, controlType: 'input', span: 8, accessField: 'idNo' },
-          { key: 'familySize', label: '家庭人口', enabled: true, order: 30, controlType: 'input', span: 8, required: true },
-          { key: 'phone', label: '联系电话', enabled: true, order: 40, controlType: 'input', span: 8, accessField: 'phone' },
-          { key: 'hukouAddress', label: '户籍地址', enabled: true, order: 50, controlType: 'input', span: 16 },
-          { key: 'remark', label: '备注', enabled: true, order: 60, controlType: 'textarea', span: 24 },
+          {
+            key: 'headName',
+            label: '户主姓名',
+            enabled: true,
+            order: 10,
+            controlType: 'input',
+            span: 8,
+            required: true,
+          },
+          {
+            key: 'idNo',
+            label: '身份证号',
+            enabled: true,
+            order: 20,
+            controlType: 'input',
+            span: 8,
+            accessField: 'idNo',
+          },
+          {
+            key: 'familySize',
+            label: '家庭人口',
+            enabled: true,
+            order: 30,
+            controlType: 'input',
+            span: 8,
+            required: true,
+          },
+          {
+            key: 'phone',
+            label: '联系电话',
+            enabled: true,
+            order: 40,
+            controlType: 'input',
+            span: 8,
+            accessField: 'phone',
+          },
+          {
+            key: 'hukouAddress',
+            label: '户籍地址',
+            enabled: true,
+            order: 50,
+            controlType: 'input',
+            span: 16,
+          },
+          {
+            key: 'remark',
+            label: '备注',
+            enabled: true,
+            order: 60,
+            controlType: 'textarea',
+            span: 24,
+          },
         ],
       },
     ],
@@ -956,10 +1066,8 @@ function coerceMaterialRaw(
   );
   if (hasNew) return raw || null;
   const shared = raw?.sections?.find((s) => s.key === 'materials');
-  const sign =
-    legacySign?.sections?.[0] || shared || raw?.sections?.[0];
-  const certify =
-    legacyCertify?.sections?.[0] || shared || raw?.sections?.[0];
+  const sign = legacySign?.sections?.[0] || shared || raw?.sections?.[0];
+  const certify = legacyCertify?.sections?.[0] || shared || raw?.sections?.[0];
   const sections: ModuleInnerSection[] = [];
   if (sign) {
     sections.push({
@@ -977,7 +1085,7 @@ function coerceMaterialRaw(
       order: 20,
     });
   }
-  return sections.length ? { sections } : raw || null;
+  return sections.length > 0 ? { sections } : raw || null;
 }
 
 /**
@@ -1047,7 +1155,7 @@ export function normalizeMaterialModuleInner(
 export function resolveEnabledSections(config: ModuleInnerConfig) {
   return config.sections
     .filter((s) => s.enabled)
-    .sort((a, b) => a.order - b.order);
+    .toSorted((a, b) => a.order - b.order);
 }
 
 /**
@@ -1057,7 +1165,7 @@ export function resolveEnabledSections(config: ModuleInnerConfig) {
 export function resolveEnabledFields(section: ModuleInnerSection) {
   return section.fields
     .filter((f) => f.enabled)
-    .sort((a, b) => a.order - b.order);
+    .toSorted((a, b) => a.order - b.order);
 }
 
 /** 表单控件下拉 */

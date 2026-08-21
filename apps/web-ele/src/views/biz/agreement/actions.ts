@@ -4,6 +4,8 @@
  */
 import type { Router } from 'vue-router';
 
+import type { AgreementListItem } from './types';
+
 import { ElMessage, ElMessageBox } from 'element-plus';
 
 import {
@@ -14,8 +16,6 @@ import {
   submitAgreementBatch,
 } from '#/api/biz/agreement';
 import { requestClient } from '#/api/request';
-
-import type { AgreementListItem } from './types';
 
 /** 工具栏按钮（由动作库解析得到，可带页面级差异化绑定） */
 export interface AgreeToolbarButton {
@@ -62,7 +62,7 @@ export interface AgreeActionContext {
   selected: AgreementListItem[];
   tableData: AgreementListItem[];
   /** 刷新列表 */
-  reload: () => void | Promise<void>;
+  reload: () => Promise<void> | void;
   /** 打开详情 */
   openDetail: (row: AgreementListItem) => void;
   router: Router;
@@ -91,7 +91,7 @@ export interface AgreeActionDef {
    * 执行逻辑（阶段 A：核心 CRUD/流程走真实 mock API）
    * @param ctx 上下文
    */
-  handler: (ctx: AgreeActionContext) => void | Promise<void>;
+  handler: (ctx: AgreeActionContext) => Promise<void> | void;
 }
 
 /**
@@ -148,7 +148,7 @@ function downloadCsv(rows: AgreementListItem[], filename: string) {
   };
   const escape = (v: unknown) => {
     const s = String(v ?? '');
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    return /[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
   };
   const lines = [
     headers.map((h) => titleMap[h] || h).join(','),
@@ -170,8 +170,20 @@ function downloadCsv(rows: AgreementListItem[], filename: string) {
 /** 预览类动作：打开详情（只读意图由 detailMode 控制） */
 async function openPreview(label: string, ctx: AgreeActionContext) {
   if (!assertSelection(ctx, 1, 1)) return;
-  ctx.openDetail(ctx.selected[0]!);
+  const row = ctx.selected[0];
+  if (!row) return;
+  ctx.openDetail(row);
   ElMessage.success(`已打开详情 · ${label}`);
+}
+
+/**
+ * 打开当前勾选第一条详情
+ * @param ctx 动作上下文
+ */
+function openFirstSelected(ctx: AgreeActionContext) {
+  const row = ctx.selected[0];
+  if (!row) return;
+  ctx.openDetail(row);
 }
 
 /**
@@ -228,7 +240,7 @@ export const AGREE_ACTION_REGISTRY: Record<string, AgreeActionDef> = {
     description: '打开详情编辑',
     handler: async (ctx) => {
       if (!assertSelection(ctx, 1, 1)) return;
-      ctx.openDetail(ctx.selected[0]!);
+      openFirstSelected(ctx);
     },
   },
   export: {
@@ -239,8 +251,8 @@ export const AGREE_ACTION_REGISTRY: Record<string, AgreeActionDef> = {
     category: 'crud',
     description: '导出勾选行；未勾选则导出当前列表',
     handler: async (ctx) => {
-      const rows = ctx.selected.length ? ctx.selected : ctx.tableData;
-      if (!rows.length) {
+      const rows = ctx.selected.length > 0 ? ctx.selected : ctx.tableData;
+      if (rows.length === 0) {
         ElMessage.warning('当前没有可导出的数据');
         return;
       }
@@ -283,7 +295,7 @@ export const AGREE_ACTION_REGISTRY: Record<string, AgreeActionDef> = {
     description: '打开详情办理附条件签约',
     handler: async (ctx) => {
       if (!assertSelection(ctx, 1, 1)) return;
-      ctx.openDetail(ctx.selected[0]!);
+      openFirstSelected(ctx);
       ElMessage.info('已打开详情，请在签约信息中办理附条件签约');
     },
   },
@@ -309,11 +321,11 @@ export const AGREE_ACTION_REGISTRY: Record<string, AgreeActionDef> = {
               type: 'info',
             },
           );
-          ctx.openDetail(ctx.selected[0]!);
+          openFirstSelected(ctx);
           return;
-        } catch (action) {
+        } catch (error) {
           // cancel = 直接通过；close = 取消
-          if (action !== 'cancel') return;
+          if (error !== 'cancel') return;
         }
       }
       const res = await approveAgreements(selectedNos(ctx));
@@ -332,7 +344,7 @@ export const AGREE_ACTION_REGISTRY: Record<string, AgreeActionDef> = {
     description: '驳回勾选协议（状态回到告知单）',
     handler: async (ctx) => {
       if (!assertSelection(ctx, 1)) return;
-      let remark = '';
+      let remark: string;
       try {
         const { value } = await ElMessageBox.prompt('请输入驳回原因', '驳回', {
           confirmButtonText: '确定',
@@ -358,7 +370,7 @@ export const AGREE_ACTION_REGISTRY: Record<string, AgreeActionDef> = {
     description: '查看驳回记录（阶段 A：进详情查看备注）',
     handler: async (ctx) => {
       if (ctx.selected.length === 1) {
-        ctx.openDetail(ctx.selected[0]!);
+        openFirstSelected(ctx);
         ElMessage.info('已打开详情，可在补偿信息备注中查看驳回说明');
         return;
       }
@@ -521,7 +533,7 @@ export function groupAgreeActions() {
  * @param codes 场景勾选的 code 或带 bind 的按钮对象
  */
 export function resolveToolbarButtons(
-  codes: string[] | AgreeToolbarButton[],
+  codes: AgreeToolbarButton[] | string[],
 ): AgreeToolbarButton[] {
   const list = codes || [];
   const result: AgreeToolbarButton[] = [];
@@ -553,7 +565,7 @@ export function matchButtonShowWhen(
 ): boolean {
   const allow = bind?.showWhenStatusIn;
   if (!allow?.length) return true;
-  if (!selected.length) return true;
+  if (selected.length === 0) return true;
   return selected.every((r) => allow.includes(r.statusValue));
 }
 
@@ -616,7 +628,7 @@ async function runConfiguredBind(
   await ctx.reload();
 
   if (bind.redirect === 'detail' && ctx.selected[0]) {
-    ctx.openDetail(ctx.selected[0]!);
+    openFirstSelected(ctx);
   } else if (bind.redirect) {
     await ctx.router.push(bind.redirect);
   }
@@ -714,7 +726,9 @@ export function isAgreeActionRegistered(code: string) {
 export async function runAgreeAction(code: string, ctx: AgreeActionContext) {
   const def = AGREE_ACTION_REGISTRY[code];
   if (!def) {
-    ElMessage.error(`动作「${code}」未在动作库注册，无法执行（请联系开发添加）`);
+    ElMessage.error(
+      `动作「${code}」未在动作库注册，无法执行（请联系开发添加）`,
+    );
     return;
   }
   // 仅可见无操作：拦截执行

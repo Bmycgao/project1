@@ -1,3 +1,14 @@
+import type { AgreeToolbarButton } from './actions';
+import type { EpicPageSchema } from './epic/types';
+import type { FcRuleMap } from './fc/types';
+import type { AgreeFieldRule } from './field-access';
+import type { AgreeModuleMount } from './module-access';
+import type {
+  BasicModuleInnerConfig,
+  ModuleInnerConfig,
+} from './module-inner-config';
+import type { AgreeSceneConfig } from './scenes';
+
 /**
  * 协议列表运行时：优先读菜单挂的页面配置（场景），再回退到本地 scenes.ts
  * 操作员改「页面配置」里的按钮后，列表应立即生效
@@ -6,19 +17,16 @@ import type { PageSchemaApi } from '#/api';
 
 import { getPageSchema } from '#/api';
 
-import {
-  resolveToolbarButtons,
-  type AgreeToolbarButton,
-} from './actions';
-import {
-  DEFAULT_AGREE_FIELD_RULES,
-  type AgreeFieldRule,
-} from './field-access';
+import { resolveToolbarButtons } from './actions';
+import { buildDefaultBasicEpicPageSchema } from './epic/basic-page-schema';
+import { cloneEpicPageSchema, isEpicPageSchema } from './epic/types';
+import { buildDefaultFcRuleMap } from './fc/default-rules';
+import { resolveFcRulesFromBindings } from './fc/resolve-bindings';
+import { DEFAULT_AGREE_FIELD_RULES } from './field-access';
 import {
   buildAgreeModuleMounts,
   inferCustomWidgetKind,
   isCustomAgreeModule,
-  type AgreeModuleMount,
 } from './module-access';
 import {
   buildDefaultBasicModuleInner,
@@ -35,14 +43,11 @@ import {
   normalizeHousesModuleInner,
   normalizePopulationModuleInner,
   normalizeRewardsModuleInner,
-  type BasicModuleInnerConfig,
-  type ModuleInnerConfig,
 } from './module-inner-config';
 import {
   AGREE_COLUMN_TEMPLATE,
   getAgreeScene,
   getAgreeSceneBySchemaId,
-  type AgreeSceneConfig,
 } from './scenes';
 
 /** 列表列（与页面配置 Column 对齐） */
@@ -82,7 +87,7 @@ export interface AgreeListRuntime {
  */
 function inferDetailMode(codes: string[]): 'audit' | 'edit' | 'view' {
   if (codes.some((c) => ['approve', 'reject'].includes(c))) return 'audit';
-  if (codes.some((c) => ['add', 'edit', 'delete', 'submitReview'].includes(c)))
+  if (codes.some((c) => ['add', 'delete', 'edit', 'submitReview'].includes(c)))
     return 'edit';
   return 'view';
 }
@@ -92,7 +97,7 @@ function inferDetailMode(codes: string[]): 'audit' | 'edit' | 'view' {
  * @param cols 列配置
  */
 function sortListColumns<T extends { order?: number }>(cols: T[]): T[] {
-  return [...cols].sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
+  return [...cols].toSorted((a, b) => (a.order ?? 999) - (b.order ?? 999));
 }
 
 /**
@@ -136,24 +141,34 @@ function fromPageSchema(
   const columns = sortListColumns(
     (schema.columns?.length ? schema.columns : AGREE_COLUMN_TEMPLATE)
       .filter((c) => c.visible !== false)
-      .map((c) => ({
-        field: c.field,
-        title: c.title,
-        visible: true,
-        width: c.width,
-        minWidth: c.minWidth,
-        cellType: c.cellType,
-        order: c.order,
-      })),
+      .map((c) => {
+        const col = c as {
+          cellType?: string;
+          field: string;
+          minWidth?: number;
+          order?: number;
+          title: string;
+          width?: number;
+        };
+        return {
+          field: col.field,
+          title: col.title,
+          visible: true,
+          width: col.width,
+          minWidth: col.minWidth,
+          cellType: col.cellType,
+          order: col.order,
+        };
+      }),
   );
 
-  const fieldRules = (schema.fieldRules?.length
-    ? schema.fieldRules
-    : DEFAULT_AGREE_FIELD_RULES) as AgreeFieldRule[];
+  const fieldRules = (
+    schema.fieldRules?.length ? schema.fieldRules : DEFAULT_AGREE_FIELD_RULES
+  ) as AgreeFieldRule[];
 
-  const modules = (schema.modules?.length
-    ? schema.modules
-    : buildAgreeModuleMounts()) as AgreeModuleMount[];
+  const modules = (
+    schema.modules?.length ? schema.modules : buildAgreeModuleMounts()
+  ) as AgreeModuleMount[];
 
   return {
     source: 'page-schema',
@@ -165,9 +180,7 @@ function fromPageSchema(
       local?.detailMode || inferDetailMode(buttons.map((b) => b.code)),
     buttons,
     columns,
-    statusIn: schema.statusIn?.length
-      ? schema.statusIn
-      : local?.statusIn,
+    statusIn: schema.statusIn?.length ? schema.statusIn : local?.statusIn,
     fieldRules,
     modules,
   };
@@ -224,20 +237,32 @@ export async function loadAgreeListRuntime(
 }
 
 /**
+ * 合并已存 fcRules 与内置默认（见 fc/resolve-bindings.ts）
+ */
+export { mergeFcRules } from './fc/resolve-bindings';
+
+/**
  * 按 schemaId / scene 加载详情页配置：模块挂载 + 内部字段
  * @param opts schemaId 优先；否则按 scene 反查
  */
 export async function loadAgreeDetailPageConfig(opts: {
-  schemaId?: string;
   scene?: string;
+  schemaId?: string;
 }): Promise<{
-  modules: AgreeModuleMount[];
   basicInner: BasicModuleInnerConfig;
-  housesInner: ModuleInnerConfig;
   compensationInner: ModuleInnerConfig;
-  rewardsInner: ModuleInnerConfig;
-  populationInner: ModuleInnerConfig;
   customInners: Record<string, ModuleInnerConfig>;
+  /** Epic 表单 Schema：历史兼容 */
+  epicSchemas: {
+    basic?: EpicPageSchema;
+    population?: EpicPageSchema;
+  };
+  /** FormCreate 各块 rule */
+  fcRules: FcRuleMap;
+  housesInner: ModuleInnerConfig;
+  modules: AgreeModuleMount[];
+  populationInner: ModuleInnerConfig;
+  rewardsInner: ModuleInnerConfig;
 }> {
   const empty = {
     modules: buildAgreeModuleMounts(),
@@ -247,6 +272,10 @@ export async function loadAgreeDetailPageConfig(opts: {
     rewardsInner: buildDefaultRewardsModuleInner(),
     populationInner: buildDefaultPopulationModuleInner(),
     customInners: {} as Record<string, ModuleInnerConfig>,
+    epicSchemas: {
+      basic: buildDefaultBasicEpicPageSchema(),
+    },
+    fcRules: buildDefaultFcRuleMap(),
   };
   const schemaId =
     String(opts.schemaId || '').trim() ||
@@ -260,27 +289,26 @@ export async function loadAgreeDetailPageConfig(opts: {
     const inner = schema?.moduleInner as
       | Record<string, ModuleInnerConfig>
       | undefined;
-    const modules = (schema?.modules?.length
-      ? schema.modules
-      : buildAgreeModuleMounts()) as AgreeModuleMount[];
+    const modules = (
+      schema?.modules?.length ? schema.modules : buildAgreeModuleMounts()
+    ) as AgreeModuleMount[];
     const customInners: Record<string, ModuleInnerConfig> = {};
     const skip = new Set([
       'basic',
-      'houses',
+      'certifyMaterial',
       'compensation',
-      'rewards',
+      'houses',
+      'material',
       'population',
+      'rewards',
       'rightHolders',
       'signing',
-      'material',
       'signMaterial',
-      'certifyMaterial',
     ]);
     for (const [key, block] of Object.entries(inner || {})) {
       if (skip.has(key) || !block) continue;
       const mount = modules.find((m) => m.key === key);
-      const kind =
-        mount?.widgetKind || inferCustomWidgetKind(key);
+      const kind = mount?.widgetKind || inferCustomWidgetKind(key);
       const label = mount?.label || '自定义组件';
       customInners[key] =
         kind === 'table'
@@ -298,18 +326,24 @@ export async function loadAgreeDetailPageConfig(opts: {
     return {
       modules,
       basicInner: normalizeBasicModuleInner(inner?.basic),
-      housesInner: normalizeHousesModuleInner(
-        inner?.houses,
-        inner?.basic,
-      ),
-      compensationInner: normalizeCompensationModuleInner(
-        inner?.compensation,
-      ),
+      housesInner: normalizeHousesModuleInner(inner?.houses, inner?.basic),
+      compensationInner: normalizeCompensationModuleInner(inner?.compensation),
       rewardsInner: normalizeRewardsModuleInner(inner?.rewards),
-      populationInner: normalizePopulationModuleInner(
-        inner?.population,
-      ),
+      populationInner: normalizePopulationModuleInner(inner?.population),
       customInners,
+      epicSchemas: {
+        basic: isEpicPageSchema((schema as any)?.epicSchemas?.basic)
+          ? cloneEpicPageSchema((schema as any).epicSchemas.basic)
+          : buildDefaultBasicEpicPageSchema(),
+        population: isEpicPageSchema((schema as any)?.epicSchemas?.population)
+          ? cloneEpicPageSchema((schema as any).epicSchemas.population)
+          : undefined,
+      },
+      fcRules: await resolveFcRulesFromBindings(
+        (schema as any)?.fcBindings,
+        modules,
+        (schema as any)?.fcRules,
+      ),
     };
   } catch {
     return empty;

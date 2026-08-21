@@ -1,10 +1,25 @@
 <script lang="ts" setup>
+import type { AgreeButtonBind } from '../../../biz/agreement/actions';
+import type { AgreeFieldRule } from '../../../biz/agreement/field-access';
+import type { AgreeModuleMount } from '../../../biz/agreement/module-access';
+import type {
+  BasicModuleInnerConfig,
+  ModuleInnerConfig,
+} from '../../../biz/agreement/module-inner-config';
+import type { SchemaPreviewResult } from '../preview-runtime';
+import type { ModuleLayoutEditRow } from './module-layout-editor.vue';
+
 /**
  * 页面字段配置表单：
  * - entity / template：编辑列与查询条件
  * - scene：引用列模板 + 可覆盖列表列 + 只能勾选动作库中已实现的动作
  */
-import type { PageSchemaApi } from '#/api';
+import type {
+  FcBindingsMap,
+  PageSchemaApi,
+  PageSchemaHistorySummary,
+  SystemRoleApi,
+} from '#/api';
 
 import { computed, nextTick, ref, watch } from 'vue';
 
@@ -32,25 +47,21 @@ import {
 import { useVbenForm } from '#/adapter/form';
 import {
   createPageSchema,
+  DEFAULT_FC_BINDINGS,
   getPageSchema,
   getPageSchemaHistory,
   getRoleAccessCodes,
   getRoleList,
   rollbackPageSchema,
   updatePageSchema,
-  type PageSchemaHistorySummary,
-  type SystemRoleApi,
 } from '#/api';
 
 import {
   groupAgreeActions,
   resolveToolbarButtons,
-  type AgreeButtonBind,
 } from '../../../biz/agreement/actions';
-import {
-  DEFAULT_AGREE_FIELD_RULES,
-  type AgreeFieldRule,
-} from '../../../biz/agreement/field-access';
+import { buildDefaultFcBindings } from '../../../biz/agreement/fc/resolve-bindings';
+import { DEFAULT_AGREE_FIELD_RULES } from '../../../biz/agreement/field-access';
 import {
   AGREE_DETAIL_MODULES,
   buildAgreeModuleMounts,
@@ -59,20 +70,7 @@ import {
   metaFromMount,
   normalizeAgreeModuleMounts,
   normalizeModuleSpan,
-  type AgreeModuleMount,
 } from '../../../biz/agreement/module-access';
-
-import {
-  getDefaultColumns,
-  getDefaultQueryFields,
-  useFormSchema,
-} from '../data';
-import {
-  buildSchemaPreview,
-  type SchemaPreviewResult,
-} from '../preview-runtime';
-import { type ModuleLayoutEditRow } from './module-layout-editor.vue';
-import DetailDesigner from './detail-designer.vue';
 import {
   buildDefaultBasicModuleInner,
   buildDefaultCompensationModuleInner,
@@ -88,9 +86,14 @@ import {
   normalizeHousesModuleInner,
   normalizePopulationModuleInner,
   normalizeRewardsModuleInner,
-  type BasicModuleInnerConfig,
-  type ModuleInnerConfig,
 } from '../../../biz/agreement/module-inner-config';
+import {
+  getDefaultColumns,
+  getDefaultQueryFields,
+  useFormSchema,
+} from '../data';
+import { buildSchemaPreview } from '../preview-runtime';
+import DetailDesigner from './detail-designer.vue';
 
 const emits = defineEmits<{ success: [] }>();
 
@@ -129,6 +132,8 @@ const rewardsInnerConfig = ref<ModuleInnerConfig>(
 const populationInnerConfig = ref<ModuleInnerConfig>(
   buildDefaultPopulationModuleInner(),
 );
+/** 各详情块引用的 FormCreate 模板 id */
+const fcBindingsMap = ref<FcBindingsMap>({ ...DEFAULT_FC_BINDINGS });
 /** 配置台新建业务组件的内部配置 */
 const customInnerMap = ref<Record<string, ModuleInnerConfig>>({});
 /** 当前配置类型（与表单 schemaKind 同步） */
@@ -142,7 +147,7 @@ const previewStatus = ref('待复核');
 const previewCollapse = ref<string[]>([]);
 const previewLoading = ref(false);
 const previewRoleName = ref('');
-const previewResult = ref<SchemaPreviewResult | null>(null);
+const previewResult = ref<null | SchemaPreviewResult>(null);
 
 /** 配置历史（回滚） */
 const historyLoading = ref(false);
@@ -192,16 +197,12 @@ const isScene = computed(() => schemaKind.value === 'scene');
 
 /** 安全拷贝列配置（避免非数组脏数据） */
 function cloneColumns(list: unknown): PageSchemaApi.Column[] {
-  return Array.isArray(list)
-    ? structuredClone(list)
-    : getDefaultColumns();
+  return Array.isArray(list) ? structuredClone(list) : getDefaultColumns();
 }
 
 /** 安全拷贝查询配置 */
 function cloneQueryFields(list: unknown): PageSchemaApi.QueryField[] {
-  return Array.isArray(list)
-    ? structuredClone(list)
-    : getDefaultQueryFields();
+  return Array.isArray(list) ? structuredClone(list) : getDefaultQueryFields();
 }
 
 /**
@@ -225,7 +226,7 @@ function bindsFromButtons(
 ): Record<string, AgreeButtonBind> {
   const map: Record<string, AgreeButtonBind> = {};
   for (const b of buttons || []) {
-    if (b.bind && Object.keys(b.bind).length) {
+    if (b.bind && Object.keys(b.bind).length > 0) {
       map[b.code] = {
         api: b.bind.api || '',
         method: b.bind.method || 'POST',
@@ -291,17 +292,17 @@ const bindRows = computed(() =>
  */
 function createDefaultModuleLayoutRows(): ModuleLayoutEditRow[] {
   return buildAgreeModuleMounts().map((m) => {
-    const meta = AGREE_DETAIL_MODULES.find((x) => x.key === m.key)!;
+    const meta = AGREE_DETAIL_MODULES.find((x) => x.key === m.key);
     return {
       key: m.key,
-      label: meta.label,
-      authCode: meta.authCode,
+      label: meta?.label || String(m.key),
+      authCode: meta?.authCode || '',
       enabled: m.enabled,
       order: m.order ?? 10,
       span: normalizeModuleSpan(m.span),
-      widgetKind: meta.widgetKind,
+      widgetKind: meta?.widgetKind || 'form',
       custom: false,
-      desc: meta.desc,
+      desc: meta?.desc,
     };
   });
 }
@@ -348,21 +349,21 @@ function rowsFromModules(
         desc: meta.desc,
       };
     })
-    .sort((a, b) => a.order - b.order);
+    .toSorted((a, b) => a.order - b.order);
 }
 
 /** 页面配置里不算自定义业务组件的 moduleInner key */
 const BUILTIN_INNER_KEYS = new Set([
   'basic',
-  'houses',
+  'certifyMaterial',
   'compensation',
-  'rewards',
+  'houses',
+  'material',
   'population',
+  'rewards',
   'rightHolders',
   'signing',
-  'material',
   'signMaterial',
-  'certifyMaterial',
 ]);
 
 /**
@@ -378,8 +379,7 @@ function extractCustomInnerMap(
   for (const [key, block] of Object.entries(inner || {})) {
     if (BUILTIN_INNER_KEYS.has(key) || !block) continue;
     const row = layouts.find((r) => r.key === key);
-    const kind =
-      row?.widgetKind || inferCustomWidgetKind(key);
+    const kind = row?.widgetKind || inferCustomWidgetKind(key);
     const label = row?.label || '自定义组件';
     map[key] =
       kind === 'table'
@@ -398,11 +398,43 @@ function extractCustomInnerMap(
 }
 
 /**
+ * 从详情合并 fcBindings（内置块带默认模板 id）
+ * @param detail 页面配置
+ */
+function mergeFcBindingsFromDetail(
+  detail: PageSchemaApi.PageSchema,
+): FcBindingsMap {
+  const keys = moduleLayoutRows.value
+    .filter((r) => r.enabled)
+    .map((r) => r.key);
+  const map: FcBindingsMap = {
+    ...DEFAULT_FC_BINDINGS,
+    ...buildDefaultFcBindings(keys),
+  };
+  const raw = detail.fcBindings;
+  if (raw && typeof raw === 'object') {
+    for (const [key, id] of Object.entries(raw)) {
+      if (id) map[key] = id;
+    }
+  }
+  return map;
+}
+
+/**
+ * 深拷贝 fcBindings
+ * @param map 源
+ */
+function cloneFcBindingsMap(map: FcBindingsMap): FcBindingsMap {
+  return { ...map };
+}
+
+/**
  * 组装保存用的 buttons（含 bind）
  */
 function buildSceneButtons() {
-  return selectedActionCodes.value.map((code) => {
-    const base = resolveToolbarButtons([code])[0]!;
+  return selectedActionCodes.value.flatMap((code) => {
+    const base = resolveToolbarButtons([code])[0];
+    if (!base) return [];
     const raw = actionBinds.value[code] || {};
     const bind: AgreeButtonBind = {};
     if (raw.api?.trim()) bind.api = raw.api.trim();
@@ -415,17 +447,17 @@ function buildSceneButtons() {
     }
     return {
       ...base,
-      ...(Object.keys(bind).length ? { bind } : {}),
+      ...(Object.keys(bind).length > 0 ? { bind } : {}),
     };
   });
 }
 
 /** 新增一列表字段 */
 function addColumn() {
-  const maxOrder = columns.value.reduce(
-    (m, c) => Math.max(m, c.order ?? 0),
-    0,
-  );
+  let maxOrder = 0;
+  for (const c of columns.value) {
+    maxOrder = Math.max(maxOrder, c.order ?? 0);
+  }
   columns.value.push({
     field: `field${columns.value.length + 1}`,
     title: '新字段',
@@ -445,7 +477,7 @@ function removeColumn(index: number) {
  * 按 order 重排并写回（编辑后保证顺序一致）
  */
 function resortColumns() {
-  columns.value = [...columns.value].sort(
+  columns.value = [...columns.value].toSorted(
     (a, b) => (a.order ?? 999) - (b.order ?? 999),
   );
 }
@@ -459,8 +491,9 @@ function moveColumn(index: number, dir: -1 | 1) {
   resortColumns();
   const target = index + dir;
   if (target < 0 || target >= columns.value.length) return;
-  const cur = columns.value[index]!;
-  const other = columns.value[target]!;
+  const cur = columns.value[index];
+  const other = columns.value[target];
+  if (!cur || !other) return;
   const curOrder = cur.order ?? (index + 1) * 10;
   const otherOrder = other.order ?? (target + 1) * 10;
   cur.order = otherOrder;
@@ -495,14 +528,23 @@ function addFieldRule() {
 }
 
 /**
+ * ElTable DefaultRow 转为字段规则，便于模板绑定
+ * @param row 表格行
+ */
+function asFieldRule(row: unknown): AgreeFieldRule {
+  return row as AgreeFieldRule;
+}
+
+/**
  * 确保规则有 displayFormat 对象便于表格编辑
  * @param row 规则行
  */
-function ensureDisplayFormat(row: AgreeFieldRule) {
-  if (!row.displayFormat) {
-    row.displayFormat = { type: 'text' };
+function ensureDisplayFormat(row: unknown) {
+  const rule = asFieldRule(row);
+  if (!rule.displayFormat) {
+    rule.displayFormat = { type: 'text' };
   }
-  return row.displayFormat;
+  return rule.displayFormat;
 }
 
 /**
@@ -564,7 +606,7 @@ async function runPreview() {
 
     let previewColumns = [...columns.value]
       .filter((c) => c.visible !== false)
-      .sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
+      .toSorted((a, b) => (a.order ?? 999) - (b.order ?? 999));
     let previewRules = fieldRules.value;
     const values = await formApi.getValues();
 
@@ -574,12 +616,12 @@ async function runPreview() {
       if (tplId) {
         try {
           const tpl = await getPageSchema(tplId);
-          if (!previewColumns.length && tpl?.columns?.length) {
+          if (previewColumns.length === 0 && tpl?.columns?.length) {
             previewColumns = tpl.columns
               .filter((c) => c.visible !== false)
-              .sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
+              .toSorted((a, b) => (a.order ?? 999) - (b.order ?? 999));
           }
-          if (!previewRules.length && tpl?.fieldRules?.length) {
+          if (previewRules.length === 0 && tpl?.fieldRules?.length) {
             previewRules = tpl.fieldRules as AgreeFieldRule[];
           }
         } catch {
@@ -670,12 +712,12 @@ async function fillForm(detail: PageSchemaApi.PageSchema) {
   columns.value = cloneColumns(detail.columns);
   // 补齐缺失 order，并按顺序展示
   columns.value.forEach((c, i) => {
-    if (c.order == null) c.order = (i + 1) * 10;
+    if (c.order === undefined || c.order === null) c.order = (i + 1) * 10;
   });
   columns.value.sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
   queryFields.value = cloneQueryFields(detail.queryFields);
   fieldRules.value = Array.isArray(detail.fieldRules)
-    ? structuredClone(detail.fieldRules) as AgreeFieldRule[]
+    ? (structuredClone(detail.fieldRules) as AgreeFieldRule[])
     : [];
   selectedActionCodes.value = codesFromButtons(detail.buttons);
   actionBinds.value = bindsFromButtons(detail.buttons);
@@ -703,6 +745,7 @@ async function fillForm(detail: PageSchemaApi.PageSchema) {
     detail.moduleInner,
     moduleLayoutRows.value,
   );
+  fcBindingsMap.value = mergeFcBindingsFromDetail(detail);
 }
 
 const [Drawer, drawerApi] = useVbenDrawer({
@@ -722,7 +765,7 @@ const [Drawer, drawerApi] = useVbenDrawer({
         ElMessage.warning('场景类型必须填写列模板 ID');
         return;
       }
-      if (!selectedActionCodes.value.length) {
+      if (selectedActionCodes.value.length === 0) {
         ElMessage.warning('请至少勾选一个已实现动作');
         return;
       }
@@ -731,10 +774,7 @@ const [Drawer, drawerApi] = useVbenDrawer({
         return;
       }
       // 场景可继承列模板：仅当本场景已配列时才校验至少一列可见
-      if (
-        columns.value.length > 0 &&
-        !columns.value.some((c) => c.visible)
-      ) {
+      if (columns.value.length > 0 && !columns.value.some((c) => c.visible)) {
         ElMessage.warning('至少保留一列可见的列表字段');
         return;
       }
@@ -769,6 +809,8 @@ const [Drawer, drawerApi] = useVbenDrawer({
               ),
               ...customInnerMap.value,
             },
+            epicSchemas: undefined,
+            fcBindings: cloneFcBindingsMap(fcBindingsMap.value),
           } as any)
         : ({
             ...values,
@@ -787,11 +829,9 @@ const [Drawer, drawerApi] = useVbenDrawer({
 
     drawerApi.lock();
     try {
-      if (id.value) {
-        await updatePageSchema(id.value, payload);
-      } else {
-        await createPageSchema(payload);
-      }
+      await (id.value
+        ? updatePageSchema(id.value, payload)
+        : createPageSchema(payload));
       emits('success');
       drawerApi.close();
     } catch {
@@ -819,6 +859,7 @@ const [Drawer, drawerApi] = useVbenDrawer({
     compensationInnerConfig.value = buildDefaultCompensationModuleInner();
     rewardsInnerConfig.value = buildDefaultRewardsModuleInner();
     populationInnerConfig.value = buildDefaultPopulationModuleInner();
+    fcBindingsMap.value = { ...DEFAULT_FC_BINDINGS };
     customInnerMap.value = {};
     schemaKind.value = 'entity';
     previewResult.value = null;
@@ -872,11 +913,7 @@ const title = computed(() => {
       </p>
       <ElCheckboxGroup v-model="selectedStatusIn" class="mb-4">
         <div class="flex flex-wrap gap-x-4 gap-y-2">
-          <ElCheckbox
-            v-for="s in STATUS_OPTIONS"
-            :key="s"
-            :value="s"
-          >
+          <ElCheckbox v-for="s in STATUS_OPTIONS" :key="s" :value="s">
             {{ s }}
           </ElCheckbox>
         </div>
@@ -884,7 +921,9 @@ const title = computed(() => {
 
       <div class="mb-2 mt-2 flex items-center justify-between">
         <div class="font-medium">列表表格字段</div>
-        <ElButton size="small" type="primary" @click="addColumn">添加列</ElButton>
+        <ElButton size="small" type="primary" @click="addColumn">
+          添加列
+        </ElButton>
       </div>
       <p class="mb-2 text-xs text-gray-500">
         控制协议列表表头（协议编号、被补偿人等）：开关「显示」、改标题/宽度、上下调整顺序。
@@ -977,7 +1016,8 @@ const title = computed(() => {
 
       <div class="mb-2 font-medium">详情组装</div>
       <p class="mb-2 text-xs text-gray-500">
-        先挂模块、拖胶囊排序；再点「编辑表单/表格」改字段或列。每个场景一份独立拷贝，改本场景不影响其他岗。
+        挂模块、拖胶囊排序；每块在下拉框选择「表单模板」库中的模板。改字段请去
+        系统管理 → 表单模板。列表列仍用上方「列表表格字段」。
       </p>
       <DetailDesigner
         v-model:layouts="moduleLayoutRows"
@@ -987,6 +1027,7 @@ const title = computed(() => {
         v-model:rewards-inner="rewardsInnerConfig"
         v-model:population-inner="populationInnerConfig"
         v-model:custom-inners="customInnerMap"
+        v-model:fc-bindings="fcBindingsMap"
       />
 
       <div class="mb-2 font-medium">工具栏动作（仅可勾选已实现）</div>
@@ -1019,8 +1060,8 @@ const title = computed(() => {
 
       <div class="mb-2 mt-4 font-medium">差异化操作绑定（可选）</div>
       <p class="mb-3 text-xs text-gray-500">
-        同一动作码在不同场景可绑不同接口 / 确认文案 / 成功提示 / 跳转 / 状态显隐。
-        填写「接口」后优先走配置调用；不填则仍用动作库默认逻辑。
+        同一动作码在不同场景可绑不同接口 / 确认文案 / 成功提示 / 跳转 /
+        状态显隐。 填写「接口」后优先走配置调用；不填则仍用动作库默认逻辑。
         「允许状态」：勾选行状态需全部命中，否则工具栏隐藏该按钮。
       </p>
       <ElTable :data="bindRows" border size="small" class="mb-4">
@@ -1106,7 +1147,9 @@ const title = computed(() => {
     <template v-else>
       <div class="mb-2 mt-4 flex items-center justify-between">
         <div class="font-medium">表格字段</div>
-        <ElButton size="small" type="primary" @click="addColumn">添加列</ElButton>
+        <ElButton size="small" type="primary" @click="addColumn">
+          添加列
+        </ElButton>
       </div>
       <ElTable :data="columns" border size="small" class="mb-4">
         <ElTableColumn label="字段名" min-width="110">
@@ -1207,22 +1250,33 @@ const title = computed(() => {
       <ElTable :data="fieldRules" border size="small" class="mb-4">
         <ElTableColumn label="字段名" min-width="100">
           <template #default="{ row }">
-            <ElInput v-model="row.field" size="small" placeholder="phone" />
+            <ElInput
+              size="small"
+              placeholder="phone"
+              :model-value="asFieldRule(row).field"
+              @update:model-value="(v: string) => (asFieldRule(row).field = v)"
+            />
           </template>
         </ElTableColumn>
         <ElTableColumn label="强制隐藏" width="90" align="center">
           <template #default="{ row }">
-            <ElSwitch v-model="row.hidden" />
+            <ElSwitch
+              :model-value="!!asFieldRule(row).hidden"
+              @change="
+                (v: boolean | string | number) =>
+                  (asFieldRule(row).hidden = !!v)
+              "
+            />
           </template>
         </ElTableColumn>
         <ElTableColumn label="可见权限码" min-width="140">
           <template #default="{ row }">
             <ElInput
               size="small"
-              :model-value="codesToText(row.visibleCodes)"
+              :model-value="codesToText(asFieldRule(row).visibleCodes)"
               placeholder="Agree:Field:xxx"
               @update:model-value="
-                (v: string) => (row.visibleCodes = textToCodes(v))
+                (v: string) => (asFieldRule(row).visibleCodes = textToCodes(v))
               "
             />
           </template>
@@ -1231,10 +1285,10 @@ const title = computed(() => {
           <template #default="{ row }">
             <ElInput
               size="small"
-              :model-value="codesToText(row.editableCodes)"
+              :model-value="codesToText(asFieldRule(row).editableCodes)"
               placeholder="Agree:Field:xxx"
               @update:model-value="
-                (v: string) => (row.editableCodes = textToCodes(v))
+                (v: string) => (asFieldRule(row).editableCodes = textToCodes(v))
               "
             />
           </template>
@@ -1314,7 +1368,11 @@ const title = computed(() => {
         </ElTableColumn>
         <ElTableColumn label="备注" min-width="100">
           <template #default="{ row }">
-            <ElInput v-model="row.remark" size="small" />
+            <ElInput
+              size="small"
+              :model-value="asFieldRule(row).remark"
+              @update:model-value="(v: string) => (asFieldRule(row).remark = v)"
+            />
           </template>
         </ElTableColumn>
         <ElTableColumn label="操作" width="70" align="center">
@@ -1387,7 +1445,8 @@ const title = computed(() => {
         </ElButton>
       </div>
       <p class="mb-3 text-xs text-gray-500">
-        每次保存成功会自动保留上一版（最多 10 条）。回滚后当前内容也会进入历史，可再次回退。
+        每次保存成功会自动保留上一版（最多 10
+        条）。回滚后当前内容也会进入历史，可再次回退。
       </p>
       <ElTable
         v-loading="historyLoading"
@@ -1427,124 +1486,72 @@ const title = computed(() => {
     <!-- 按角色验权限：列/按钮/模块是否可见（表格对照，不是页面截图） -->
     <ElCollapse v-model="previewCollapse" class="mt-6">
       <ElCollapseItem name="preview" title="按角色验权限（可选）">
-      <p class="mb-3 text-xs text-gray-500">
-        用角色权限码对照当前草稿：列表哪些列、哪些按钮、详情哪些模块会显示。不是页面长什么样的预览。
-      </p>
-      <div class="mb-3 flex flex-wrap items-end gap-3">
-        <div class="min-w-[160px]">
-          <div class="mb-1 text-xs text-gray-500">预览角色</div>
-          <ElSelect v-model="previewRoleId" size="small" class="w-full" filterable>
-            <ElOption
-              v-for="r in roleOptions"
-              :key="r.id"
-              :label="r.name"
-              :value="String(r.id)"
-            />
-          </ElSelect>
-        </div>
-        <div v-if="isScene" class="min-w-[140px]">
-          <div class="mb-1 text-xs text-gray-500">模拟勾选行状态</div>
-          <ElSelect
-            v-model="previewStatus"
+        <p class="mb-3 text-xs text-gray-500">
+          用角色权限码对照当前草稿：列表哪些列、哪些按钮、详情哪些模块会显示。不是页面长什么样的预览。
+        </p>
+        <div class="mb-3 flex flex-wrap items-end gap-3">
+          <div class="min-w-[160px]">
+            <div class="mb-1 text-xs text-gray-500">预览角色</div>
+            <ElSelect
+              v-model="previewRoleId"
+              size="small"
+              class="w-full"
+              filterable
+            >
+              <ElOption
+                v-for="r in roleOptions"
+                :key="r.id"
+                :label="r.name"
+                :value="String(r.id)"
+              />
+            </ElSelect>
+          </div>
+          <div v-if="isScene" class="min-w-[140px]">
+            <div class="mb-1 text-xs text-gray-500">模拟勾选行状态</div>
+            <ElSelect
+              v-model="previewStatus"
+              size="small"
+              class="w-full"
+              clearable
+              placeholder="不限"
+            >
+              <ElOption
+                v-for="s in STATUS_OPTIONS"
+                :key="s"
+                :label="s"
+                :value="s"
+              />
+            </ElSelect>
+          </div>
+          <ElButton
+            type="primary"
             size="small"
-            class="w-full"
-            clearable
-            placeholder="不限"
+            :loading="previewLoading"
+            @click="runPreview"
           >
-            <ElOption
-              v-for="s in STATUS_OPTIONS"
-              :key="s"
-              :label="s"
-              :value="s"
-            />
-          </ElSelect>
+            生成预览
+          </ElButton>
         </div>
-        <ElButton
-          type="primary"
-          size="small"
-          :loading="previewLoading"
-          @click="runPreview"
-        >
-          生成预览
-        </ElButton>
-      </div>
 
-      <ElAlert
-        v-if="previewResult"
-        class="mb-3"
-        type="info"
-        :closable="false"
-        :title="`角色「${previewRoleName}」：可见列 ${previewResult.shownColumnCount} / ${previewResult.columns.length}，可见按钮 ${previewResult.shownButtonCount} / ${previewResult.buttons.length || 0}，可见模块 ${previewResult.shownModuleCount} / ${previewResult.modules.length || 0}`"
-      />
+        <ElAlert
+          v-if="previewResult"
+          class="mb-3"
+          type="info"
+          :closable="false"
+          :title="`角色「${previewRoleName}」：可见列 ${previewResult.shownColumnCount} / ${previewResult.columns.length}，可见按钮 ${previewResult.shownButtonCount} / ${previewResult.buttons.length || 0}，可见模块 ${previewResult.shownModuleCount} / ${previewResult.modules.length || 0}`"
+        />
 
-      <template v-if="previewResult">
-        <div class="mb-2 text-sm font-medium">列表列</div>
-        <ElTable
-          :data="previewResult.columns"
-          border
-          size="small"
-          class="mb-4"
-          max-height="220"
-        >
-          <ElTableColumn prop="title" label="列标题" min-width="100" />
-          <ElTableColumn prop="field" label="字段" min-width="100" />
-          <ElTableColumn label="结果" width="90" align="center">
-            <template #default="{ row }">
-              <ElTag :type="row.shown ? 'success' : 'info'" size="small">
-                {{ row.shown ? '显示' : '隐藏' }}
-              </ElTag>
-            </template>
-          </ElTableColumn>
-          <ElTableColumn prop="reason" label="说明" min-width="140" />
-        </ElTable>
-
-        <template v-if="isScene">
-          <div class="mb-2 text-sm font-medium">工具栏按钮</div>
+        <template v-if="previewResult">
+          <div class="mb-2 text-sm font-medium">列表列</div>
           <ElTable
-            :data="previewResult.buttons"
+            :data="previewResult.columns"
             border
             size="small"
             class="mb-4"
             max-height="220"
           >
-            <ElTableColumn prop="label" label="按钮" min-width="100" />
-            <ElTableColumn prop="code" label="动作码" min-width="110" />
-            <ElTableColumn label="结果" width="100" align="center">
-              <template #default="{ row }">
-                <ElTag
-                  v-if="!row.shown"
-                  type="info"
-                  size="small"
-                >
-                  隐藏
-                </ElTag>
-                <ElTag
-                  v-else-if="row.disabled"
-                  type="warning"
-                  size="small"
-                >
-                  禁用
-                </ElTag>
-                <ElTag v-else type="success" size="small">
-                  可点
-                </ElTag>
-              </template>
-            </ElTableColumn>
-            <ElTableColumn prop="reason" label="说明" min-width="160" />
-          </ElTable>
-
-          <div class="mb-2 text-sm font-medium">详情模块</div>
-          <ElTable
-            :data="previewResult.modules"
-            border
-            size="small"
-            class="mb-4"
-            max-height="220"
-          >
-            <ElTableColumn prop="label" label="模块" min-width="100" />
-            <ElTableColumn prop="key" label="标识" min-width="110" />
-            <ElTableColumn prop="order" label="顺序" width="70" align="center" />
-            <ElTableColumn prop="span" label="占比" width="70" align="center" />
+            <ElTableColumn prop="title" label="列标题" min-width="100" />
+            <ElTableColumn prop="field" label="字段" min-width="100" />
             <ElTableColumn label="结果" width="90" align="center">
               <template #default="{ row }">
                 <ElTag :type="row.shown ? 'success' : 'info'" size="small">
@@ -1552,43 +1559,107 @@ const title = computed(() => {
                 </ElTag>
               </template>
             </ElTableColumn>
-            <ElTableColumn prop="reason" label="说明" min-width="160" />
+            <ElTableColumn prop="reason" label="说明" min-width="140" />
+          </ElTable>
+
+          <template v-if="isScene">
+            <div class="mb-2 text-sm font-medium">工具栏按钮</div>
+            <ElTable
+              :data="previewResult.buttons"
+              border
+              size="small"
+              class="mb-4"
+              max-height="220"
+            >
+              <ElTableColumn prop="label" label="按钮" min-width="100" />
+              <ElTableColumn prop="code" label="动作码" min-width="110" />
+              <ElTableColumn label="结果" width="100" align="center">
+                <template #default="{ row }">
+                  <ElTag v-if="!row.shown" type="info" size="small">
+                    隐藏
+                  </ElTag>
+                  <ElTag v-else-if="row.disabled" type="warning" size="small">
+                    禁用
+                  </ElTag>
+                  <ElTag v-else type="success" size="small"> 可点 </ElTag>
+                </template>
+              </ElTableColumn>
+              <ElTableColumn prop="reason" label="说明" min-width="160" />
+            </ElTable>
+
+            <div class="mb-2 text-sm font-medium">详情模块</div>
+            <ElTable
+              :data="previewResult.modules"
+              border
+              size="small"
+              class="mb-4"
+              max-height="220"
+            >
+              <ElTableColumn prop="label" label="模块" min-width="100" />
+              <ElTableColumn prop="key" label="标识" min-width="110" />
+              <ElTableColumn
+                prop="order"
+                label="顺序"
+                width="70"
+                align="center"
+              />
+              <ElTableColumn
+                prop="span"
+                label="占比"
+                width="70"
+                align="center"
+              />
+              <ElTableColumn label="结果" width="90" align="center">
+                <template #default="{ row }">
+                  <ElTag :type="row.shown ? 'success' : 'info'" size="small">
+                    {{ row.shown ? '显示' : '隐藏' }}
+                  </ElTag>
+                </template>
+              </ElTableColumn>
+              <ElTableColumn prop="reason" label="说明" min-width="160" />
+            </ElTable>
+          </template>
+
+          <div
+            v-if="previewResult.fields.length"
+            class="mb-2 text-sm font-medium"
+          >
+            字段规则（详情/敏感项）
+          </div>
+          <ElTable
+            v-if="previewResult.fields.length"
+            :data="previewResult.fields"
+            border
+            size="small"
+            max-height="220"
+          >
+            <ElTableColumn prop="field" label="字段" min-width="100" />
+            <ElTableColumn prop="remark" label="备注" min-width="100" />
+            <ElTableColumn
+              prop="formatSample"
+              label="展示样例"
+              min-width="120"
+            />
+            <ElTableColumn label="可见" width="70" align="center">
+              <template #default="{ row }">
+                <ElTag :type="row.visible ? 'success' : 'info'" size="small">
+                  {{ row.visible ? '是' : '否' }}
+                </ElTag>
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="可编辑" width="80" align="center">
+              <template #default="{ row }">
+                <ElTag
+                  :type="row.editable ? 'success' : 'warning'"
+                  size="small"
+                >
+                  {{ row.editable ? '是' : '否' }}
+                </ElTag>
+              </template>
+            </ElTableColumn>
+            <ElTableColumn prop="reason" label="说明" min-width="140" />
           </ElTable>
         </template>
-
-        <div
-          v-if="previewResult.fields.length"
-          class="mb-2 text-sm font-medium"
-        >
-          字段规则（详情/敏感项）
-        </div>
-        <ElTable
-          v-if="previewResult.fields.length"
-          :data="previewResult.fields"
-          border
-          size="small"
-          max-height="220"
-        >
-          <ElTableColumn prop="field" label="字段" min-width="100" />
-          <ElTableColumn prop="remark" label="备注" min-width="100" />
-          <ElTableColumn prop="formatSample" label="展示样例" min-width="120" />
-          <ElTableColumn label="可见" width="70" align="center">
-            <template #default="{ row }">
-              <ElTag :type="row.visible ? 'success' : 'info'" size="small">
-                {{ row.visible ? '是' : '否' }}
-              </ElTag>
-            </template>
-          </ElTableColumn>
-          <ElTableColumn label="可编辑" width="80" align="center">
-            <template #default="{ row }">
-              <ElTag :type="row.editable ? 'success' : 'warning'" size="small">
-                {{ row.editable ? '是' : '否' }}
-              </ElTag>
-            </template>
-          </ElTableColumn>
-          <ElTableColumn prop="reason" label="说明" min-width="140" />
-        </ElTable>
-      </template>
       </ElCollapseItem>
     </ElCollapse>
   </Drawer>

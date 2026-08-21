@@ -17,13 +17,13 @@ import {
 } from 'element-plus';
 
 const props = defineProps<{
+  disabled?: boolean;
   field: ModuleInnerFieldItem;
   modelValue: unknown;
-  disabled?: boolean;
 }>();
 
 const emit = defineEmits<{
-  'update:modelValue': [value: string | number];
+  'update:modelValue': [value: number | string];
 }>();
 
 /**
@@ -71,9 +71,16 @@ const text = () => String(props.modelValue ?? '');
     v-else-if="kindOf(field) === 'radio'"
     :disabled="disabled"
     :model-value="text()"
-    @update:model-value="(v: string) => emit('update:modelValue', v)"
+    @update:model-value="
+      (v: string | number | boolean | undefined) =>
+        emit('update:modelValue', String(v ?? ''))
+    "
   >
-    <ElRadio v-for="opt in optionsOf(field)" :key="opt.value" :value="opt.value">
+    <ElRadio
+      v-for="opt in optionsOf(field)"
+      :key="opt.value"
+      :value="opt.value"
+    >
       {{ opt.label }}
     </ElRadio>
   </ElRadioGroup>

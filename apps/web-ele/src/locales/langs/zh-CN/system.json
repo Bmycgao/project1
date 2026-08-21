@@ -56,16 +56,25 @@
     "operation": "操作",
     "permissions": "权限",
     "setPermissions": "授权",
-    "permTabsHint": "按资源类型分 Tab 勾选：菜单、按钮、字段、模块（对应需求方案 2.6）。保存后用户刷新页面即可生效。",
+    "permTabsHint": "菜单决定能进哪些页；按钮/字段/模块决定能干什么、能看哪些敏感信息。列表「看哪些状态的数据」在「页面配置」场景里配，不在这里。保存后用户刷新即可生效。",
     "permTabMenu": "菜单",
     "permTabButton": "按钮",
     "permTabField": "字段",
     "permTabModule": "模块",
-    "permTabButtonTip": "含操作按钮与「仅可见」按钮（Agree:View:*）。勾选后对应列表按钮可显示/可点。",
-    "permTabFieldTip": "字段权限 Agree:Field:*，控制列表列与详情字段显隐/可编辑。",
-    "permTabModuleTip": "详情区域 Agree:Module:*，控制协议详情挂载模块是否可见。"
+    "permTabButtonTip": "按所属菜单分组。实际能点的按钮 = 本角色勾选 ∩ 页面配置该场景开放的按钮。含「仅可见」码（Agree:View:*）。",
+    "permTabFieldTip": "敏感字段权限（电话、证件号、金额等）。未勾选则列表/详情隐藏或只读；与页面配置的列规则求交。",
+    "permTabModuleTip": "协议详情区域（基础信息、房屋等）。未勾选则详情页不显示该模块；与场景挂载模块求交。",
+    "permSearchPlaceholder": "搜索：中文名 / 权限码 / 菜单路径",
+    "permViewOnly": "仅可见",
+    "permEmptyFilter": "无匹配权限，试试清空搜索或换关键词"
   },
   "pageSchema": {
     "title": "页面配置"
+  },
+  "fcSchema": {
+    "title": "表单模板",
+    "editTitle": "编辑表单模板",
+    "kindForm": "表单",
+    "kindTable": "表格"
   }
 }

@@ -1,0 +1,568 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FormCreate Designer</title>
+    <!-- 使用 public/vendor 本地包，与主应用样式完全隔离 -->
+    <link rel="stylesheet" href="./vendor/fc/element-plus.css" />
+    <style>
+      html,
+      body,
+      #app {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background: #fff;
+      }
+      .fc-embed-error {
+        padding: 24px;
+        font-family: sans-serif;
+        color: #c45656;
+      }
+      /* 工具栏导入/导出按钮间距 */
+      .fc-embed-handle {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin-right: 8px;
+      }
+      .fc-json-dialog-body {
+        margin: 0;
+        max-height: 55vh;
+        overflow: auto;
+        padding: 12px;
+        font-size: 12px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-all;
+        background: #f5f7fa;
+        border-radius: 4px;
+      }
+      /* 粘贴导入弹窗：加高输入区 */
+      .fc-import-prompt .el-textarea__inner {
+        min-height: 220px !important;
+        font-family: Consolas, Monaco, monospace;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <p class="fc-embed-error">正在加载设计器…</p>
+    </div>
+    <!-- 必须用 IIFE/var 版 vue.global.prod.js（挂 window.Vue）；const/ESM 版会导致后续 UMD 读不到 Vue -->
+    <script src="./vendor/fc/vue.global.prod.js"></script>
+    <script>
+      // 兜底：确保 Element Plus / form-create UMD 能读到 window.Vue.defineComponent
+      if (typeof Vue !== 'undefined' && !window.Vue) window.Vue = Vue;
+    </script>
+    <script src="./vendor/fc/element-plus.full.min.js"></script>
+    <script src="./vendor/fc/form-create.min.js"></script>
+    <script src="./vendor/fc/designer.umd.js"></script>
+    <script>
+      (function () {
+        function post(payload) {
+          try {
+            window.parent.postMessage(
+              { source: 'fc-designer-embed', ...payload },
+              '*',
+            );
+          } catch (e) {
+            console.error(e);
+          }
+        }
+
+        function pickPlugin(ns) {
+          if (!ns) return null;
+          if (
+            typeof ns === 'function' ||
+            (ns && typeof ns.install === 'function')
+          ) {
+            return ns;
+          }
+          if (
+            ns.default &&
+            (typeof ns.default === 'function' || ns.default.install)
+          ) {
+            return ns.default;
+          }
+          return ns;
+        }
+
+        const designerPlugin = pickPlugin(
+          window.FcDesigner || window.formCreateDesigner,
+        );
+        const formCreatePlugin = pickPlugin(window.formCreate);
+
+        if (!window.Vue || !window.ElementPlus || !designerPlugin) {
+          document.getElementById('app').innerHTML =
+            '<p class="fc-embed-error">设计器脚本加载失败，请确认 public/vendor/fc 文件存在。</p>';
+          post({ type: 'fc-error', message: 'umd load failed' });
+          return;
+        }
+
+        const { createApp, ref, onMounted, nextTick, onBeforeUnmount } = Vue;
+
+        const App = {
+          setup() {
+            const designerRef = ref(null);
+            const height = ref(window.innerHeight);
+
+            /** 栅格宽度选项：对应 rule.col.span（一行 24 格） */
+            const COL_SPAN_OPTIONS = [
+              { label: '整行（24）', value: 24 },
+              { label: '半行（12）· 一行两个', value: 12 },
+              { label: '三分之一（8）· 一行三个', value: 8 },
+              { label: '三分之二（16）', value: 16 },
+              { label: '四分之一（6）', value: 6 },
+            ];
+
+            /** 新拖入的常规字段默认一行三个 */
+            const DEFAULT_COL_8 = { col: { span: 8 } };
+            /** 多行/大控件默认整行 */
+            const DEFAULT_COL_24 = { col: { span: 24 } };
+
+            const fileInputRef = ref(null);
+            const jsonDialog = ref({
+              visible: false,
+              title: 'JSON',
+              content: '',
+            });
+
+            const config = {
+              showAi: false,
+              // 左侧 JSON 面板（查看/编辑规则）
+              showJsonPreview: true,
+              showLanguage: false,
+              showSaveBtn: true,
+              showPreviewBtn: true,
+              // 把 col.span 同步进右侧表单 model（嵌套字段需登记）
+              appendConfigData: ['formCreateCol>span'],
+              // 基础配置追加「栅格宽度」，写入 rule.col.span，无需拖栅格布局
+              baseRule: {
+                append: true,
+                rule: function () {
+                  return [
+                    {
+                      type: 'select',
+                      field: 'formCreateCol>span',
+                      title: '栅格宽度',
+                      info: '控制字段占整行比例（24 格制），不包含标签宽度',
+                      value: 24,
+                      options: COL_SPAN_OPTIONS,
+                      props: { clearable: false },
+                    },
+                  ];
+                },
+              },
+              // 新拖入组件的默认 col.span
+              updateDefaultRule: {
+                input: DEFAULT_COL_8,
+                password: DEFAULT_COL_8,
+                inputNumber: DEFAULT_COL_8,
+                number: DEFAULT_COL_8,
+                select: DEFAULT_COL_8,
+                radio: DEFAULT_COL_8,
+                checkbox: DEFAULT_COL_8,
+                switch: DEFAULT_COL_8,
+                datePicker: DEFAULT_COL_8,
+                timePicker: DEFAULT_COL_8,
+                time: DEFAULT_COL_8,
+                timeRange: DEFAULT_COL_8,
+                dateRange: DEFAULT_COL_8,
+                cascader: DEFAULT_COL_8,
+                rate: DEFAULT_COL_8,
+                slider: DEFAULT_COL_8,
+                elTreeSelect: DEFAULT_COL_8,
+                colorPicker: DEFAULT_COL_8,
+                textarea: DEFAULT_COL_24,
+                fcEditor: DEFAULT_COL_24,
+                upload: DEFAULT_COL_24,
+                html: DEFAULT_COL_24,
+              },
+            };
+
+            function onResize() {
+              height.value = window.innerHeight;
+            }
+
+            function applyRule(rule) {
+              const api = designerRef.value;
+              if (!api || typeof api.setRule !== 'function') return false;
+              try {
+                let data = rule;
+                if (typeof data === 'string') data = JSON.parse(data);
+                if (!Array.isArray(data)) data = [];
+                // 再 stringify 一次，去掉不可克隆字段
+                data = JSON.parse(JSON.stringify(data));
+                api.setRule(data);
+                if (typeof api.setOption === 'function') {
+                  api.setOption({
+                    submitBtn: false,
+                    resetBtn: false,
+                    form: { labelWidth: '120px', labelPosition: 'right' },
+                  });
+                }
+                return true;
+              } catch (e) {
+                console.error(e);
+                return false;
+              }
+            }
+
+            function readRule() {
+              const api = designerRef.value;
+              if (!api) return [];
+              try {
+                let r = [];
+                if (typeof api.getRule === 'function') {
+                  r = api.getRule();
+                } else if (typeof api.getJson === 'function') {
+                  const j = api.getJson();
+                  r = typeof j === 'string' ? JSON.parse(j) : j;
+                }
+                if (!Array.isArray(r)) r = [];
+                r = JSON.parse(JSON.stringify(r));
+                // 确保 col.span 为数字，避免下拉框写成字符串
+                normalizeColSpan(r);
+                return r;
+              } catch (e) {
+                console.error(e);
+              }
+              return [];
+            }
+
+            /**
+             * 递归把 rule.col.span 转成 number
+             * @param {unknown} nodes rule 树
+             */
+            function normalizeColSpan(nodes) {
+              if (!Array.isArray(nodes)) return;
+              nodes.forEach(function (node) {
+                if (!node || typeof node !== 'object') return;
+                if (node.col && node.col.span != null) {
+                  const n = Number(node.col.span);
+                  if (!Number.isNaN(n)) node.col.span = n;
+                }
+                if (Array.isArray(node.children)) normalizeColSpan(node.children);
+                if (node.props && Array.isArray(node.props.columns)) {
+                  normalizeColSpan(node.props.columns);
+                }
+                if (Array.isArray(node.rule)) normalizeColSpan(node.rule);
+              });
+            }
+
+            function onSave() {
+              const rule = readRule();
+              post({
+                type: 'fc-save',
+                ruleJson: JSON.stringify(rule),
+              });
+            }
+
+            /**
+             * 解析导入的 JSON 文本为 rule 数组
+             * @param {string} text
+             */
+            function parseImportJson(text) {
+              const raw = String(text || '').trim();
+              if (!raw) throw new Error('内容为空');
+              let data;
+              const fc = designerPlugin.formCreate || formCreatePlugin;
+              if (fc && typeof fc.parseJson === 'function') {
+                data = fc.parseJson(raw);
+              } else {
+                data = JSON.parse(raw);
+              }
+              if (Array.isArray(data)) return data;
+              if (data && Array.isArray(data.rule)) return data.rule;
+              if (data && Array.isArray(data.rules)) return data.rules;
+              throw new Error('JSON 需为规则数组，或含 rule/rules 字段');
+            }
+
+            /** 当前规则格式化为可读 JSON */
+            function getPrettyRuleJson() {
+              return JSON.stringify(readRule(), null, 2);
+            }
+
+            /** 当前表单 Options */
+            function getPrettyOptionsJson() {
+              const api = designerRef.value;
+              if (!api) return '{}';
+              try {
+                if (typeof api.getOptionsJson === 'function') {
+                  const j = api.getOptionsJson();
+                  const obj = typeof j === 'string' ? JSON.parse(j) : j;
+                  return JSON.stringify(obj, null, 2);
+                }
+                if (typeof api.getOption === 'function') {
+                  return JSON.stringify(api.getOption(), null, 2);
+                }
+              } catch (e) {
+                console.error(e);
+              }
+              return '{}';
+            }
+
+            /**
+             * 打开 JSON 查看弹窗
+             * @param {string} title
+             * @param {string} content
+             */
+            function openJsonDialog(title, content) {
+              jsonDialog.value = {
+                visible: true,
+                title: title,
+                content: content,
+              };
+            }
+
+            /**
+             * 复制文本到剪贴板
+             * @param {string} text
+             */
+            async function copyText(text) {
+              try {
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                  await navigator.clipboard.writeText(text);
+                } else {
+                  const ta = document.createElement('textarea');
+                  ta.value = text;
+                  ta.style.position = 'fixed';
+                  ta.style.left = '-9999px';
+                  document.body.appendChild(ta);
+                  ta.select();
+                  document.execCommand('copy');
+                  document.body.removeChild(ta);
+                }
+                ElementPlus.ElMessage.success('已复制到剪贴板');
+              } catch (e) {
+                console.error(e);
+                ElementPlus.ElMessage.error('复制失败');
+              }
+            }
+
+            /**
+             * 下载 JSON 文件
+             * @param {string} filename
+             * @param {string} content
+             */
+            function downloadJson(filename, content) {
+              const blob = new Blob([content], {
+                type: 'application/json;charset=utf-8',
+              });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = filename;
+              a.click();
+              URL.revokeObjectURL(url);
+              ElementPlus.ElMessage.success('已开始下载');
+            }
+
+            /** 导入：粘贴 JSON */
+            async function importFromPaste() {
+              try {
+                const { value } = await ElementPlus.ElMessageBox.prompt(
+                  '请粘贴表单规则 JSON（数组）',
+                  '导入 JSON',
+                  {
+                    confirmButtonText: '导入',
+                    cancelButtonText: '取消',
+                    inputType: 'textarea',
+                    inputPlaceholder: '[{ "type": "input", ... }]',
+                    customClass: 'fc-import-prompt',
+                    inputValidator: function (v) {
+                      if (!v || !String(v).trim()) return '请输入 JSON';
+                      return true;
+                    },
+                  },
+                );
+                const rule = parseImportJson(value);
+                normalizeColSpan(rule);
+                if (!applyRule(rule)) {
+                  ElementPlus.ElMessage.error('导入失败：设计器未就绪');
+                  return;
+                }
+                ElementPlus.ElMessage.success('导入成功');
+              } catch (e) {
+                if (e === 'cancel' || e === 'close') return;
+                console.error(e);
+                ElementPlus.ElMessage.error(
+                  '导入失败：' + (e && e.message ? e.message : String(e)),
+                );
+              }
+            }
+
+            /** 导入：选择文件 */
+            function importFromFile() {
+              const input = fileInputRef.value;
+              if (input) {
+                input.value = '';
+                input.click();
+              }
+            }
+
+            /**
+             * 文件选择回调
+             * @param {Event} event
+             */
+            async function onFileChange(event) {
+              const file =
+                event.target &&
+                event.target.files &&
+                event.target.files[0];
+              if (!file) return;
+              try {
+                const text = await file.text();
+                const rule = parseImportJson(text);
+                normalizeColSpan(rule);
+                if (!applyRule(rule)) {
+                  ElementPlus.ElMessage.error('导入失败：设计器未就绪');
+                  return;
+                }
+                ElementPlus.ElMessage.success('已从文件导入');
+              } catch (e) {
+                console.error(e);
+                ElementPlus.ElMessage.error(
+                  '导入失败：' + (e && e.message ? e.message : String(e)),
+                );
+              }
+            }
+
+            /**
+             * 导入下拉命令
+             * @param {string} cmd
+             */
+            function onImportCommand(cmd) {
+              if (cmd === 'paste') importFromPaste();
+              else if (cmd === 'file') importFromFile();
+            }
+
+            /**
+             * 导出下拉命令
+             * @param {string} cmd
+             */
+            function onExportCommand(cmd) {
+              if (cmd === 'json') {
+                openJsonDialog('生成 JSON', getPrettyRuleJson());
+              } else if (cmd === 'copy') {
+                copyText(getPrettyRuleJson());
+              } else if (cmd === 'download') {
+                downloadJson('fc-rule.json', getPrettyRuleJson());
+              } else if (cmd === 'options') {
+                openJsonDialog('生成 Options', getPrettyOptionsJson());
+              }
+            }
+
+            /** 弹窗内复制当前 JSON */
+            function copyDialogJson() {
+              copyText(jsonDialog.value.content || '');
+            }
+
+            function onMessage(event) {
+              const data = event.data;
+              if (!data || data.source !== 'fc-designer-host') return;
+              if (data.type === 'fc-init' || data.type === 'fc-set-rule') {
+                const raw =
+                  data.ruleJson != null ? data.ruleJson : data.rule;
+                let ok = applyRule(raw);
+                if (!ok) {
+                  let n = 0;
+                  const timer = setInterval(function () {
+                    n += 1;
+                    ok = applyRule(raw);
+                    if (ok || n > 50) clearInterval(timer);
+                  }, 40);
+                }
+              }
+              if (data.type === 'fc-get-rule') {
+                const rule = readRule();
+                post({
+                  type: 'fc-rule',
+                  ruleJson: JSON.stringify(rule),
+                });
+              }
+            }
+
+            onMounted(async function () {
+              window.addEventListener('resize', onResize);
+              window.addEventListener('message', onMessage);
+              await nextTick();
+              post({ type: 'fc-ready' });
+            });
+
+            onBeforeUnmount(function () {
+              window.removeEventListener('resize', onResize);
+              window.removeEventListener('message', onMessage);
+            });
+
+            return {
+              designerRef,
+              fileInputRef,
+              height,
+              config,
+              jsonDialog,
+              onSave,
+              onImportCommand,
+              onExportCommand,
+              onFileChange,
+              copyDialogJson,
+            };
+          },
+          template: [
+            '<div style="width:100%;height:100%;position:relative;">',
+            '  <fc-designer ref="designerRef" :height="height" :config="config" @save="onSave">',
+            '    <template #handle>',
+            '      <div class="fc-embed-handle">',
+            '        <el-dropdown trigger="click" @command="onImportCommand">',
+            '          <el-button size="small" plain>导入</el-button>',
+            '          <template #dropdown>',
+            '            <el-dropdown-menu>',
+            '              <el-dropdown-item command="paste">粘贴 JSON</el-dropdown-item>',
+            '              <el-dropdown-item command="file">从文件导入</el-dropdown-item>',
+            '            </el-dropdown-menu>',
+            '          </template>',
+            '        </el-dropdown>',
+            '        <el-dropdown trigger="click" @command="onExportCommand">',
+            '          <el-button size="small" plain>导出</el-button>',
+            '          <template #dropdown>',
+            '            <el-dropdown-menu>',
+            '              <el-dropdown-item command="json">生成 JSON</el-dropdown-item>',
+            '              <el-dropdown-item command="copy">复制 JSON</el-dropdown-item>',
+            '              <el-dropdown-item command="download">下载 JSON 文件</el-dropdown-item>',
+            '              <el-dropdown-item command="options">生成 Options</el-dropdown-item>',
+            '            </el-dropdown-menu>',
+            '          </template>',
+            '        </el-dropdown>',
+            '      </div>',
+            '    </template>',
+            '  </fc-designer>',
+            '  <input ref="fileInputRef" type="file" accept=".json,application/json,text/plain" style="display:none" @change="onFileChange" />',
+            '  <el-dialog v-model="jsonDialog.visible" :title="jsonDialog.title" width="720px" append-to-body destroy-on-close>',
+            '    <pre class="fc-json-dialog-body">{{ jsonDialog.content }}</pre>',
+            '    <template #footer>',
+            '      <el-button @click="jsonDialog.visible = false">关闭</el-button>',
+            '      <el-button type="primary" @click="copyDialogJson">复制</el-button>',
+            '    </template>',
+            '  </el-dialog>',
+            '</div>',
+          ].join(''),
+        };
+
+        const app = createApp(App);
+        app.use(ElementPlus);
+        app.use(designerPlugin);
+        if (designerPlugin.formCreate) {
+          app.use(designerPlugin.formCreate);
+        } else if (formCreatePlugin) {
+          app.use(formCreatePlugin);
+        }
+        app.mount('#app');
+      })();
+    </script>
+  </body>
+</html>

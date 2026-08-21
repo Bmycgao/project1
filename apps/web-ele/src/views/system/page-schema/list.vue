@@ -4,7 +4,10 @@
  * - 实体/列模板：配字段
  * - 协议场景：勾选已开通动作 + 数据范围，菜单挂协议列表后即时生效
  */
-import type { OnActionClickParams, VxeTableGridOptions } from '#/adapter/vxe-table';
+import type {
+  OnActionClickParams,
+  VxeTableGridOptions,
+} from '#/adapter/vxe-table';
 import type { PageSchemaApi } from '#/api';
 
 import { Page, useVbenDrawer } from '@vben/common-ui';
@@ -85,7 +88,7 @@ const [Grid, gridApi] = useVbenVxeGrid({
       show-icon
       :closable="false"
       title="怎么用：菜单入口 + 本方案画详情"
-      description="① 菜单管理只新建入口并绑定本「页面方案」；② 场景先组装详情模块再点进去编表单或表格（每场景一份拷贝）；③ 列表点协议编号进入详情，按方案渲染；④ 保存会留历史可回滚。"
+      description="① 菜单管理只新建入口并绑定本「页面方案」；② 场景先组装详情模块；点「编辑表单 / 编辑表格」用 FormCreate 拖字段或拖列；③ 列表点协议编号进入详情，按方案渲染；④ 保存会留历史可回滚。"
     />
     <Grid table-title="页面与场景配置">
       <template #toolbar-tools>

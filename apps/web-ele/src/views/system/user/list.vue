@@ -1,5 +1,8 @@
 <script lang="ts" setup>
-import type { OnActionClickParams, VxeTableGridOptions } from '#/adapter/vxe-table';
+import type {
+  OnActionClickParams,
+  VxeTableGridOptions,
+} from '#/adapter/vxe-table';
 import type { SystemDeptApi, SystemUserApi } from '#/api';
 
 import { computed, onMounted, ref } from 'vue';
@@ -8,7 +11,14 @@ import { AccessControl, useAccess } from '@vben/access';
 import { Page, Tree, useVbenDrawer } from '@vben/common-ui';
 import { Plus } from '@vben/icons';
 
-import { ElButton, ElCard, ElInput, ElMessage, ElMessageBox, ElTag } from 'element-plus';
+import {
+  ElButton,
+  ElCard,
+  ElInput,
+  ElMessage,
+  ElMessageBox,
+  ElTag,
+} from 'element-plus';
 
 import { useVbenVxeGrid } from '#/adapter/vxe-table';
 import { deleteUser, getDeptList, getUserList, updateUser } from '#/api';
@@ -19,8 +29,6 @@ import Form from './modules/form.vue';
 
 const { hasAccessByCodes } = useAccess();
 
-/** 是否可新建用户 */
-const canCreate = hasAccessByCodes(['System:User:Create']);
 /** 是否可编辑用户 */
 const canEdit = hasAccessByCodes(['System:User:Edit']);
 /** 是否可删除用户 */
@@ -76,10 +84,7 @@ const displayDeptList = computed(() =>
  * @param nodes 部门树
  * @param id 部门 ID
  */
-function findDeptName(
-  nodes: SystemDeptApi.SystemDept[],
-  id: string,
-): string {
+function findDeptName(nodes: SystemDeptApi.SystemDept[], id: string): string {
   for (const node of nodes) {
     if (String(node.id) === String(id)) {
       return node.name;
@@ -148,9 +153,11 @@ function onRefresh() {
 }
 
 function onCreate() {
-  formDrawerApi.setData({
-    deptId: selectedDeptId.value || undefined,
-  }).open();
+  formDrawerApi
+    .setData({
+      deptId: selectedDeptId.value || undefined,
+    })
+    .open();
 }
 
 /** 加载左侧部门树 */
@@ -164,7 +171,7 @@ async function loadDeptList() {
  * @param node Tree 选中节点
  */
 function resolveDeptId(node: unknown): string {
-  if (node == null) return '';
+  if (node === null || node === undefined) return '';
   if (typeof node === 'string' || typeof node === 'number') {
     return String(node);
   }
@@ -199,11 +206,10 @@ const [Grid, gridApi] = useVbenVxeGrid({
     submitOnChange: true,
   },
   gridOptions: {
-    columns: useColumns(
-      onActionClick,
-      canEdit ? onStatusChange : undefined,
-      { canEdit, canDelete },
-    ),
+    columns: useColumns(onActionClick, canEdit ? onStatusChange : undefined, {
+      canEdit,
+      canDelete,
+    }),
     height: 'auto',
     keepSource: true,
     proxyConfig: {
@@ -214,9 +220,7 @@ const [Grid, gridApi] = useVbenVxeGrid({
             pageSize: page.pageSize,
             ...formValues,
             // 仅在选中部门时传参，避免空字符串干扰
-            ...(selectedDeptId.value
-              ? { deptId: selectedDeptId.value }
-              : {}),
+            ...(selectedDeptId.value ? { deptId: selectedDeptId.value } : {}),
           });
         },
       },
