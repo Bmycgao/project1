@@ -1,5 +1,4 @@
 import type { AgreeToolbarButton } from './actions';
-import type { EpicPageSchema } from './epic/types';
 import type { FcRuleMap } from './fc/types';
 import type { AgreeFieldRule } from './field-access';
 import type { AgreeModuleMount } from './module-access';
@@ -18,8 +17,6 @@ import type { PageSchemaApi } from '#/api';
 import { getPageSchema } from '#/api';
 
 import { resolveToolbarButtons } from './actions';
-import { buildDefaultBasicEpicPageSchema } from './epic/basic-page-schema';
-import { cloneEpicPageSchema, isEpicPageSchema } from './epic/types';
 import { buildDefaultFcRuleMap } from './fc/default-rules';
 import { resolveFcRulesFromBindings } from './fc/resolve-bindings';
 import { DEFAULT_AGREE_FIELD_RULES } from './field-access';
@@ -252,11 +249,6 @@ export async function loadAgreeDetailPageConfig(opts: {
   basicInner: BasicModuleInnerConfig;
   compensationInner: ModuleInnerConfig;
   customInners: Record<string, ModuleInnerConfig>;
-  /** Epic 表单 Schema：历史兼容 */
-  epicSchemas: {
-    basic?: EpicPageSchema;
-    population?: EpicPageSchema;
-  };
   /** FormCreate 各块 rule */
   fcRules: FcRuleMap;
   housesInner: ModuleInnerConfig;
@@ -272,9 +264,6 @@ export async function loadAgreeDetailPageConfig(opts: {
     rewardsInner: buildDefaultRewardsModuleInner(),
     populationInner: buildDefaultPopulationModuleInner(),
     customInners: {} as Record<string, ModuleInnerConfig>,
-    epicSchemas: {
-      basic: buildDefaultBasicEpicPageSchema(),
-    },
     fcRules: buildDefaultFcRuleMap(),
   };
   const schemaId =
@@ -331,14 +320,6 @@ export async function loadAgreeDetailPageConfig(opts: {
       rewardsInner: normalizeRewardsModuleInner(inner?.rewards),
       populationInner: normalizePopulationModuleInner(inner?.population),
       customInners,
-      epicSchemas: {
-        basic: isEpicPageSchema((schema as any)?.epicSchemas?.basic)
-          ? cloneEpicPageSchema((schema as any).epicSchemas.basic)
-          : buildDefaultBasicEpicPageSchema(),
-        population: isEpicPageSchema((schema as any)?.epicSchemas?.population)
-          ? cloneEpicPageSchema((schema as any).epicSchemas.population)
-          : undefined,
-      },
       fcRules: await resolveFcRulesFromBindings(
         (schema as any)?.fcBindings,
         modules,

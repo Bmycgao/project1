@@ -35,8 +35,6 @@ export default defineConfig(async () => {
       },
       optimizeDeps: {
         include: [
-          'epic-designer',
-          '@epic-designer/element-plus',
           'monaco-editor',
           '@form-create/designer',
           '@form-create/element-ui',

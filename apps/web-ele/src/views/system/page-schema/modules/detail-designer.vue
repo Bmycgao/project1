@@ -1112,20 +1112,21 @@ watch(
         </ElButton>
       </template>
 
-      <!-- 表单编辑：提示（基础信息走 Epic） -->
+      <!-- 表单编辑：提示（基础信息走 FormCreate 模板） -->
       <template v-else>
         <div class="pane-title">表单字段</div>
         <p class="pane-hint">
           {{
             selectedKey === 'basic'
-              ? '基础信息请用场景上方「Epic 设计基础信息表单」拖拽；此处仅保留自定义子表时切到表格列面板。'
+              ? '基础信息请在「FC 表单模板」中配置并绑定到本场景；此处仅保留自定义子表时切到表格列面板。'
               : '中间画布拖格子改顺序/占宽；右侧改显示名与控件。也可用右侧「新增字段」。'
           }}
         </p>
         <div
           class="rounded-md border border-dashed border-gray-200 bg-gray-50 px-2 py-3 text-[11px] text-gray-500"
         >
-          表单控件库后续可与 Epic 对齐；当前以画布拖拽 + 右侧属性为主。
+          表单控件请用 FormCreate 模板库维护；当前画布以模块组装 +
+          右侧属性为主。
         </div>
       </template>
     </aside>
@@ -1255,17 +1256,17 @@ watch(
             @click.stop="selectBlock('basic')"
           >
             <div class="canvas-block__head">基础信息</div>
-            <!-- 表单字段走 Epic，避免与旧 moduleInner 栅格双轨编辑 -->
+            <!-- 基础信息表单走 FormCreate 模板绑定，画布仅管理自定义子表 -->
             <div
-              class="epic-basic-hint mb-3 rounded-md border border-dashed border-blue-200 bg-blue-50/60 px-3 py-3 text-xs text-gray-600"
+              class="fc-basic-hint mb-3 rounded-md border border-dashed border-blue-200 bg-blue-50/60 px-3 py-3 text-xs text-gray-600"
             >
               <div class="mb-1 font-medium text-gray-800">
-                基础信息表单请用上方「Epic 设计基础信息表单」
+                基础信息表单请用「FC 表单模板」绑定
               </div>
               <div>
                 拖拽控件、改
                 label/占宽后点「保存到本场景」，再点页面配置「确认」落库；详情页用
-                EBuilder 按 epicSchemas.basic
+                详情页按 fcBindings / FormCreate rule 渲染
                 渲染。此处仅可管理下方自定义子表（若有）。
               </div>
             </div>
@@ -1518,7 +1519,7 @@ watch(
           {{ metaOf(selectedKey)?.label }} ·
           {{
             selectedKey === 'basic' && !isTableContext()
-              ? '表单字段请用「Epic 设计基础信息表单」；自定义子表仍可在此配列'
+              ? '表单字段请用「FC 表单模板」绑定；自定义子表仍可在此配列'
               : isTableContext()
                 ? '左侧拖列 / 表头排序；点列后改显示名、列宽、单元格'
                 : '可新增或删除字段（如删签约日期、加用户名）'
@@ -1526,13 +1527,13 @@ watch(
         </p>
 
         <template v-if="isMounted(selectedKey)">
-          <!-- 基础信息表单：改走 Epic，右侧不再编内置字段 -->
+          <!-- 基础信息表单：改走 FormCreate，右侧不再编内置字段 -->
           <div
             v-if="selectedKey === 'basic' && !isTableContext()"
             class="prop-card text-xs text-gray-600"
           >
-            关闭本面板后，在场景表单上方点击「Epic
-            设计基础信息表单」进行拖拽设计。
+            关闭本面板后，请到「系统管理 / FC
+            表单模板」维护基础信息表单，并在本场景模块绑定中选择对应模板。
           </div>
 
           <!-- 表格：整表行操作 -->
@@ -1599,7 +1600,7 @@ watch(
             </p>
           </div>
 
-          <!-- 未点字段：列出可点项（基础信息表单字段改由 Epic，跳过） -->
+          <!-- 未点字段：列出可点项（基础信息表单字段改由 FC 模板，跳过） -->
           <div
             v-if="
               !currentField && !(selectedKey === 'basic' && !isTableContext())

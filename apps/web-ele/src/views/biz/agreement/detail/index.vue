@@ -1,5 +1,4 @@
 <script lang="ts" setup>
-import type { EpicPageSchema } from '../epic/types';
 import type { FcRuleMap } from '../fc/types';
 import type { AgreeModuleLayoutItem, AgreeModuleMount } from '../module-access';
 import type {
@@ -46,8 +45,6 @@ import {
 
 import { canOperateAgreeAction } from '../actions';
 import { cloneJson } from '../clone';
-import { buildDefaultBasicEpicPageSchema } from '../epic/basic-page-schema';
-import { cloneEpicPageSchema, isEpicPageSchema } from '../epic/types';
 import { buildDefaultFcRuleMap } from '../fc/default-rules';
 import { buildAgreementDetail } from '../mock-data';
 import {
@@ -132,9 +129,6 @@ const basicInnerConfig = ref<BasicModuleInnerConfig>(
   buildDefaultBasicModuleInner(),
 );
 provide('agreeModuleInnerBasic', basicInnerConfig);
-/** 基础信息 Epic 表单 Schema（页面配置 epicSchemas.basic） */
-const epicBasicSchema = ref<EpicPageSchema>(buildDefaultBasicEpicPageSchema());
-provide('agreeEpicBasicSchema', epicBasicSchema);
 /** FormCreate 各块 rule（页面配置 fcRules） */
 const fcRules = ref<FcRuleMap>(buildDefaultFcRuleMap());
 provide('agreeFcRules', fcRules);
@@ -564,10 +558,6 @@ async function loadDetail() {
     rewardsInnerConfig.value = pageCfg.rewardsInner;
     populationInnerConfig.value = pageCfg.populationInner;
     customInnerMap.value = pageCfg.customInners;
-    const basicEpic = pageCfg.epicSchemas?.basic;
-    epicBasicSchema.value = isEpicPageSchema(basicEpic)
-      ? cloneEpicPageSchema(basicEpic)
-      : buildDefaultBasicEpicPageSchema();
     fcRules.value = pageCfg.fcRules || buildDefaultFcRuleMap();
 
     try {

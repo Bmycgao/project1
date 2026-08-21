@@ -88,7 +88,7 @@ export namespace PageSchemaApi {
       widgetKind?: 'form' | 'table';
     }[];
     /**
-     * Epic 低代码表单 Schema（历史字段，读时忽略，新配置走 fcRules）
+     * 历史 Epic 字段（读时忽略，新配置走 FormCreate）
      */
     epicSchemas?: {
       [key: string]: Record<string, any> | undefined;
