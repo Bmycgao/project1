@@ -1,14 +1,16 @@
+/* oxlint-disable import/no-mutable-exports unicorn/no-lonely-if */
+import type { UserInfo } from './mock-data';
+
+import { ensureMenuStoreHydrated } from './menu-store';
 /**
  * RBAC 内存存储：角色权限 + 用户绑角色
  * 登录后 /auth/codes、/menu/all 均由此汇总，不再按用户名写死
  */
-import {
-  buildAccessMenus,
-  getMenuIds,
-  MOCK_MENU_LIST,
-  type UserInfo,
-} from './mock-data';
+import { buildAccessMenus, getMenuIds, MOCK_MENU_LIST } from './mock-data';
 import { readPersistJson, writePersistJson } from './mock-persist';
+
+/** 先恢复菜单树，再据此汇总默认角色权限 ID */
+ensureMenuStoreHydrated();
 
 /** 系统角色 */
 export interface RbacRole {
@@ -207,7 +209,15 @@ export let roleStore: RbacRole[] = [
     name: '系统管理员',
     code: 'admin',
     status: 1,
-    permissions: [...new Set([...DASHBOARD_IDS, ...SYSTEM_IDS, ...ENTRY_PERM_IDS, ...LAWYER_PERM_IDS, ...VIEWER_PERM_IDS])],
+    permissions: [
+      ...new Set([
+        ...DASHBOARD_IDS,
+        ...SYSTEM_IDS,
+        ...ENTRY_PERM_IDS,
+        ...LAWYER_PERM_IDS,
+        ...VIEWER_PERM_IDS,
+      ]),
+    ],
     remark: '系统管理 + 协议相关',
     createTime: nowText(),
   },
@@ -436,9 +446,7 @@ ensureAgreeModulePermissions();
  * @param username 登录名
  */
 export function findRbacUserByUsername(username: string) {
-  return userStore.find(
-    (u) => u.username === username && u.status === 1,
-  );
+  return userStore.find((u) => u.username === username && u.status === 1);
 }
 
 /**
@@ -477,8 +485,10 @@ export function resolvePermissionIds(user: RbacUser): Set<string> {
  * @param user 用户
  */
 function isSuperUser(user: RbacUser) {
-  return (user.roleIds || []).includes('R_SUPER')
-    || roleCodesFromIds(user.roleIds).includes('super');
+  return (
+    (user.roleIds || []).includes('R_SUPER') ||
+    roleCodesFromIds(user.roleIds).includes('super')
+  );
 }
 
 /**
@@ -487,7 +497,7 @@ function isSuperUser(user: RbacUser) {
  */
 function collectAuthCodes(
   list: any[],
-  allowedIds: Set<string> | null,
+  allowedIds: null | Set<string>,
   out: Set<string>,
 ) {
   for (const node of list) {
@@ -559,8 +569,8 @@ export function grantNewMenuToDefaultRoles(
   extraRoleIds?: Array<number | string>,
 ) {
   const targets = new Set<string>([
-    'R_SUPER',
     'R_ADMIN',
+    'R_SUPER',
     ...(extraRoleIds || []).map(String),
   ]);
   const [normalizedId] = normalizePermIds([menuId]);
@@ -593,15 +603,13 @@ function expandWithAncestorIds(allowedIds: Set<string>): Set<string> {
    * @param ancestors 祖先 id
    * @returns 本支是否命中权限
    */
-  function walk(
-    list: any[],
-    ancestors: Array<number | string>,
-  ): boolean {
+  function walk(list: any[], ancestors: Array<number | string>): boolean {
     let branchHit = false;
     for (const node of list) {
       const id = String(node.id);
       const children: any[] = node.children || [];
-      const childHit = children.length ? walk(children, [...ancestors, node.id]) : false;
+      const childHit =
+        children.length > 0 ? walk(children, [...ancestors, node.id]) : false;
       const selfHit = allowedIds.has(id);
       if (selfHit || childHit) {
         branchHit = true;
@@ -770,8 +778,8 @@ export function queryUsers(query: Record<string, any> = {}) {
   if (query.name) {
     list = list.filter(
       (item) =>
-        String(item.name).includes(String(query.name))
-        || String(item.username).includes(String(query.name)),
+        String(item.name).includes(String(query.name)) ||
+        String(item.username).includes(String(query.name)),
     );
   }
   if (query.username) {
@@ -861,10 +869,8 @@ export function updateUserRecord(id: string, body: Record<string, any>) {
   if (body.username !== undefined) {
     const next = String(body.username).trim();
     if (
-      next
-      && userStore.some(
-        (u) => u.username === next && String(u.id) !== String(id),
-      )
+      next &&
+      userStore.some((u) => u.username === next && String(u.id) !== String(id))
     ) {
       throw new Error('登录账号已存在');
     }

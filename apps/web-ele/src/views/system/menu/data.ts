@@ -65,6 +65,17 @@ export async function fetchScenePageSchemas() {
     }));
 }
 
+/**
+ * 上级菜单树节点展示文案
+ * meta.title 可能是 i18n key（如 system.title），需 $t 翻译；否则直接显示中文标题
+ * @param item 菜单节点
+ */
+function getMenuTreeNodeLabel(item: Record<string, any>) {
+  const title = item?.meta?.title ?? '';
+  if (title) return $t(title);
+  return String(item?.name ?? '');
+}
+
 /** 菜单类型选项（含 Tag 颜色） */
 export function getMenuTypeOptions() {
   return [
@@ -97,16 +108,28 @@ export function useFormSchema(): VbenFormSchema[] {
       label: $t('system.menu.type'),
       rules: 'required',
     },
+    // ---------- 上级菜单（父级菜单选择器）----------
     {
+      // 表单项使用的组件类型：带远程接口的树形下拉（Element Plus TreeSelect + ApiComponent 封装）
       component: 'ApiTreeSelect',
+      // 传给 ApiTreeSelect 组件的参数
       componentProps: {
+        // 异步拉取菜单树数据的接口，返回整棵菜单树（与菜单列表同源）
         api: getMenuList,
+        // 子节点字段名：接口数据里 children 表示下级菜单
         childrenField: 'children',
+        // 下拉框宽度占满表单一行
         class: 'w-full',
+        // 默认从每条数据的 meta.title 取展示文案（多为 i18n key，如 system.title）
         labelField: 'meta.title',
+        // 自定义 label 生成：用 getMenuTreeNodeLabel 把 i18n key 翻译成中文后再显示
+        labelFn: (item) => getMenuTreeNodeLabel(item),
+        // 选中后提交到表单的值字段：父级菜单 id
         valueField: 'id',
       },
+      // 表单字段名，对应提交 payload 里的 pid（parent id）
       fieldName: 'pid',
+      // 表单项左侧标签文案：「上级菜单」
       label: $t('system.menu.parent'),
     },
     {
@@ -189,7 +212,9 @@ export function useFormSchema(): VbenFormSchema[] {
       },
       dependencies: {
         show(values) {
-          return values.type === 'menu' && isAgreeListComponent(values.component);
+          return (
+            values.type === 'menu' && isAgreeListComponent(values.component)
+          );
         },
         triggerFields: ['type', 'component'],
       },
@@ -262,7 +287,12 @@ export function useColumns(
       title: $t('system.menu.authCode'),
       minWidth: 160,
     },
-    { align: 'left', field: 'path', title: $t('system.menu.path'), minWidth: 160 },
+    {
+      align: 'left',
+      field: 'path',
+      title: $t('system.menu.path'),
+      minWidth: 160,
+    },
     {
       align: 'left',
       field: 'component',

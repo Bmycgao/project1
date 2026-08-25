@@ -1,10 +1,8 @@
 import { eventHandler, getQuery } from 'h3';
+import { ensureMenuStoreHydrated } from '~/utils/menu-store';
 import { MOCK_MENU_LIST } from '~/utils/mock-data';
-import {
-  assertSystemAccess,
-  SYSTEM_AUTH,
-} from '~/utils/system-api-auth';
 import { useResponseSuccess } from '~/utils/response';
+import { assertSystemAccess, SYSTEM_AUTH } from '~/utils/system-api-auth';
 
 /**
  * 收集菜单 name → id 映射
@@ -30,6 +28,7 @@ export default eventHandler(async (event) => {
   ]);
   if (!auth.ok) return auth.response;
 
+  ensureMenuStoreHydrated();
   const { id, name } = getQuery(event);
   const namesMap = collectNames(MOCK_MENU_LIST);
 

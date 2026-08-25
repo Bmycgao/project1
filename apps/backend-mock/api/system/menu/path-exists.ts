@@ -1,26 +1,25 @@
 import { eventHandler, getQuery } from 'h3';
+import { ensureMenuStoreHydrated } from '~/utils/menu-store';
 import { MOCK_MENU_LIST } from '~/utils/mock-data';
-import {
-  assertSystemAccess,
-  SYSTEM_AUTH,
-} from '~/utils/system-api-auth';
 import { useResponseSuccess } from '~/utils/response';
+import { assertSystemAccess, SYSTEM_AUTH } from '~/utils/system-api-auth';
 
 /**
  * 收集菜单 path → id 映射
  * @param menus 菜单树
  * @param map 结果表
  */
-function collectPaths(menus: any[], map: Record<string, string> = { '/': '0' }) {
+function collectPaths(menus: any[], map?: Record<string, string>) {
+  const pathMap = map ?? { '/': '0' };
   menus.forEach((menu) => {
     if (menu.path) {
-      map[menu.path] = String(menu.id);
+      pathMap[menu.path] = String(menu.id);
     }
     if (menu.children?.length) {
-      collectPaths(menu.children, map);
+      collectPaths(menu.children, pathMap);
     }
   });
-  return map;
+  return pathMap;
 }
 
 /** 校验菜单 path 是否已存在（基于当前 MOCK_MENU_LIST） */
@@ -32,6 +31,7 @@ export default eventHandler(async (event) => {
   ]);
   if (!auth.ok) return auth.response;
 
+  ensureMenuStoreHydrated();
   const { id, path } = getQuery(event);
   const pathMap = collectPaths(MOCK_MENU_LIST);
 

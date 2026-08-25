@@ -201,6 +201,7 @@ export const MOCK_CODES = [
  * 统一菜单源：菜单管理页与侧栏导航共用这一份数据
  * - /system/menu/list 直接返回
  * - /menu/all 经 buildAccessMenus 转换后按用户下发
+ * - 运行时增删改由 menu-store 写入 menu.json，重启后优先从磁盘恢复到本数组
  */
 export const MOCK_MENU_LIST: any[] = [
   {
