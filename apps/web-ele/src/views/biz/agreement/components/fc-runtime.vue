@@ -1,20 +1,24 @@
 <script lang="ts" setup>
 /**
- * FormCreate 运行时：按场景 rule 渲染表单或表格表单
- * 详情模块保存时通过 getValues / validate 取值
+ * FormCreate 运行时：完整渲染设计器 rule，合并只读/禁用与字段权限
+ * 详情模块保存时通过 expose validate / getValues
  */
 import type { FcFormOption, FcRule } from '../fc/types';
 
-import { ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 
 import { ElMessage } from 'element-plus';
 
+import { prepareFcRuntimeRule } from '../fc/apply-runtime';
 import { buildFcFormOption, cloneFcRule } from '../fc/types';
+import { useAgreeFieldAccess } from '../use-field-access';
 
 const props = defineProps<{
-  /** 整页浏览态：表单禁用 */
+  /** 兼容旧 prop：整表单禁用 */
   disabled?: boolean;
-  /** 回填值（表单 KV 或含表格数组的对象） */
+  /** 详情是否可编辑（优先于 disabled） */
+  editable?: boolean;
+  /** 回填值 */
   modelValue?: Record<string, unknown>;
   /** 设计器导出的 rule */
   rule: FcRule[];
@@ -25,38 +29,35 @@ const emit = defineEmits<{
   'update:modelValue': [val: Record<string, unknown>];
 }>();
 
+const { fieldVisible, fieldEditable, isDetailPageEditable } =
+  useAgreeFieldAccess();
+
 const fapi = ref<any>(null);
 const formData = ref<Record<string, unknown>>({ ...props.modelValue });
 const option = ref<FcFormOption>(buildFcFormOption());
-const innerRule = ref<FcRule[]>(cloneFcRule(props.rule || []));
 
-/**
- * 同步整页禁用到 FormCreate option
- * @param disabled 是否禁用
- */
-function applyDisabled(disabled?: boolean) {
-  const base = buildFcFormOption();
-  option.value = {
-    ...base,
-    form: {
-      ...base.form,
-      disabled: !!disabled,
-    },
-  };
-}
+/** 页面是否处于可编辑态 */
+const pageEditable = computed(() => {
+  if (typeof props.editable === 'boolean') return props.editable;
+  if (typeof props.disabled === 'boolean') return !props.disabled;
+  return isDetailPageEditable();
+});
 
-applyDisabled(props.disabled);
-
-watch(
-  () => props.disabled,
-  (disabled) => {
-    applyDisabled(disabled);
-  },
+/** 叠加权限与设计器 props 后的 rule */
+const runtimeRule = computed(() =>
+  prepareFcRuntimeRule(props.rule || [], {
+    pageEditable: pageEditable.value,
+    fieldVisible,
+    fieldEditable,
+  }),
 );
+
+const innerRule = ref<FcRule[]>(cloneFcRule(runtimeRule.value));
+
 watch(
-  () => props.rule,
+  runtimeRule,
   (rule) => {
-    innerRule.value = cloneFcRule(rule || []);
+    innerRule.value = cloneFcRule(rule);
   },
   { deep: true },
 );
@@ -82,7 +83,7 @@ function onChange() {
 }
 
 /**
- * 校验必填
+ * 校验必填（走 FormCreate 校验）
  */
 async function validate() {
   if (!fapi.value?.validate) return true;
@@ -109,8 +110,19 @@ defineExpose({ validate, getValues });
   <form-create
     v-model="formData"
     v-model:api="fapi"
+    class="agree-fc-runtime"
     :rule="innerRule"
     :option="option"
     @change="onChange"
   />
 </template>
+
+<style scoped>
+.agree-fc-runtime :deep(.el-form-item) {
+  margin-bottom: 16px;
+}
+
+.agree-fc-runtime :deep(.el-form-item__label) {
+  color: #606266;
+}
+</style>

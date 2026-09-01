@@ -1,13 +1,14 @@
 <script lang="ts" setup>
 import type { Ref } from 'vue';
 
+import type { FcRuleMap } from '../fc/types';
 import type {
   BasicModuleInnerConfig,
   ModuleInnerFieldItem,
   ModuleInnerSection,
 } from '../module-inner-config';
 /**
- * 基础信息：按场景 moduleInner 栅格渲染；自定义表格子块落在 detail.basicTables
+ * 基础信息：优先场景绑定的 FormCreate 表单模板；自定义表格子块仍走 moduleInner
  */
 import type { AgreementDetail, BasicInfo, BasicTableRow } from '../types';
 
@@ -26,8 +27,10 @@ import {
 } from 'element-plus';
 
 import { cloneJson } from '../clone';
+import FcRuntime from '../components/fc-runtime.vue';
 import ModuleFormControl from '../components/module-form-control.vue';
 import SectionCard from '../components/section-card.vue';
+import { isFcRule } from '../fc/types';
 import {
   isCustomBasicSection,
   normalizeBasicModuleInner,
@@ -60,10 +63,22 @@ const injectedBasicInner = inject<Ref<BasicModuleInnerConfig | null>>(
   'agreeModuleInnerBasic',
   ref(null),
 );
+/** 场景绑定的 FormCreate 表单模板 rule */
+const injectedFcRules = inject<Ref<FcRuleMap>>('agreeFcRules', ref({}));
 
-const innerConfig = computed(() =>
-  normalizeBasicModuleInner(injectedBasicInner.value),
-);
+/** 是否用完整 FormCreate 渲染主表单 */
+const fcRule = computed(() => injectedFcRules.value?.basic);
+const useFcRuntime = computed(() => isFcRule(fcRule.value));
+const fcRuntimeRef = ref<InstanceType<typeof FcRuntime> | null>(null);
+
+const innerConfig = computed(() => {
+  const normalized = normalizeBasicModuleInner(injectedBasicInner.value);
+  const customSecs = normalized.sections.filter((s) => isCustomBasicSection(s));
+  if (useFcRuntime.value) {
+    return { sections: customSecs };
+  }
+  return normalized;
+});
 
 const sections = computed(() => resolveEnabledSections(innerConfig.value));
 const formSections = computed(() =>
@@ -154,6 +169,12 @@ function markDirty() {
   emit('dirty');
 }
 
+/** FormCreate 回填写入协议头 */
+function onFcModelUpdate(val: Record<string, unknown>) {
+  Object.assign(form, val);
+  markDirty();
+}
+
 const model = form as unknown as Record<string, unknown>;
 
 function isFieldShown(field: ModuleInnerFieldItem) {
@@ -216,6 +237,9 @@ function displayCustomCell(row: unknown, key: string) {
 
 /** 校验基础信息必填项 */
 async function validate() {
+  if (useFcRuntime.value && fcRuntimeRef.value) {
+    return await fcRuntimeRef.value.validate();
+  }
   for (const sec of formSections.value) {
     for (const field of visibleFields(sec)) {
       if (!field.required) continue;
@@ -231,7 +255,10 @@ async function validate() {
 
 /** 取出本块表单与自定义子表数据 */
 async function getValues() {
-  const basic = cloneJson(form);
+  const basic =
+    useFcRuntime.value && fcRuntimeRef.value
+      ? (cloneJson(fcRuntimeRef.value.getValues()) as BasicInfo)
+      : cloneJson(form);
   return {
     basic,
     agreementNo: basic.agreementNo,
@@ -249,7 +276,17 @@ defineExpose({ validate, getValues, isDirty });
 
 <template>
   <div>
-    <!-- 浏览/编辑共用三列表单栅格：浏览为标签+文字，编辑换成控件 -->
+    <FcRuntime
+      v-if="useFcRuntime && fcRule"
+      ref="fcRuntimeRef"
+      :rule="fcRule"
+      :editable="isDetailPageEditable()"
+      :model-value="model"
+      @change="markDirty"
+      @update:model-value="onFcModelUpdate"
+    />
+
+    <!-- 未绑 FC 模板时回退 moduleInner + ModuleFormControl -->
     <template v-for="sec in formSections" :key="sec.key">
       <ElForm
         class="agree-kv-form"
@@ -266,7 +303,8 @@ defineExpose({ validate, getValues, isDirty });
             <ElFormItem :label="field.label" :required="!!field.required">
               <ModuleFormControl
                 :field="field"
-                :disabled="!isDetailPageEditable() || !isFieldEditable(field)"
+                :page-editable="isDetailPageEditable()"
+                :field-editable="isFieldEditable(field)"
                 :model-value="model[field.key]"
                 @update:model-value="
                   (v) => {
@@ -342,7 +380,7 @@ defineExpose({ validate, getValues, isDirty });
     </template>
 
     <div
-      v-if="!formSections.length && !customSections.length"
+      v-if="!useFcRuntime && !formSections.length && !customSections.length"
       class="py-8 text-center text-xs text-gray-400"
     >
       当前场景未挂载基础信息字段，请在页面配置中启用

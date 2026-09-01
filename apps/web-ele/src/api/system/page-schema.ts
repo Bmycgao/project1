@@ -31,6 +31,8 @@ export namespace PageSchemaApi {
     successMsg?: string;
     redirect?: string;
     showWhenStatusIn?: string[];
+    /** 打印预览模板编码 */
+    printTemplateCode?: string;
   }
 
   export interface PageSchema {

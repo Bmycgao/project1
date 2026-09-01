@@ -442,6 +442,48 @@ function ensureAgreeModulePermissions() {
 ensureAgreeModulePermissions();
 
 /**
+ * 给演示角色补上附件预览/房票等动作按钮 ID（兼容旧 menu.json / rbac.json）
+ */
+function ensureAgreePreviewActionPermissions() {
+  ensureMenuStoreHydrated();
+
+  let changed = false;
+
+  function merge(roleId: string, extraIds: Array<number | string>) {
+    const role = roleStore.find((r) => r.id === roleId);
+    if (!role) return;
+    const set = new Set(role.permissions.map(String));
+    for (const id of extraIds) {
+      if (!set.has(String(id))) {
+        role.permissions.push(id);
+        changed = true;
+      }
+    }
+  }
+
+  const entryPreviewIds = collectIdsByAuthCodes([
+    'Agree:preview1',
+    'Agree:preview2',
+  ]);
+  const lawyerPreviewIds = collectIdsByAuthCodes([
+    'Agree:preview1',
+    'Agree:preview2',
+    'Agree:ticket1',
+    'Agree:ticket2',
+    'Agree:rejectRecord',
+  ]);
+
+  merge('R_ENTRY', entryPreviewIds);
+  merge('R_LAWYER', lawyerPreviewIds);
+  merge('R_ADMIN', lawyerPreviewIds);
+  merge('R_SUPER', lawyerPreviewIds);
+
+  if (changed) persistRbacStore();
+}
+
+ensureAgreePreviewActionPermissions();
+
+/**
  * 按用户名查找可登录用户
  * @param username 登录名
  */

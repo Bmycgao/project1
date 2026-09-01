@@ -8,7 +8,7 @@ import type {
   ModuleInnerSection,
 } from '../module-inner-config';
 /**
- * 配置台新建的自定义表单：字段来自 moduleInner，值落在 detail.extraForms[moduleKey]
+ * 自定义表单：绑 FC 模板时用完整 FormCreate 渲染
  */
 import type { AgreementDetail } from '../types';
 
@@ -17,8 +17,8 @@ import { computed, inject, reactive, ref, watch } from 'vue';
 import { ElCol, ElForm, ElFormItem, ElMessage, ElRow } from 'element-plus';
 
 import { cloneJson } from '../clone';
+import FcRuntime from '../components/fc-runtime.vue';
 import ModuleFormControl from '../components/module-form-control.vue';
-import { buildSectionFromFcForm } from '../fc/rule-to-inner';
 import { isFcRule } from '../fc/types';
 import {
   normalizeCustomFormInner,
@@ -40,24 +40,25 @@ const props = defineProps<{
 const emit = defineEmits<{ dirty: [] }>();
 
 const { isDetailPageEditable: injectPageEditable } = useAgreeFieldAccess();
-/** 本块是否可改 */
+
 function isDetailPageEditable() {
   if (typeof props.editable === 'boolean') return props.editable;
   return injectPageEditable();
 }
+
 const customInners = inject<Ref<Record<string, ModuleInnerConfig>>>(
   'agreeModuleInnerCustom',
   ref({}),
 );
 const injectedFcRules = inject<Ref<FcRuleMap>>('agreeFcRules', ref({}));
 
+const fcRule = computed(() => injectedFcRules.value?.[props.moduleKey]);
+const useFcRuntime = computed(() => isFcRule(fcRule.value));
+const fcRuntimeRef = ref<InstanceType<typeof FcRuntime> | null>(null);
+
 const innerConfig = computed(() => {
-  const fcRule = injectedFcRules.value?.[props.moduleKey];
-  const fcSection = isFcRule(fcRule)
-    ? buildSectionFromFcForm(fcRule, props.label || '自定义表单')
-    : null;
-  if (fcSection) {
-    return { sections: [fcSection] };
+  if (useFcRuntime.value) {
+    return { sections: [] };
   }
   return normalizeCustomFormInner(
     customInners.value[props.moduleKey],
@@ -88,6 +89,11 @@ function markDirty() {
   emit('dirty');
 }
 
+function onFcModelUpdate(val: Record<string, unknown>) {
+  Object.assign(model, val);
+  markDirty();
+}
+
 function isFieldShown(field: ModuleInnerFieldItem) {
   return field.enabled;
 }
@@ -97,6 +103,9 @@ function visibleFields(section: ModuleInnerSection) {
 }
 
 async function validate() {
+  if (useFcRuntime.value && fcRuntimeRef.value) {
+    return await fcRuntimeRef.value.validate();
+  }
   for (const sec of sections.value) {
     for (const field of visibleFields(sec)) {
       if (!field.required) continue;
@@ -110,8 +119,12 @@ async function validate() {
 }
 
 function getValues() {
+  const data =
+    useFcRuntime.value && fcRuntimeRef.value
+      ? cloneJson(fcRuntimeRef.value.getValues())
+      : cloneJson(model);
   return {
-    extraForms: { [props.moduleKey]: cloneJson(model) },
+    extraForms: { [props.moduleKey]: data },
   };
 }
 
@@ -120,6 +133,16 @@ defineExpose({ validate, getValues, isDirty: () => dirty.value });
 
 <template>
   <div>
+    <FcRuntime
+      v-if="useFcRuntime && fcRule"
+      ref="fcRuntimeRef"
+      :rule="fcRule"
+      :editable="isDetailPageEditable()"
+      :model-value="model"
+      @change="markDirty"
+      @update:model-value="onFcModelUpdate"
+    />
+
     <template v-for="sec in sections" :key="sec.key">
       <ElForm
         class="agree-kv-form"
@@ -136,7 +159,8 @@ defineExpose({ validate, getValues, isDirty: () => dirty.value });
             <ElFormItem :label="field.label" :required="!!field.required">
               <ModuleFormControl
                 :field="field"
-                :disabled="!isDetailPageEditable()"
+                :page-editable="isDetailPageEditable()"
+                :field-editable="true"
                 :model-value="model[field.key]"
                 @update:model-value="
                   (v) => {

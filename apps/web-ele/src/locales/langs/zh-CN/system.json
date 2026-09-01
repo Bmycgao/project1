@@ -76,5 +76,9 @@
     "editTitle": "编辑表单模板",
     "kindForm": "表单",
     "kindTable": "表格"
+  },
+  "printTemplate": {
+    "title": "打印模板",
+    "editTitle": "编辑打印模板"
   }
 }

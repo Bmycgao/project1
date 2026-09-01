@@ -26,6 +26,7 @@ export const SYSTEM_AUTH = {
   deptList: 'System:Dept:List',
   pageSchemaList: 'System:PageSchema:List',
   fcSchemaList: 'System:FcSchema:List',
+  printTemplateList: 'System:PrintTemplate:List',
 } as const;
 
 /**
@@ -134,6 +135,42 @@ export function assertFcSchemaReadAccess(event: H3Event<EventHandlerRequest>) {
       response: forbiddenResponse(
         event,
         `无权限读取表单模板（需要：${SYSTEM_AUTH.fcSchemaList} 或协议相关权限）`,
+      ),
+      userinfo,
+      codes,
+    };
+  }
+
+  return { ok: true as const, userinfo, codes };
+}
+
+/**
+ * 打印模板「业务读」鉴权：管理端 PrintTemplate:List 或任一协议权限均可
+ * @param event h3 事件
+ */
+export function assertPrintTemplateReadAccess(
+  event: H3Event<EventHandlerRequest>,
+) {
+  const userinfo = verifyAccessToken(event);
+  if (!userinfo) {
+    return { ok: false as const, response: unAuthorizedResponse(event) };
+  }
+
+  const user = findRbacUserByUsername(userinfo.username);
+  const codes = user ? resolveAccessCodes(user) : [];
+  const canManage = matchSystemAccessCodes(
+    codes,
+    SYSTEM_AUTH.printTemplateList,
+  );
+  const canBizRead = codes.some(
+    (c) => c === 'Agree:*' || String(c).startsWith('Agree:'),
+  );
+  if (!canManage && !canBizRead) {
+    return {
+      ok: false as const,
+      response: forbiddenResponse(
+        event,
+        `无权限读取打印模板（需要：${SYSTEM_AUTH.printTemplateList} 或协议相关权限）`,
       ),
       userinfo,
       codes,

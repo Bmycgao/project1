@@ -19,15 +19,13 @@ import {
   ElDrawer,
   ElForm,
   ElFormItem,
-  ElInput,
   ElMessage,
-  ElOption,
-  ElSelect,
   ElTable,
   ElTableColumn,
 } from 'element-plus';
 
 import { cloneJson } from '../clone';
+import ModuleFormControl from '../components/module-form-control.vue';
 import SectionCard from '../components/section-card.vue';
 import { buildSectionFromFcTable } from '../fc/rule-to-inner';
 import { isFcRule } from '../fc/types';
@@ -104,11 +102,6 @@ const tableColumns = computed(() => {
   if (!section.value) return [];
   return sectionFields(section.value).filter((f) => f.key !== '_selection');
 });
-
-function isSelectCol(field: ModuleInnerFieldItem) {
-  const cell = field.cellType || field.controlType;
-  return cell === 'select' || cell === 'yesno';
-}
 
 function cellValue(row: Record<string, unknown>, key: string) {
   return row[key];
@@ -292,27 +285,12 @@ defineExpose({ validate, getValues, isDirty: () => dirty.value });
           :label="col.label"
           :required="col.required"
         >
-          <ElSelect
-            v-if="isSelectCol(col)"
-            class="w-full"
-            :model-value="String(draft[col.key] ?? '')"
-            @update:model-value="(v: string) => (draft[col.key] = v)"
-          >
-            <ElOption
-              v-for="opt in col.options || [
-                { label: '是', value: '是' },
-                { label: '否', value: '否' },
-              ]"
-              :key="opt.value"
-              :label="opt.label"
-              :value="opt.value"
-            />
-          </ElSelect>
-          <ElInput
-            v-else
-            :placeholder="col.placeholder || `请输入${col.label}`"
-            :model-value="String(draft[col.key] ?? '')"
-            @update:model-value="(v: string) => (draft[col.key] = v)"
+          <ModuleFormControl
+            :field="col"
+            :page-editable="true"
+            :field-editable="true"
+            :model-value="draft[col.key]"
+            @update:model-value="(v) => (draft[col.key] = v)"
           />
         </ElFormItem>
       </ElForm>

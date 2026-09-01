@@ -43,6 +43,11 @@ import {
 import { getFcSchemaList } from '#/api';
 
 import {
+  buildSectionFromFcForm,
+  buildSectionFromFcTable,
+} from '../../../biz/agreement/fc/rule-to-inner';
+import { isFcRule } from '../../../biz/agreement/fc/types';
+import {
   AGREE_DETAIL_MODULES,
   createCustomAgreeModule,
   inferCustomWidgetKind,
@@ -395,8 +400,51 @@ function selectField(
   selectedFieldKey.value = fieldKey;
 }
 
+/**
+ * 按场景 fcBindings 取已绑模板 rule（设计器预览用）
+ * @param key 模块 key
+ */
+function boundFcRule(key: AgreementModuleKey) {
+  const id = fcBindings.value[key];
+  if (!id) return null;
+  const schema = fcSchemaList.value.find((s) => s.id === id);
+  if (!schema || !isFcRule(schema.rule)) return null;
+  return schema.rule;
+}
+
+/**
+ * 已绑 FormCreate 模板时，用模板列/字段生成预览配置
+ * @param key 模块 key
+ */
+function innerFromFcBinding(key: AgreementModuleKey): ModuleInnerConfig | null {
+  const fcRule = boundFcRule(key);
+  if (!fcRule) return null;
+  const label = metaOf(key)?.label || '组件';
+  const section = isTableWidget(key)
+    ? buildSectionFromFcTable(fcRule, label)
+    : buildSectionFromFcForm(fcRule, label);
+  if (!section) return null;
+  // 内置表单块不走 custom 子表逻辑
+  const normalized =
+    key === 'basic' || key === 'population'
+      ? { ...section, custom: false }
+      : section;
+  return { sections: [normalized] };
+}
+
 function innerOf(key: AgreementModuleKey): ModuleInnerConfig {
-  if (key === 'basic') return basicInner.value;
+  if (key === 'basic') {
+    const fromFc = innerFromFcBinding('basic');
+    if (fromFc) {
+      const customSecs = (basicInner.value.sections || []).filter((s) =>
+        isCustomBasicSection(s),
+      );
+      return { sections: [...fromFc.sections, ...customSecs] };
+    }
+    return basicInner.value;
+  }
+  const fromFc = innerFromFcBinding(key);
+  if (fromFc) return fromFc;
   if (key === 'houses') return housesInner.value;
   if (key === 'compensation') return compensationInner.value;
   if (key === 'rewards') return rewardsInner.value;

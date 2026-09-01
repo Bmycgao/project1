@@ -1,6 +1,7 @@
 <script lang="ts" setup>
 import type { Ref } from 'vue';
 
+import type { FcRuleMap } from '../fc/types';
 import type {
   ModuleInnerConfig,
   ModuleInnerFieldItem,
@@ -18,16 +19,16 @@ import {
   ElDrawer,
   ElForm,
   ElFormItem,
-  ElInput,
   ElMessage,
-  ElOption,
-  ElSelect,
   ElTable,
   ElTableColumn,
 } from 'element-plus';
 
 import { cloneJson } from '../clone';
+import ModuleFormControl from '../components/module-form-control.vue';
 import SectionCard from '../components/section-card.vue';
+import { buildSectionFromFcTable } from '../fc/rule-to-inner';
+import { isFcRule } from '../fc/types';
 import {
   normalizeHousesModuleInner,
   resolveEnabledFields,
@@ -42,16 +43,26 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ dirty: [] }>();
 
-const { fieldVisible, fieldFormat } = useAgreeFieldAccess();
+const { fieldVisible, fieldFormat, fieldEditable } = useAgreeFieldAccess();
 
 const injectedInner = inject<Ref<ModuleInnerConfig | null>>(
   'agreeModuleInnerHouses',
   ref(null),
 );
+/** 场景绑定的 FormCreate 表格模板 rule */
+const injectedFcRules = inject<Ref<FcRuleMap>>('agreeFcRules', ref({}));
 
-const innerConfig = computed(() =>
-  normalizeHousesModuleInner(injectedInner.value),
-);
+const innerConfig = computed(() => {
+  const fcRule = injectedFcRules.value?.houses;
+  // 绑定了 FC 模板时优先用模板列（如「新建表格」），否则回退 moduleInner
+  const fcSection = isFcRule(fcRule)
+    ? buildSectionFromFcTable(fcRule, '房屋信息')
+    : null;
+  if (fcSection) {
+    return { sections: [fcSection] };
+  }
+  return normalizeHousesModuleInner(injectedInner.value);
+});
 
 const section = computed(() => {
   const secs = resolveEnabledSections(innerConfig.value);
@@ -87,6 +98,13 @@ function columnVisible(field: ModuleInnerFieldItem) {
   return true;
 }
 
+/** 抽屉内列是否可编辑（角色权限 + FC 只读/禁用） */
+function columnFieldEditable(field: ModuleInnerFieldItem) {
+  if (!field.enabled) return false;
+  const accessKey = field.accessField || field.key;
+  return fieldEditable(accessKey);
+}
+
 /**
  * 某子块可见字段（含权限过滤）
  * @param sec 子块
@@ -102,11 +120,6 @@ const tableColumns = computed(() => {
   if (!section.value) return [];
   return sectionFields(section.value).filter((f) => f.key !== '_selection');
 });
-
-function isSelectCol(field: ModuleInnerFieldItem) {
-  const cell = field.cellType || field.controlType;
-  return cell === 'select' || cell === 'yesno';
-}
 
 function cellValue(row: HouseRow, key: string) {
   return (row as unknown as Record<string, unknown>)[key];
@@ -328,27 +341,12 @@ defineExpose({ validate, getValues, isDirty });
           :label="col.label"
           :required="col.required"
         >
-          <ElSelect
-            v-if="isSelectCol(col)"
-            class="w-full"
-            :model-value="String(draft[col.key] ?? '')"
-            @update:model-value="(v: string) => (draft[col.key] = v)"
-          >
-            <ElOption
-              v-for="opt in col.options || [
-                { label: '是', value: '是' },
-                { label: '否', value: '否' },
-              ]"
-              :key="opt.value"
-              :label="opt.label"
-              :value="opt.value"
-            />
-          </ElSelect>
-          <ElInput
-            v-else
-            :placeholder="col.placeholder || `请输入${col.label}`"
-            :model-value="String(draft[col.key] ?? '')"
-            @update:model-value="(v: string) => (draft[col.key] = v)"
+          <ModuleFormControl
+            :field="col"
+            :page-editable="true"
+            :field-editable="columnFieldEditable(col)"
+            :model-value="draft[col.key]"
+            @update:model-value="(v) => (draft[col.key] = v)"
           />
         </ElFormItem>
       </ElForm>

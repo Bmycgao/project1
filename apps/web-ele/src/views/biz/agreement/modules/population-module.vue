@@ -8,7 +8,7 @@ import type {
   ModuleInnerSection,
 } from '../module-inner-config';
 /**
- * 协议人口信息：户维度 KV 表单（可增删字段）
+ * 协议人口信息：绑 FC 模板时用完整 FormCreate 渲染
  */
 import type { AgreementDetail, PopulationInfo } from '../types';
 
@@ -17,8 +17,8 @@ import { computed, inject, reactive, ref, watch } from 'vue';
 import { ElCol, ElForm, ElFormItem, ElMessage, ElRow } from 'element-plus';
 
 import { cloneJson } from '../clone';
+import FcRuntime from '../components/fc-runtime.vue';
 import ModuleFormControl from '../components/module-form-control.vue';
-import { buildDefaultPopulationFcRule } from '../fc/default-rules';
 import { isFcRule } from '../fc/types';
 import {
   normalizeFieldSpan,
@@ -52,20 +52,17 @@ const injectedInner = inject<Ref<ModuleInnerConfig | null>>(
   ref(null),
 );
 const injectedFcRules = inject<Ref<FcRuleMap>>('agreeFcRules', ref({}));
-const fcRule = computed(() =>
-  isFcRule(injectedFcRules.value?.population)
-    ? injectedFcRules.value.population
-    : buildDefaultPopulationFcRule(),
-);
-const useFc = computed(() => isFcRule(fcRule.value));
-const fcRef = ref<null | {
-  getValues: () => Record<string, unknown>;
-  validate: () => Promise<boolean>;
-}>(null);
 
-const innerConfig = computed(() =>
-  normalizePopulationModuleInner(injectedInner.value),
-);
+const fcRule = computed(() => injectedFcRules.value?.population);
+const useFcRuntime = computed(() => isFcRule(fcRule.value));
+const fcRuntimeRef = ref<InstanceType<typeof FcRuntime> | null>(null);
+
+const innerConfig = computed(() => {
+  if (useFcRuntime.value) {
+    return { sections: [] };
+  }
+  return normalizePopulationModuleInner(injectedInner.value);
+});
 const sections = computed(() => resolveEnabledSections(innerConfig.value));
 
 const form = reactive<PopulationInfo>({
@@ -105,6 +102,11 @@ function markDirty() {
   emit('dirty');
 }
 
+function onFcModelUpdate(val: Record<string, unknown>) {
+  Object.assign(form, val);
+  markDirty();
+}
+
 function isFieldShown(field: ModuleInnerFieldItem) {
   if (!field.enabled) return false;
   if (field.accessField) return fieldVisible(field.accessField);
@@ -121,9 +123,10 @@ function visibleFields(section: ModuleInnerSection) {
   return resolveEnabledFields(section).filter((f) => isFieldShown(f));
 }
 
+/** 校验人口信息必填项 */
 async function validate() {
-  if (useFc.value && fcRef.value) {
-    return fcRef.value.validate();
+  if (useFcRuntime.value && fcRuntimeRef.value) {
+    return await fcRuntimeRef.value.validate();
   }
   for (const sec of sections.value) {
     for (const field of visibleFields(sec)) {
@@ -138,10 +141,11 @@ async function validate() {
 }
 
 function getValues() {
-  if (useFc.value && fcRef.value) {
-    Object.assign(form, fcRef.value.getValues() || {});
-  }
-  return { population: cloneJson(form) };
+  const population =
+    useFcRuntime.value && fcRuntimeRef.value
+      ? (cloneJson(fcRuntimeRef.value.getValues()) as PopulationInfo)
+      : cloneJson(form);
+  return { population };
 }
 
 defineExpose({ validate, getValues, isDirty: () => dirty.value });
@@ -149,6 +153,16 @@ defineExpose({ validate, getValues, isDirty: () => dirty.value });
 
 <template>
   <div>
+    <FcRuntime
+      v-if="useFcRuntime && fcRule"
+      ref="fcRuntimeRef"
+      :rule="fcRule"
+      :editable="isDetailPageEditable()"
+      :model-value="model"
+      @change="markDirty"
+      @update:model-value="onFcModelUpdate"
+    />
+
     <template v-for="sec in sections" :key="sec.key">
       <ElForm
         class="agree-kv-form"
@@ -165,7 +179,8 @@ defineExpose({ validate, getValues, isDirty: () => dirty.value });
             <ElFormItem :label="field.label" :required="!!field.required">
               <ModuleFormControl
                 :field="field"
-                :disabled="!isDetailPageEditable() || !isFieldEditable(field)"
+                :page-editable="isDetailPageEditable()"
+                :field-editable="isFieldEditable(field)"
                 :model-value="model[field.key]"
                 @update:model-value="
                   (v) => {

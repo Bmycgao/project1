@@ -76,5 +76,9 @@
     "editTitle": "Edit Form Template",
     "kindForm": "Form",
     "kindTable": "Table"
+  },
+  "printTemplate": {
+    "title": "Print Templates",
+    "editTitle": "Edit Print Template"
   }
 }

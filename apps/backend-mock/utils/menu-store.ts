@@ -69,11 +69,190 @@ export function ensureMenuStoreHydrated() {
       typeof saved.idSeed === 'number' && saved.idSeed > 0
         ? saved.idSeed
         : Math.max(idSeed, findMaxNumericId(MOCK_MENU_LIST));
-    return;
+  } else {
+    // 无落盘：沿用 mock-data 种子，idSeed 不低于树内最大 id
+    idSeed = Math.max(idSeed, findMaxNumericId(MOCK_MENU_LIST));
   }
 
-  // 无落盘：沿用 mock-data 种子，idSeed 不低于树内最大 id
-  idSeed = Math.max(idSeed, findMaxNumericId(MOCK_MENU_LIST));
+  // 落盘菜单可能早于新增种子：补齐打印模板菜单
+  ensureSystemPrintTemplateMenuSeed();
+  ensureAgreePreviewButtonSeed();
+  hideLegacyPrintDesignMenu();
+  fixPrintDesignMenuComponent();
+}
+
+/**
+ * 系统管理下补齐「打印模板」菜单
+ */
+function ensureSystemPrintTemplateMenuSeed() {
+  const system = MOCK_MENU_LIST.find((m) => String(m.id) === '2');
+  if (!system?.children) return;
+  const exists = system.children.some((c: any) => String(c.id) === '208');
+  if (exists) return;
+  const fcEditIdx = system.children.findIndex(
+    (c: any) => String(c.id) === '2071',
+  );
+  const seeds = [
+    {
+      id: 208,
+      pid: 2,
+      path: 'print-template',
+      name: 'SystemPrintTemplate',
+      authCode: 'System:PrintTemplate:List',
+      status: 1,
+      type: 'menu',
+      meta: {
+        icon: 'mdi:printer-settings',
+        title: 'system.printTemplate.title',
+      },
+      component: '/system/print-template/list',
+    },
+    {
+      id: 2081,
+      pid: 2,
+      path: 'print-template/edit/:id',
+      name: 'SystemPrintTemplateEdit',
+      authCode: 'System:PrintTemplate:List',
+      status: 1,
+      type: 'menu',
+      meta: {
+        hideInMenu: true,
+        activePath: '/system/print-template',
+        title: 'system.printTemplate.editTitle',
+      },
+      component: '/system/print-template/edit',
+    },
+  ];
+  if (fcEditIdx === -1) {
+    system.children.push(...seeds);
+  } else {
+    system.children.splice(fcEditIdx + 1, 0, ...seeds);
+  }
+  persistMenuStore();
+}
+
+/** 协议录入/律师审核菜单下补齐附件预览按钮权限（旧落盘可能缺失） */
+function ensureAgreePreviewButtonSeed() {
+  const seeds: Record<string, any[]> = {
+    '701': [
+      {
+        id: 70_106,
+        pid: 701,
+        name: 'AgreeEntryPreview1',
+        status: 1,
+        type: 'button',
+        authCode: 'Agree:preview1',
+        meta: { title: '附件一预览' },
+      },
+      {
+        id: 70_107,
+        pid: 701,
+        name: 'AgreeEntryPreview2',
+        status: 1,
+        type: 'button',
+        authCode: 'Agree:preview2',
+        meta: { title: '附件二预览' },
+      },
+    ],
+    '702': [
+      {
+        id: 70_203,
+        pid: 702,
+        name: 'AgreeLawyerRejectRecord',
+        status: 1,
+        type: 'button',
+        authCode: 'Agree:rejectRecord',
+        meta: { title: '驳回记录' },
+      },
+      {
+        id: 70_204,
+        pid: 702,
+        name: 'AgreeLawyerPreview1',
+        status: 1,
+        type: 'button',
+        authCode: 'Agree:preview1',
+        meta: { title: '附件一预览' },
+      },
+      {
+        id: 70_205,
+        pid: 702,
+        name: 'AgreeLawyerPreview2',
+        status: 1,
+        type: 'button',
+        authCode: 'Agree:preview2',
+        meta: { title: '附件二预览' },
+      },
+      {
+        id: 70_206,
+        pid: 702,
+        name: 'AgreeLawyerTicket1',
+        status: 1,
+        type: 'button',
+        authCode: 'Agree:ticket1',
+        meta: { title: '房票附件一' },
+      },
+      {
+        id: 70_207,
+        pid: 702,
+        name: 'AgreeLawyerTicket2',
+        status: 1,
+        type: 'button',
+        authCode: 'Agree:ticket2',
+        meta: { title: '房票附件二' },
+      },
+    ],
+  };
+
+  let changed = false;
+  const eAgree = MOCK_MENU_LIST.find((m) => String(m.id) === '7');
+  if (!eAgree?.children) return;
+
+  for (const menuId of ['701', '702']) {
+    const menu = eAgree.children.find((c: any) => String(c.id) === menuId);
+    if (!menu) continue;
+    if (!menu.children) menu.children = [];
+    for (const seed of seeds[menuId] || []) {
+      const exists = menu.children.some(
+        (c: any) =>
+          String(c.id) === String(seed.id) ||
+          String(c.authCode) === String(seed.authCode),
+      );
+      if (!exists) {
+        menu.children.push({ ...seed });
+        changed = true;
+      }
+    }
+  }
+  if (changed) persistMenuStore();
+}
+
+/**
+ * 隐藏电子协议下旧的打印设计入口（已迁至系统管理）
+ */
+function hideLegacyPrintDesignMenu() {
+  const eAgree = MOCK_MENU_LIST.find((m) => String(m.id) === '7');
+  const node = eAgree?.children?.find((c: any) => String(c.id) === '703');
+  if (!node) return;
+  let changed = false;
+  if (node.status !== 0) {
+    node.status = 0;
+    changed = true;
+  }
+  node.meta = { ...node.meta, hideInMenu: true };
+  if (changed) persistMenuStore();
+}
+
+/**
+ * 已存在的打印设计菜单若 component 路径过旧，纠正为 index 形式
+ */
+function fixPrintDesignMenuComponent() {
+  const eAgree = MOCK_MENU_LIST.find((m) => String(m.id) === '7');
+  const node = eAgree?.children?.find((c: any) => String(c.id) === '703');
+  if (!node) return;
+  const want = '/biz/agreement/print/designer/index';
+  if (String(node.component || '').trim() === want) return;
+  node.component = want;
+  persistMenuStore();
 }
 
 // 模块加载即尝试恢复（create/update/delete 入口会 import 本文件）

@@ -1,11 +1,14 @@
 <script lang="ts" setup>
 /**
- * 模块表单控件：按 controlType 渲染输入 / 下拉 / 日期 / 单选 / 多行
+ * 模块表单控件：按 controlType 渲染，合并 FC 模板只读/禁用与页面编辑态
  * @param field 字段配置
  * @param modelValue 当前值
- * @param disabled 只读
+ * @param pageEditable 详情是否编辑态
+ * @param fieldEditable 角色字段是否可编辑
  */
 import type { ModuleInnerFieldItem } from '../module-inner-config';
+
+import { computed } from 'vue';
 
 import {
   ElDatePicker,
@@ -16,15 +19,34 @@ import {
   ElSelect,
 } from 'element-plus';
 
+import { resolveModuleFieldControlState } from '../fc/field-lock';
+
 const props = defineProps<{
+  /** 兼容：直接整字段禁用 */
   disabled?: boolean;
   field: ModuleInnerFieldItem;
+  /** 角色字段是否可编辑 */
+  fieldEditable?: boolean;
   modelValue: unknown;
+  /** 详情是否编辑态 */
+  pageEditable?: boolean;
 }>();
 
 const emit = defineEmits<{
   'update:modelValue': [value: number | string];
 }>();
+
+/** 控件禁用/只读（含 FC 模板配置） */
+const controlState = computed(() => {
+  if (props.disabled) {
+    return { disabled: true, readonly: false };
+  }
+  return resolveModuleFieldControlState(
+    props.field,
+    props.pageEditable ?? false,
+    props.fieldEditable ?? false,
+  );
+});
 
 /**
  * 归一化控件类型
@@ -56,7 +78,8 @@ const text = () => String(props.modelValue ?? '');
   <ElSelect
     v-if="kindOf(field) === 'select'"
     class="w-full"
-    :disabled="disabled"
+    :disabled="controlState.disabled"
+    :clearable="field.clearable"
     :model-value="text()"
     @update:model-value="(v: string) => emit('update:modelValue', v)"
   >
@@ -69,7 +92,7 @@ const text = () => String(props.modelValue ?? '');
   </ElSelect>
   <ElRadioGroup
     v-else-if="kindOf(field) === 'radio'"
-    :disabled="disabled"
+    :disabled="controlState.disabled"
     :model-value="text()"
     @update:model-value="
       (v: string | number | boolean | undefined) =>
@@ -90,7 +113,8 @@ const text = () => String(props.modelValue ?? '');
     style="width: 100%"
     type="date"
     value-format="YYYY-MM-DD"
-    :disabled="disabled"
+    :disabled="controlState.disabled"
+    :readonly="controlState.readonly"
     :placeholder="field.placeholder || '选择日期'"
     :model-value="text() || undefined"
     @update:model-value="(v: string) => emit('update:modelValue', v || '')"
@@ -99,14 +123,21 @@ const text = () => String(props.modelValue ?? '');
     v-else-if="kindOf(field) === 'textarea'"
     type="textarea"
     :rows="3"
-    :disabled="disabled"
+    :disabled="controlState.disabled"
+    :readonly="controlState.readonly"
+    :maxlength="field.maxlength"
+    :show-word-limit="field.maxlength != null"
     :placeholder="field.placeholder"
     :model-value="text()"
     @update:model-value="(v: string) => emit('update:modelValue', v)"
   />
   <ElInput
     v-else
-    :disabled="disabled"
+    :disabled="controlState.disabled"
+    :readonly="controlState.readonly"
+    :maxlength="field.maxlength"
+    :show-word-limit="field.maxlength != null"
+    :clearable="field.clearable"
     :placeholder="field.placeholder"
     :model-value="text()"
     @update:model-value="(v: string) => emit('update:modelValue', v)"

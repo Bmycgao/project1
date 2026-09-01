@@ -57,6 +57,14 @@ export interface ModuleInnerFieldItem {
   custom?: boolean;
   /** 输入占位 */
   placeholder?: string;
+  /** FormCreate 模板：设计器勾选禁用 */
+  fcDisabled?: boolean;
+  /** FormCreate 模板：设计器勾选只读 */
+  fcReadonly?: boolean;
+  /** 最大输入长度（来自 FC maxlength） */
+  maxlength?: number;
+  /** 是否显示清除按钮 */
+  clearable?: boolean;
 }
 
 /** 模块内子块（如权利人表 / 签约要素） */

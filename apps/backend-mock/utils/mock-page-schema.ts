@@ -66,6 +66,7 @@ export interface PageSchema {
       api?: string;
       confirmText?: string;
       method?: 'DELETE' | 'GET' | 'POST' | 'PUT';
+      printTemplateCode?: string;
       redirect?: string;
       showWhenStatusIn?: string[];
       successMsg?: string;
@@ -1023,8 +1024,18 @@ export const MOCK_PAGE_SCHEMAS: PageSchema[] = [
       { code: 'conditionalSign', label: '附条件签约', group: 'more' },
       { code: 'rejectRecord', label: '驳回记录', group: 'more' },
       { code: 'rejectPrev', label: '驳回前期', group: 'more' },
-      { code: 'preview1', label: '附件一预览', group: 'more' },
-      { code: 'preview2', label: '附件二预览', group: 'more' },
+      {
+        code: 'preview1',
+        label: '附件一预览',
+        group: 'more',
+        bind: { printTemplateCode: 'PrintFujian1' },
+      },
+      {
+        code: 'preview2',
+        label: '附件二预览',
+        group: 'more',
+        bind: { printTemplateCode: 'PrintFujian2' },
+      },
     ],
     /** 录入：详情挂载 5 块 */
     modules: buildModules([
@@ -1075,10 +1086,32 @@ export const MOCK_PAGE_SCHEMAS: PageSchema[] = [
         },
       },
       { code: 'rejectRecord', label: '驳回记录', group: 'main' },
-      { code: 'preview1', label: '附件一预览', group: 'more' },
-      { code: 'preview2', label: '附件二预览', group: 'more' },
-      { code: 'ticket1', label: '房票附件一', group: 'more' },
-      { code: 'ticket2', label: '房票附件二', group: 'more' },
+      {
+        code: 'preview1',
+        label: '附件一预览',
+        group: 'main',
+        plain: true,
+        bind: { printTemplateCode: 'PrintFujian1' },
+      },
+      {
+        code: 'preview2',
+        label: '附件二预览',
+        group: 'main',
+        plain: true,
+        bind: { printTemplateCode: 'PrintFujian2' },
+      },
+      {
+        code: 'ticket1',
+        label: '房票附件一',
+        group: 'more',
+        bind: { printTemplateCode: 'PrintTicket1' },
+      },
+      {
+        code: 'ticket2',
+        label: '房票附件二',
+        group: 'more',
+        bind: { printTemplateCode: 'PrintTicket2' },
+      },
     ],
     /** 律师审核：详情挂载 5 块 */
     modules: buildModules([
@@ -1218,6 +1251,62 @@ function hydratePageSchemaFromDisk() {
   // 旧落盘列缺 order 时按种子/下标补齐
   ensureColumnOrderFromSeed();
   ensureFcBindingsFromSeed();
+  ensurePrintButtonBindFromSeed();
+}
+
+/**
+ * 旧落盘页面配置补全 preview 按钮的 printTemplateCode 绑定
+ */
+function ensurePrintButtonBindFromSeed() {
+  const bindMap: Record<string, string> = {
+    preview1: 'PrintFujian1',
+    preview2: 'PrintFujian2',
+    ticket1: 'PrintTicket1',
+    ticket2: 'PrintTicket2',
+  };
+  let changed = false;
+  for (let idx = 0; idx < pageSchemaStore.length; idx++) {
+    const current = pageSchemaStore[idx];
+    if (!current?.buttons?.length) continue;
+    let rowChanged = false;
+    const nextButtons = current.buttons.map((btn) => {
+      const code = String(btn.code || '');
+      const want = bindMap[code];
+      if (!want) return btn;
+      const has = btn.bind?.printTemplateCode;
+      if (has) return btn;
+      rowChanged = true;
+      return {
+        ...btn,
+        bind: { ...btn.bind, printTemplateCode: want },
+      };
+    });
+    if (rowChanged) {
+      pageSchemaStore[idx] = { ...current, buttons: nextButtons };
+      changed = true;
+    }
+  }
+  // 律师审核场景：附件预览提升到主工具栏（旧落盘可能在 more 里）
+  const lawyerIdx = pageSchemaStore.findIndex(
+    (s) => String(s.id) === 'PS_AGREE_LAWYER',
+  );
+  if (lawyerIdx !== -1) {
+    const current = pageSchemaStore[lawyerIdx];
+    if (current?.buttons?.length) {
+      let rowChanged = false;
+      const nextButtons = current.buttons.map((btn) => {
+        if (btn.code !== 'preview1' && btn.code !== 'preview2') return btn;
+        if (btn.group === 'main') return btn;
+        rowChanged = true;
+        return { ...btn, group: 'main', plain: true };
+      });
+      if (rowChanged) {
+        pageSchemaStore[lawyerIdx] = { ...current, buttons: nextButtons };
+        changed = true;
+      }
+    }
+  }
+  if (changed) persistPageSchemaStore();
 }
 
 /**
@@ -1666,6 +1755,7 @@ function persistPageSchemaStore() {
 }
 
 hydratePageSchemaFromDisk();
+ensurePrintButtonBindFromSeed();
 
 const historyTimeFmt = new Intl.DateTimeFormat('zh-CN', {
   timeZone: 'Asia/Shanghai',

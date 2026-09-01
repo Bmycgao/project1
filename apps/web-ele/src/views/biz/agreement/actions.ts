@@ -16,6 +16,7 @@ import {
   submitAgreementBatch,
 } from '#/api/biz/agreement';
 import { requestClient } from '#/api/request';
+import { DEFAULT_PRINT_TEMPLATE_BY_ACTION } from '#/api/system/print-template';
 
 /** 工具栏按钮（由动作库解析得到，可带页面级差异化绑定） */
 export interface AgreeToolbarButton {
@@ -54,6 +55,8 @@ export interface AgreeButtonBind {
    * 勾选后不满足则禁用/拦截
    */
   showWhenStatusIn?: string[];
+  /** 打印预览绑定的模板编码，如 PrintFujian1 */
+  printTemplateCode?: string;
 }
 
 /** 动作执行上下文 */
@@ -70,6 +73,17 @@ export interface AgreeActionContext {
   accessCodes?: string[];
   /** 当前点击按钮的差异化绑定 */
   buttonBind?: AgreeButtonBind;
+  /**
+   * 打开 hiprint 打印预览（列表页注入）
+   * @param row 勾选行
+   * @param templateCode 模板编码
+   * @param title 弹窗标题
+   */
+  openPrintPreview?: (
+    row: AgreementListItem,
+    templateCode: string,
+    title?: string,
+  ) => Promise<void> | void;
 }
 
 /** 注册表中的动作定义 */
@@ -167,11 +181,20 @@ function downloadCsv(rows: AgreementListItem[], filename: string) {
   URL.revokeObjectURL(url);
 }
 
-/** 预览类动作：打开详情（只读意图由 detailMode 控制） */
-async function openPreview(label: string, ctx: AgreeActionContext) {
+/** 预览类动作：优先 hiprint 打印预览，否则打开详情 */
+async function openPreview(
+  label: string,
+  ctx: AgreeActionContext,
+  defaultTemplateCode?: string,
+) {
   if (!assertSelection(ctx, 1, 1)) return;
   const row = ctx.selected[0];
   if (!row) return;
+  const code = ctx.buttonBind?.printTemplateCode || defaultTemplateCode;
+  if (code && ctx.openPrintPreview) {
+    await ctx.openPrintPreview(row, code, label);
+    return;
+  }
   ctx.openDetail(row);
   ElMessage.success(`已打开详情 · ${label}`);
 }
@@ -407,8 +430,9 @@ export const AGREE_ACTION_REGISTRY: Record<string, AgreeActionDef> = {
     minSelected: 1,
     maxSelected: 1,
     category: 'preview',
-    description: '预览附件一（打开详情）',
-    handler: (ctx) => openPreview('附件一预览', ctx),
+    description: '预览附件一（hiprint 打印预览）',
+    handler: (ctx) =>
+      openPreview('附件一预览', ctx, DEFAULT_PRINT_TEMPLATE_BY_ACTION.preview1),
   },
   preview2: {
     code: 'preview2',
@@ -417,8 +441,9 @@ export const AGREE_ACTION_REGISTRY: Record<string, AgreeActionDef> = {
     minSelected: 1,
     maxSelected: 1,
     category: 'preview',
-    description: '预览附件二（打开详情）',
-    handler: (ctx) => openPreview('附件二预览', ctx),
+    description: '预览附件二（hiprint 打印预览）',
+    handler: (ctx) =>
+      openPreview('附件二预览', ctx, DEFAULT_PRINT_TEMPLATE_BY_ACTION.preview2),
   },
   ticket1: {
     code: 'ticket1',
@@ -427,8 +452,9 @@ export const AGREE_ACTION_REGISTRY: Record<string, AgreeActionDef> = {
     minSelected: 1,
     maxSelected: 1,
     category: 'preview',
-    description: '房票附件一（打开详情）',
-    handler: (ctx) => openPreview('房票附件一', ctx),
+    description: '房票附件一（hiprint 打印预览）',
+    handler: (ctx) =>
+      openPreview('房票附件一', ctx, DEFAULT_PRINT_TEMPLATE_BY_ACTION.ticket1),
   },
   ticket2: {
     code: 'ticket2',
@@ -437,8 +463,9 @@ export const AGREE_ACTION_REGISTRY: Record<string, AgreeActionDef> = {
     minSelected: 1,
     maxSelected: 1,
     category: 'preview',
-    description: '房票附件二（打开详情）',
-    handler: (ctx) => openPreview('房票附件二', ctx),
+    description: '房票附件二（hiprint 打印预览）',
+    handler: (ctx) =>
+      openPreview('房票附件二', ctx, DEFAULT_PRINT_TEMPLATE_BY_ACTION.ticket2),
   },
   preSave: {
     code: 'preSave',

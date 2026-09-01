@@ -7,7 +7,7 @@
  */
 import type { AgreeToolbarButton } from '../actions';
 import type { AgreeListRuntime } from '../resolve-runtime';
-import type { AgreementListItem } from '../types';
+import type { AgreementDetail, AgreementListItem } from '../types';
 
 import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
@@ -32,6 +32,7 @@ import {
 } from 'element-plus';
 
 import { getAgreementList } from '#/api';
+import { getAgreementDetail } from '#/api/biz/agreement';
 
 import {
   filterButtonsByAccessCodes,
@@ -40,6 +41,7 @@ import {
   runAgreeAction,
 } from '../actions';
 import { filterColumnsByFieldRules } from '../field-access';
+import PrintPreviewDialog from '../print/print-preview-dialog.vue';
 import { loadAgreeListRuntime } from '../resolve-runtime';
 
 const route = useRoute();
@@ -51,6 +53,10 @@ const loading = ref(false);
 const keyword = ref('');
 const statusFilter = ref('');
 const selected = ref<AgreementListItem[]>([]);
+const printPreviewOpen = ref(false);
+const printPreviewDetail = ref<AgreementDetail | null>(null);
+const printPreviewTemplateCode = ref('PrintFujian1');
+const printPreviewTitle = ref('打印预览');
 const tableData = ref<AgreementListItem[]>([]);
 /** 运行时配置（来自页面配置或本地场景） */
 const runtime = ref<AgreeListRuntime | null>(null);
@@ -74,6 +80,15 @@ const mainButtons = computed(() =>
 );
 const moreButtons = computed(() =>
   permittedButtons.value.filter((b) => b.group === 'more'),
+);
+
+/** 当前场景是否配置了附件/打印预览类按钮 */
+const hasPreviewButtons = computed(() =>
+  (runtime.value?.buttons || []).some((b) =>
+    ['preview1', 'preview2', 'previewAgree', 'ticket1', 'ticket2'].includes(
+      b.code,
+    ),
+  ),
 );
 
 const pageTitle = computed(() => runtime.value?.title || '协议列表');
@@ -190,6 +205,35 @@ function onSelectionChange(rows: AgreementListItem[]) {
 }
 
 /**
+ * 列表打开 hiprint 打印预览
+ * @param row 勾选行
+ * @param templateCode 模板编码
+ * @param title 弹窗标题
+ */
+async function openPrintPreview(
+  row: AgreementListItem,
+  templateCode: string,
+  title?: string,
+) {
+  try {
+    const detail = await getAgreementDetail(row.agreementNo, {
+      id: row.id,
+      compensatee: row.compensatee,
+      houseAddress: row.houseAddress,
+    });
+    printPreviewDetail.value = detail;
+  } catch {
+    const { buildAgreementDetail } = await import('../mock-data');
+    printPreviewDetail.value = buildAgreementDetail(row.agreementNo);
+    ElMessage.warning('详情接口暂不可用，已使用本地 mock 数据预览');
+  }
+  printPreviewTemplateCode.value = templateCode;
+  printPreviewTitle.value = title || '打印预览';
+  printPreviewOpen.value = true;
+  ElMessage.success(`正在加载「${printPreviewTitle.value}」`);
+}
+
+/**
  * 构建动作上下文
  * @param btn 当前点击的按钮（带 bind）
  */
@@ -200,6 +244,7 @@ function buildActionCtx(btn?: AgreeToolbarButton) {
     tableData: tableData.value,
     reload: loadList,
     openDetail: goDetail,
+    openPrintPreview,
     router,
     accessCodes: accessStore.accessCodes,
     buttonBind: btn?.bind,
@@ -359,6 +404,9 @@ watch(
       </ElSpace>
       <span class="text-xs text-gray-400">
         已选 {{ selected.length }} · 共 {{ tableData.length }} 条
+        <span v-if="hasPreviewButtons" class="ml-2 text-amber-600">
+          （附件预览请先勾选一条记录）
+        </span>
       </span>
     </div>
 
@@ -402,5 +450,12 @@ watch(
         </ElTableColumn>
       </ElTable>
     </div>
+
+    <PrintPreviewDialog
+      v-model="printPreviewOpen"
+      :detail="printPreviewDetail"
+      :template-code="printPreviewTemplateCode"
+      :title="printPreviewTitle"
+    />
   </Page>
 </template>

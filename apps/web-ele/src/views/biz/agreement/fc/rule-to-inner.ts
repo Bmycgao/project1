@@ -85,6 +85,11 @@ function toFieldItem(node: FcRule, order: number): ModuleInnerFieldItem | null {
   const options = (cell?.options || node.options) as
     | undefined
     | { label: string; value: string }[];
+  const cellProps = (cell?.props || {}) as Record<string, unknown>;
+  const nodeProps = (node.props || {}) as Record<string, unknown>;
+  const maxlengthRaw = cellProps.maxlength ?? nodeProps.maxlength;
+  const maxlength = Number.parseInt(String(maxlengthRaw ?? ''), 10);
+  const clearableRaw = cellProps.clearable ?? nodeProps.clearable;
   return {
     key,
     label,
@@ -98,9 +103,16 @@ function toFieldItem(node: FcRule, order: number): ModuleInnerFieldItem | null {
         ? controlType
         : 'text',
     minWidth: Number.isFinite(minWidth) && minWidth > 0 ? minWidth : 120,
-    placeholder: cell?.props?.placeholder || node.props?.placeholder,
+    placeholder:
+      (cellProps.placeholder as string | undefined) ||
+      (nodeProps.placeholder as string | undefined),
     span: Number(cell?.col?.span || node.col?.span || node.span) || undefined,
     options: Array.isArray(options) ? options : undefined,
+    fcDisabled: !!(cellProps.disabled || nodeProps.disabled),
+    fcReadonly: !!(cellProps.readonly || nodeProps.readonly),
+    maxlength:
+      Number.isFinite(maxlength) && maxlength > 0 ? maxlength : undefined,
+    clearable: typeof clearableRaw === 'boolean' ? clearableRaw : undefined,
   };
 }
 

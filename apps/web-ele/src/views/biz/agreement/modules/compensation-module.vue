@@ -1,6 +1,7 @@
 <script lang="ts" setup>
 import type { Ref } from 'vue';
 
+import type { FcRuleMap } from '../fc/types';
 import type {
   ModuleInnerConfig,
   ModuleInnerFieldItem,
@@ -18,16 +19,16 @@ import {
   ElDrawer,
   ElForm,
   ElFormItem,
-  ElInput,
   ElMessage,
-  ElOption,
-  ElSelect,
   ElTable,
   ElTableColumn,
 } from 'element-plus';
 
 import { cloneJson } from '../clone';
+import ModuleFormControl from '../components/module-form-control.vue';
 import SectionCard from '../components/section-card.vue';
+import { buildSectionFromFcTable } from '../fc/rule-to-inner';
+import { isFcRule } from '../fc/types';
 import {
   normalizeCompensationModuleInner,
   resolveEnabledFields,
@@ -41,16 +42,25 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ dirty: [] }>();
 
-const { fieldVisible, fieldFormat } = useAgreeFieldAccess();
+const { fieldVisible, fieldFormat, fieldEditable } = useAgreeFieldAccess();
 
 const injectedInner = inject<Ref<ModuleInnerConfig | null>>(
   'agreeModuleInnerCompensation',
   ref(null),
 );
+/** 场景绑定的 FormCreate 表格模板 rule */
+const injectedFcRules = inject<Ref<FcRuleMap>>('agreeFcRules', ref({}));
 
-const innerConfig = computed(() =>
-  normalizeCompensationModuleInner(injectedInner.value),
-);
+const innerConfig = computed(() => {
+  const fcRule = injectedFcRules.value?.compensation;
+  const fcSection = isFcRule(fcRule)
+    ? buildSectionFromFcTable(fcRule, '补偿安置')
+    : null;
+  if (fcSection) {
+    return { sections: [fcSection] };
+  }
+  return normalizeCompensationModuleInner(injectedInner.value);
+});
 const section = computed(() => {
   const secs = resolveEnabledSections(innerConfig.value);
   return secs.find((s) => s.key === 'compensation') || secs[0] || null;
@@ -96,13 +106,14 @@ function columnVisible(field: ModuleInnerFieldItem) {
   return true;
 }
 
-function sectionFields(sec: ModuleInnerSection) {
-  return resolveEnabledFields(sec).filter((f) => columnVisible(f));
+function columnFieldEditable(field: ModuleInnerFieldItem) {
+  if (!field.enabled) return false;
+  const accessKey = field.accessField || field.key;
+  return fieldEditable(accessKey);
 }
 
-function isSelectCol(field: ModuleInnerFieldItem) {
-  const cell = field.cellType || field.controlType;
-  return cell === 'select' || cell === 'yesno';
+function sectionFields(sec: ModuleInnerSection) {
+  return resolveEnabledFields(sec).filter((f) => columnVisible(f));
 }
 
 function cellValue(row: CompensationRow, key: string) {
@@ -301,27 +312,12 @@ defineExpose({ validate, getValues, isDirty: () => dirty.value });
           :label="col.label"
           :required="col.required"
         >
-          <ElSelect
-            v-if="isSelectCol(col)"
-            class="w-full"
-            :model-value="String(draft[col.key] ?? '')"
-            @update:model-value="(v: string) => (draft[col.key] = v)"
-          >
-            <ElOption
-              v-for="opt in col.options || [
-                { label: '是', value: '是' },
-                { label: '否', value: '否' },
-              ]"
-              :key="opt.value"
-              :label="opt.label"
-              :value="opt.value"
-            />
-          </ElSelect>
-          <ElInput
-            v-else
-            :placeholder="col.placeholder || `请输入${col.label}`"
-            :model-value="String(draft[col.key] ?? '')"
-            @update:model-value="(v: string) => (draft[col.key] = v)"
+          <ModuleFormControl
+            :field="col"
+            :page-editable="true"
+            :field-editable="columnFieldEditable(col)"
+            :model-value="draft[col.key]"
+            @update:model-value="(v) => (draft[col.key] = v)"
           />
         </ElFormItem>
       </ElForm>
