@@ -42,7 +42,7 @@ export const PRINT_FILTER_OP_OPTIONS: {
   { label: '不为空', value: 'notEmpty' },
 ];
 
-/** 适合比较大小 / 合计的列（户名等文本列不要出现在 SUM 下拉） */
+/** 常见数值 field（户名等文本列不要误判） */
 const NUMERIC_FIELDS = new Set([
   'amount',
   'buildArea',
@@ -53,56 +53,27 @@ const NUMERIC_FIELDS = new Set([
   'unitPrice',
 ]);
 
-/** 各表常用筛选快捷项 */
-export const PRINT_TABLE_FILTER_PRESETS: Record<
-  string,
-  { conds: PrintFilterCond[]; join: 'and' | 'or'; label: string }[]
-> = {
-  houses: [
-    {
-      label: '只打住宅',
-      join: 'and',
-      conds: [{ field: 'houseType', op: 'eq', value: '住宅' }],
-    },
-    {
-      label: '评估价>0',
-      join: 'and',
-      conds: [{ field: 'evalValue', op: 'gt', value: '0' }],
-    },
-    {
-      label: '建面≥50',
-      join: 'and',
-      conds: [{ field: 'buildArea', op: 'gte', value: '50' }],
-    },
-    {
-      label: '住宅且评估价>0',
-      join: 'and',
-      conds: [
-        { field: 'houseType', op: 'eq', value: '住宅' },
-        { field: 'evalValue', op: 'gt', value: '0' },
-      ],
-    },
-  ],
-  compensationItems: [
-    {
-      label: '金额>1万',
-      join: 'and',
-      conds: [{ field: 'amount', op: 'gt', value: '10000' }],
-    },
-    {
-      label: '金额不为空',
-      join: 'and',
-      conds: [{ field: 'amount', op: 'notEmpty', value: '' }],
-    },
-  ],
-  rewardItems: [
-    {
-      label: '金额>0',
-      join: 'and',
-      conds: [{ field: 'amount', op: 'gt', value: '0' }],
-    },
-  ],
-};
+/** field 名里带这些片段也当数值列 */
+const NUMERIC_FIELD_RE =
+  /amount|price|area|value|qty|quantity|total|count|index|unitPrice|evalValue/i;
+
+/** 筛选列（可带对齐 / 合计，用于判断数值列） */
+export interface PrintFilterColumn {
+  align?: 'center' | 'left' | 'right';
+  field: string;
+  tableSummary?: boolean;
+  title: string;
+}
+
+/** 按当前表列生成的快捷筛选 */
+export interface PrintFilterPreset {
+  conds: PrintFilterCond[];
+  join: 'and' | 'or';
+  label: string;
+}
+
+/** 快捷按钮最多几个，避免一排挤满 */
+const FILTER_PRESET_MAX = 8;
 
 /**
  * 比较符是否需要填写值
@@ -113,11 +84,56 @@ export function filterOpNeedsValue(op: PrintFilterOp) {
 }
 
 /**
- * 是否数值列（合计下拉只给这些）
+ * 是否数值列（合计下拉、快捷「>0」、表达式不加引号）
  * @param field 列 field
+ * @param col 可选：合计开关 / 右对齐也视为数值
  */
-export function isNumericPrintField(field: string) {
-  return NUMERIC_FIELDS.has(String(field || ''));
+export function isNumericPrintField(
+  field: string,
+  col?: Pick<PrintFilterColumn, 'align' | 'tableSummary'>,
+) {
+  const key = String(field || '');
+  if (!key) return false;
+  if (NUMERIC_FIELDS.has(key) || NUMERIC_FIELD_RE.test(key)) return true;
+  if (col?.tableSummary) return true;
+  if (col?.align === 'right') return true;
+  return false;
+}
+
+/**
+ * 按当前叶子列生成快捷筛选（>0 / 不为空），不写死某张业务表
+ * @param columns 当前表列
+ */
+export function buildFilterPresets(
+  columns: PrintFilterColumn[],
+): PrintFilterPreset[] {
+  const cols = columns.filter((c) => String(c.field || '').trim());
+  const numeric = cols.filter(
+    (c) => c.field !== 'index' && isNumericPrintField(c.field, c),
+  );
+  const rest = cols.filter(
+    (c) => c.field === 'index' || !isNumericPrintField(c.field, c),
+  );
+  const out: PrintFilterPreset[] = [];
+  const push = (label: string, cond: PrintFilterCond) => {
+    if (out.length >= FILTER_PRESET_MAX) return;
+    if (out.some((p) => p.label === label)) return;
+    out.push({ label, join: 'and', conds: [cond] });
+  };
+  for (const c of numeric) {
+    const title = c.title || c.field;
+    push(`${title}>0`, { field: c.field, op: 'gt', value: '0' });
+  }
+  for (const c of [...numeric, ...rest]) {
+    if (c.field === 'index') continue;
+    const title = c.title || c.field;
+    push(`${title}不为空`, {
+      field: c.field,
+      op: 'notEmpty',
+      value: '',
+    });
+  }
+  return out;
 }
 
 /**
@@ -126,7 +142,7 @@ export function isNumericPrintField(field: string) {
  * @param value 输入值
  */
 function useNumericLiteral(field: string, value: string) {
-  if (!NUMERIC_FIELDS.has(field)) return false;
+  if (!isNumericPrintField(field)) return false;
   const n = Number(value);
   return value.trim() !== '' && Number.isFinite(n);
 }
@@ -332,12 +348,15 @@ function unquoteList(raw: string) {
  * 从 hiprint columns（可能是多行表头）抽出带 field 的叶子列
  * @param columns options.columns
  */
-export function collectLeafColumns(
-  columns: unknown,
-): { field: string; title: string }[] {
+export function collectLeafColumns(columns: unknown): PrintFilterColumn[] {
   return listLeafTableCells(columns)
     .filter((col) => col.field)
-    .map((col) => ({ field: col.field, title: col.title || col.field }));
+    .map((col) => ({
+      field: col.field,
+      title: col.title || col.field,
+      align: col.align,
+      tableSummary: col.tableSummary,
+    }));
 }
 
 /**
@@ -347,14 +366,16 @@ export function collectLeafColumns(
  */
 export function listFilterColumns(
   tableField: string,
-  columns?: { field: string; title: string }[],
-) {
+  columns?: PrintFilterColumn[],
+): PrintFilterColumn[] {
   if (columns?.some((c) => c.field)) {
     return columns.filter((c) => c.field);
   }
   return (TABLE_COLUMN_PRESETS[tableField] || []).map((c) => ({
     field: c.field,
     title: c.title,
+    align: c.align,
+    tableSummary: !!c.tableSummary,
   }));
 }
 
@@ -365,24 +386,29 @@ export function listFilterColumns(
  */
 export function listNumericColumns(
   tableField: string,
-  columns?: { field: string; tableSummary?: boolean; title: string }[],
+  columns?: PrintFilterColumn[],
 ) {
   const cols = columns?.length
     ? columns
     : (TABLE_COLUMN_PRESETS[tableField] || []).map((c) => ({
         field: c.field,
         title: c.title,
+        align: c.align,
         tableSummary: !!c.tableSummary,
       }));
-  const numeric = cols.filter(
-    (c) => isNumericPrintField(c.field) || c.tableSummary,
-  );
+  const numeric = cols.filter((c) => isNumericPrintField(c.field, c));
   if (numeric.length > 0) return numeric;
   return (TABLE_COLUMN_PRESETS[tableField] || [])
-    .filter((c) => isNumericPrintField(c.field) || c.tableSummary)
+    .filter((c) =>
+      isNumericPrintField(c.field, {
+        tableSummary: !!c.tableSummary,
+        align: c.align,
+      }),
+    )
     .map((c) => ({
       field: c.field,
       title: c.title,
+      align: c.align,
       tableSummary: !!c.tableSummary,
     }));
 }
@@ -416,10 +442,7 @@ export function previewFilterRowCount(
  * @param expr agreeRowFilter
  * @param columns 列中文名
  */
-export function describeFilterExpr(
-  expr: string,
-  columns: { field: string; title: string }[],
-) {
+export function describeFilterExpr(expr: string, columns: PrintFilterColumn[]) {
   const raw = String(expr || '').trim();
   if (!raw) return '未筛选（打印全部行）';
   const parsed = parseFilterExpr(raw);

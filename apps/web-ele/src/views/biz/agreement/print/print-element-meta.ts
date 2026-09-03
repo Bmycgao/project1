@@ -1,6 +1,7 @@
 import type { AgreePrintFieldItem } from './fields';
 
 import { buildPresetTableColumns } from './fields';
+import { normalizeTemplateWatermark } from './print-watermark';
 import { cloneTemplate } from './template-store';
 
 /**
@@ -105,7 +106,7 @@ export function patchElementOptions(
   const el = next?.panels?.[ref.panelIndex]?.printElements?.[ref.elementIndex];
   if (!el) {
     throw new Error(
-      `未找到纸面元素 #${ref.elementIndex + 1}，请关闭抽屉后重新打开`,
+      `未找到纸面元素 #${ref.elementIndex + 1}，请重新点选纸面元素`,
     );
   }
   el.options = { ...el.options, ...patch };
@@ -133,6 +134,12 @@ export interface LeafTableCell {
   align: 'center' | 'left' | 'right';
   tableSummary: boolean;
   agreeColExpr: string;
+  /** 同一列上下相同值合并 */
+  agreeMergeSame: boolean;
+  /** 值为 0 时格子显示空 */
+  agreeHideZero: boolean;
+  /** 单元格展示格式（money / dateCn 等），不改原始数字 */
+  agreeColFormat: string;
 }
 
 /**
@@ -186,6 +193,9 @@ function cellToLeaf(
     align: align === 'center' || align === 'right' ? align : 'left',
     tableSummary: cell?.tableSummary === 'sum',
     agreeColExpr: String(cell?.agreeColExpr || ''),
+    agreeMergeSame: Boolean(cell?.agreeMergeSame),
+    agreeHideZero: Boolean(cell?.agreeHideZero),
+    agreeColFormat: String(cell?.agreeColFormat || ''),
   };
 }
 
@@ -250,6 +260,13 @@ function applyLeafFields(
   const expr = String(patch.agreeColExpr || '').trim();
   if (expr) cell.agreeColExpr = expr;
   else delete cell.agreeColExpr;
+  if (patch.agreeMergeSame) cell.agreeMergeSame = true;
+  else delete cell.agreeMergeSame;
+  if (patch.agreeHideZero) cell.agreeHideZero = true;
+  else delete cell.agreeHideZero;
+  const colFormat = String(patch.agreeColFormat || '').trim();
+  if (colFormat) cell.agreeColFormat = colFormat;
+  else delete cell.agreeColFormat;
 }
 
 function newLeafCell(patch: Partial<LeafTableCell>): Record<string, any> {
@@ -542,6 +559,7 @@ function typeMeta(key: string) {
  */
 export function sanitizePrintTemplate(template: Record<string, any>) {
   const next = cloneTemplate(template);
+  normalizeTemplateWatermark(next);
   for (const panel of next.panels || []) {
     for (const el of panel.printElements || []) {
       const type = String(el?.printElementType?.type || '');

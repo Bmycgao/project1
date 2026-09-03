@@ -456,6 +456,7 @@ watch(
       :detail="printPreviewDetail"
       :template-code="printPreviewTemplateCode"
       :title="printPreviewTitle"
+      :field-rules="runtime?.fieldRules"
     />
   </Page>
 </template>

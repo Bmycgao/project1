@@ -1,6 +1,8 @@
 /**
  * 协议打印可绑定字段源（数据源面板可拖到纸面）
  */
+import { AGREE_PRINT_FORMAT_PRESETS } from './format-print-value';
+
 export interface AgreePrintFieldItem {
   /** 数据 JSON 的 key */
   field: string;
@@ -22,6 +24,12 @@ export interface AgreePrintColumnPreset {
   align?: 'center' | 'left' | 'right';
   /** 是否默认开列合计 */
   tableSummary?: 'sum';
+  /** 同一列上下相同值合并 */
+  agreeMergeSame?: boolean;
+  /** 值为 0 时格子显示空 */
+  agreeHideZero?: boolean;
+  /** 单元格展示格式，如 money0 / dateCn */
+  agreeColFormat?: string;
 }
 
 /** 主表文本字段（协议详情扁平值） */
@@ -134,11 +142,23 @@ export const AGREE_PRINT_DERIVED_FIELDS: AgreePrintFieldItem[] = [
 /** 各表推荐列（套用后写入表格 columns） */
 export const TABLE_COLUMN_PRESETS: Record<string, AgreePrintColumnPreset[]> = {
   houses: [
-    { title: '户名', field: 'householdName', width: 70, align: 'center' },
+    {
+      title: '户名',
+      field: 'householdName',
+      width: 70,
+      align: 'center',
+      agreeMergeSame: true,
+    },
     { title: '序号', field: 'index', width: 36, align: 'center' },
     { title: '房屋地址', field: 'address', width: 120, align: 'left' },
     { title: '产权证号', field: 'certNo', width: 80, align: 'center' },
-    { title: '房屋类型', field: 'houseType', width: 64, align: 'center' },
+    {
+      title: '房屋类型',
+      field: 'houseType',
+      width: 64,
+      align: 'center',
+      agreeMergeSame: true,
+    },
     {
       title: '建筑面积',
       field: 'buildArea',
@@ -159,6 +179,7 @@ export const TABLE_COLUMN_PRESETS: Record<string, AgreePrintColumnPreset[]> = {
       width: 60,
       align: 'right',
       tableSummary: 'sum',
+      agreeColFormat: 'money0',
     },
   ],
   compensationItems: [
@@ -166,13 +187,20 @@ export const TABLE_COLUMN_PRESETS: Record<string, AgreePrintColumnPreset[]> = {
     { title: '补偿项目', field: 'name', width: 160, align: 'left' },
     { title: '计算方式', field: 'calcType', width: 80, align: 'center' },
     { title: '数量', field: 'quantity', width: 56, align: 'right' },
-    { title: '单价', field: 'unitPrice', width: 64, align: 'right' },
+    {
+      title: '单价',
+      field: 'unitPrice',
+      width: 64,
+      align: 'right',
+      agreeColFormat: 'money',
+    },
     {
       title: '金额',
       field: 'amount',
       width: 72,
       align: 'right',
       tableSummary: 'sum',
+      agreeColFormat: 'money',
     },
     { title: '说明', field: 'remark', width: 76, align: 'left' },
   ],
@@ -185,6 +213,7 @@ export const TABLE_COLUMN_PRESETS: Record<string, AgreePrintColumnPreset[]> = {
       width: 120,
       align: 'right',
       tableSummary: 'sum',
+      agreeColFormat: 'money',
     },
     { title: '说明', field: 'remark', width: 208, align: 'left' },
   ],
@@ -238,6 +267,9 @@ export function buildPresetTableColumns(tableField: string) {
     rowspan: 1,
     checked: true,
     ...(col.tableSummary ? { tableSummary: col.tableSummary } : {}),
+    ...(col.agreeMergeSame ? { agreeMergeSame: true } : {}),
+    ...(col.agreeHideZero ? { agreeHideZero: true } : {}),
+    ...(col.agreeColFormat ? { agreeColFormat: col.agreeColFormat } : {}),
   }));
 }
 
@@ -251,12 +283,12 @@ export const PRINT_EXPR_PRESETS = {
     { label: '多套房', value: 'houseCount >= 2' },
     { label: '组长已复核', value: 'statusValue == "组长已复核"' },
     { label: '已签约', value: 'IN(statusValue, "已签约", "签约已确认")' },
+    { label: '有被征收人', value: 'compensatee' },
+    { label: '始终隐藏', value: 'false' },
   ],
   rowFilter: [
-    { label: '评估价>0', value: 'evalValue > 0' },
-    { label: '建面≥50', value: 'buildArea >= 50' },
-    { label: '住宅', value: 'houseType == "住宅"' },
-    { label: '金额>1万', value: 'amount > 10000' },
+    { label: '数值列>0', value: 'amount > 0' },
+    { label: '列不为空', value: '!EMPTY(name)' },
   ],
   valueExpr: [
     { label: '金额千分位', value: 'FORMAT_MONEY(amount)' },
@@ -265,13 +297,7 @@ export const PRINT_EXPR_PRESETS = {
     { label: '房屋建面合计', value: 'SUM(houses, "buildArea")' },
     { label: '拼接元信息', value: 'CONCAT(agreementNo, " | ", compensatee)' },
   ],
-  format: [
-    { label: '金额(2位)', value: 'money' },
-    { label: '金额(整数)', value: 'money0' },
-    { label: '金额大写', value: 'moneyCn' },
-    { label: '日期', value: 'date' },
-    { label: '中文日期', value: 'dateCn' },
-  ],
+  format: [...AGREE_PRINT_FORMAT_PRESETS],
 } as const;
 
 /**
@@ -281,32 +307,56 @@ export const PRINT_EXPR_HELP = [
   {
     title: '怎么用',
     lines: [
-      '显隐、格式写在本抽屉；表格筛行请用右侧「筛选打印行」弹窗',
-      '按钮只填公式，不切换样例。正式打印走真实协议',
-      '画布设计态仍显示全部元素，用「快速预览」看显隐/过滤结果',
+      '「规则」里配整块显隐；表格还可筛行',
+      '快捷按钮只填公式，不切换样例。正式打印走真实协议',
+      '画布仍显示全部元素，用「快速预览」看显隐 / 过滤 / 回流',
     ],
   },
   {
-    title: '条件显隐 agreeVisibleWhen',
+    title: '条件显隐',
     lines: [
       '简单：hasRewards、!hasRewards、isHighAmount',
       '比较：amount > 500000、houseCount >= 2',
       '相等：statusValue == "组长已复核"',
       '组合：hasRewards && amount > 300000',
+      '页眉字段填回流组 header：同一行少一个则通栏，整行都藏才上移',
     ],
   },
   {
-    title: '表格行过滤',
+    title: '回流组',
     lines: [
-      '点中表格 → 「筛选」Tab → 「筛选打印行」：选列、比较符、值',
-      '不在本抽屉配置。画布仍显示全部样例行，请用「快速预览」核对',
+      '页眉键值填 header：同一行少一个则剩下的拉通栏，整行都藏才上移',
+      '协议名称是通栏，不会去占征收人那个半格',
+      '房屋 houses / 补偿 compensation / 奖励 rewards：小标题和表必须同组，整段藏掉下方才顶上来',
+      '二维码、大标题不要进组',
     ],
   },
   {
-    title: '展示格式 agreeFormat',
+    title: '表格筛行',
     lines: [
-      '对绑定 field 的原值做格式化（金额、日期等）',
-      '可选：money / money0 / moneyCn / date / dateCn / percent / integer',
+      '点中表格 → 「规则」→ 「筛选打印行」：选列、比较符、值',
+      '快捷项按当前表列生成（某列>0 / 不为空）',
+      '和「整块隐藏」不是一回事。画布仍显示全部样例行，请用「快速预览」核对',
+      '列上「合并」只合同一列上下相邻；「隐零」只把 0 显示成空',
+      '列上「格式」只改打印显示，不改原始数字，表尾合计仍可用',
+    ],
+  },
+  {
+    title: '文本格式',
+    lines: [
+      '对绑定 field 的原值做格式化（金额、日期时间等）',
+      '表格列请在「数据」里选「格式」，合计仍按数字加总',
+      '可选：money / money0 / moneyCn / date / dateCn / datetime / datetimeCn / time / percent / integer',
+    ],
+  },
+  {
+    title: '敏感数据',
+    lines: [
+      '模板只存字段名，不存真实姓名/证号；设计器「张三」是假样例',
+      '二维码/条码只编码协议编号，不拼被征收人',
+      '正式打印按 Agree:Field:* 对无权限字段打码 ***，不要靠删列当权限',
+      '某列永远不印：不绑该列或用条件显隐；与权限打码是两件事',
+      '粘贴数据源 JSON 时不要贴生产库真实隐私',
     ],
   },
 ];

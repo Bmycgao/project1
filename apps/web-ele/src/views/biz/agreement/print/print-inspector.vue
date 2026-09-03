@@ -6,15 +6,17 @@ import type {
   PrintFieldTreeNode,
 } from './print-field-tree';
 /**
- * 打印检视器：数据绑定 + 表格筛选（表尾合计在列上开关）
+ * 打印检视器：数据绑定 + 规则（显隐 / 表格筛行）
  */
 import type { AgreePrintData } from './types';
 
-import { computed, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 
 import {
   ElAlert,
   ElButton,
+  ElCollapse,
+  ElCollapseItem,
   ElForm,
   ElFormItem,
   ElInput,
@@ -32,8 +34,11 @@ import {
 import {
   AGREE_PRINT_ALL_FIELDS,
   buildPresetTableColumns,
+  PRINT_EXPR_HELP,
+  PRINT_EXPR_PRESETS,
   TABLE_COLUMN_PRESETS,
 } from './fields';
+import { AGREE_PRINT_FORMAT_PRESETS } from './format-print-value';
 import {
   hasMultiRowTableHeader,
   listLeafTableCells,
@@ -43,12 +48,14 @@ import {
   patchTableColumnFieldByIndex,
   patchTableColumns,
 } from './print-element-meta';
+import { validatePrintExpr } from './print-expr';
 import PrintFieldPicker from './print-field-picker.vue';
 import { describePrintField } from './print-field-tree';
 import PrintFilterDialog from './print-filter-dialog.vue';
 import {
   collectLeafColumns,
   describeFilterExpr,
+  isNumericPrintField,
   listFilterColumns,
   previewFilterRowCount,
 } from './print-row-filter';
@@ -64,6 +71,9 @@ const emit = defineEmits<{
   canvasPatch: [Record<string, any>, { remount?: boolean }?];
   'update:selectedKey': [string];
 }>();
+
+/** 列 field 名像日期时给格式下拉 */
+const DATE_FIELD_RE = /date|time|signDate/i;
 
 const activeTab = ref('data');
 const filterDialogOpen = ref(false);
@@ -81,12 +91,20 @@ interface ColDraft {
   align: 'center' | 'left' | 'right';
   tableSummary: boolean;
   agreeColExpr: string;
+  agreeMergeSame: boolean;
+  agreeHideZero: boolean;
+  agreeColFormat: string;
 }
 
 const bindField = ref('');
 const bindTitle = ref('');
 const rowFilter = ref('');
+const agreeVisibleWhen = ref('');
+const agreeFlowGroup = ref('');
+const agreeFormat = ref('');
 const columns = ref<ColDraft[]>([]);
+/** 回填列草稿时忽略 InputNumber change，避免写回循环 */
+let syncingCols = false;
 
 const elements = computed(() => listPrintElements(props.templateJson));
 
@@ -130,6 +148,31 @@ const filterSummary = computed(() =>
   describeFilterExpr(rowFilter.value, filterColumns.value),
 );
 
+const sampleCtx = computed(
+  () => props.sampleData as unknown as Record<string, unknown>,
+);
+
+/** 条件显隐校验（样例数据下将打印 / 将隐藏） */
+const visibleCheck = computed(() =>
+  validatePrintExpr(agreeVisibleWhen.value, sampleCtx.value),
+);
+
+/**
+ * 把样例求值说成「将打印 / 将隐藏」
+ * @param preview 表达式结果
+ */
+function visibleSampleLabel(preview: string | undefined) {
+  if (preview === 'true') return '当前样例下：将打印';
+  if (preview === 'false') return '当前样例下：将隐藏';
+  return `当前样例求值 → ${preview}`;
+}
+
+const visibleAlertType = computed(() => {
+  if (!visibleCheck.value.ok) return 'error' as const;
+  if (visibleCheck.value.preview === 'false') return 'warning' as const;
+  return 'success' as const;
+});
+
 /** 选中元素变化时回填表单（不因画布刷新把 Tab 打回数据） */
 watch(
   () => [props.selectedKey, props.templateJson] as const,
@@ -139,6 +182,10 @@ watch(
     bindField.value = String(el.options.field || '');
     bindTitle.value = String(el.options.title || '');
     rowFilter.value = String(el.options.agreeRowFilter || '');
+    agreeVisibleWhen.value = String(el.options.agreeVisibleWhen || '');
+    agreeFlowGroup.value = String(el.options.agreeFlowGroup || '');
+    agreeFormat.value = String(el.options.agreeFormat || '');
+    syncingCols = true;
     columns.value = listLeafTableCells(el.options.columns).map((c) => ({
       rowIndex: c.rowIndex,
       cellIndex: c.cellIndex,
@@ -148,23 +195,23 @@ watch(
       align: c.align,
       tableSummary: c.tableSummary,
       agreeColExpr: c.agreeColExpr,
+      agreeMergeSame: c.agreeMergeSame,
+      agreeHideZero: c.agreeHideZero,
+      agreeColFormat: c.agreeColFormat,
     }));
+    void nextTick(() => {
+      syncingCols = false;
+    });
   },
   { immediate: true },
 );
 
-/** 点到表格默认进筛选 Tab */
+/** 换元素时停在数据 Tab，避免一选表格就跳到筛行 */
 watch(
   () => props.selectedKey,
   () => {
-    const el = selected.value;
-    if (!el) return;
-    activeTab.value =
-      el.type === 'table' && String(el.options?.field || '')
-        ? 'filter'
-        : 'data';
+    if (selected.value) activeTab.value = 'data';
   },
-  { immediate: true },
 );
 
 /**
@@ -175,7 +222,7 @@ function applyDictionaryPick(item: AgreePrintFieldItem) {
   if (item.group === 'derived') {
     void navigator.clipboard?.writeText(item.field).catch(() => undefined);
     ElMessage.info(
-      `「${item.text}」(${item.field}) 用于高级规则的条件显隐，已复制字段名。请不要绑到纸面文本。`,
+      `「${item.text}」(${item.field}) 用于「规则」里的条件显隐，已复制字段名。请不要绑到纸面文本。`,
     );
     return;
   }
@@ -361,7 +408,7 @@ async function applyTableSource(usePreset: boolean) {
 }
 
 /** 保存列映射：按格子补丁，不拍扁多行表头 */
-function applyColumns() {
+function persistColumns(opts?: { remount?: boolean; silent?: boolean }) {
   const el = selected.value;
   if (!el || !props.templateJson) return;
   const next = patchLeafTableColumns(props.templateJson, el, columns.value);
@@ -369,8 +416,81 @@ function applyColumns() {
     field: bindField.value.trim(),
     agreeRowFilter: rowFilter.value.trim(),
   });
-  emit('canvasPatch', withFilter);
-  ElMessage.success('列配置已应用到画布');
+  emit('canvasPatch', withFilter, { remount: opts?.remount !== false });
+  if (!opts?.silent) {
+    ElMessage.success('列配置已应用到画布');
+  }
+}
+
+/**
+ * 数值列（不含序号）才显示合计 / 零不印
+ * @param col 当前列草稿
+ */
+function isNumericDataCol(col: ColDraft) {
+  const field = String(col.field || '').trim();
+  if (!field || field === 'index') return false;
+  return isNumericPrintField(field, {
+    align: col.align,
+    tableSummary: col.tableSummary,
+  });
+}
+
+/**
+ * 金额/日期列显示格式下拉；文本列隐藏，已误存格式时仍显示以便清空
+ * @param col 当前列草稿
+ */
+function showColFormat(col: ColDraft) {
+  if (String(col.agreeColFormat || '').trim()) return true;
+  const field = String(col.field || '').trim();
+  if (!field || field === 'index') return false;
+  if (DATE_FIELD_RE.test(field)) return true;
+  return isNumericPrintField(field, {
+    align: col.align,
+    tableSummary: col.tableSummary,
+  });
+}
+
+/** 标题 / field / 宽：写回并刷新表头 */
+function onColumnMetaChange() {
+  if (syncingCols) return;
+  persistColumns({ remount: true, silent: true });
+}
+
+/** 合并 / 隐零 / 格式：立刻写回，预览才能读到 */
+function onColumnFlagChange() {
+  persistColumns({ remount: false, silent: true });
+}
+
+/**
+ * 写入显隐 / 回流 / 文本格式，不改筛行，不重绘画布
+ * @param opts.silent 不弹成功提示（失焦、点预设）
+ */
+function persistRules(opts?: { silent?: boolean }) {
+  const el = selected.value;
+  if (!el || !props.templateJson) return;
+  const next = patchElementOptions(props.templateJson, el, {
+    agreeVisibleWhen: agreeVisibleWhen.value.trim(),
+    agreeFlowGroup: agreeFlowGroup.value.trim(),
+    ...(isTextLike.value ? { agreeFormat: agreeFormat.value.trim() } : {}),
+  });
+  emit('canvasPatch', next, { remount: false });
+  if (!opts?.silent) {
+    ElMessage.success('规则已写入，请用快速预览查看显隐效果');
+  }
+}
+
+/** 失焦 / 下拉变更时静默写回（避免 ElSelect 把值当成 opts） */
+function persistRulesSilent() {
+  persistRules({ silent: true });
+}
+
+/**
+ * 填入显隐预设并立刻写回
+ * @param value 表达式
+ */
+function applyVisiblePreset(value: string) {
+  agreeVisibleWhen.value = value;
+  persistRules({ silent: true });
 }
 
 /**
@@ -417,11 +537,16 @@ function addEmptyColumn() {
     align: 'left',
     tableSummary: false,
     agreeColExpr: '',
+    agreeMergeSame: false,
+    agreeHideZero: false,
+    agreeColFormat: '',
   });
+  persistColumns({ remount: true, silent: true });
 }
 
 function removeColumn(index: number) {
   columns.value.splice(index, 1);
+  persistColumns({ remount: true, silent: true });
 }
 
 function onSelectElement(key: string) {
@@ -435,7 +560,7 @@ function elementTypeLabel(el: PrintElementRef) {
 
 <template>
   <div class="print-inspector">
-    <div class="print-inspector__title">数据 / 筛选</div>
+    <div class="print-inspector__title">数据 / 规则</div>
     <ElSelect
       :model-value="selectedKey"
       filterable
@@ -522,42 +647,42 @@ function elementTypeLabel(el: PrintElementRef) {
             <ElButton size="small" @click="applyTableSource(true)">
               套用推荐列
             </ElButton>
-            <ElButton size="small" @click="applyColumns">保存列映射</ElButton>
           </div>
 
           <div class="print-inspector__col-head">
-            <span>列映射（标题 / field）</span>
+            <span>列映射</span>
             <ElButton size="small" text @click="addEmptyColumn">加列</ElButton>
           </div>
           <p v-if="isMultiRowHeader" class="print-inspector__hint mb-2">
-            多行表头：下列为数据列（含跨行的序号/备注）。分组标题请在画布修改；加列会追加到末行。
+            多行表头：下列为数据列。分组标题请在画布修改；加列会追加到末行。
+          </p>
+          <p class="print-inspector__hint mb-2">
+            合并 / 隐零 /
+            格式只在<strong>快速预览</strong>里看。标题、字段失焦即写入。
           </p>
           <div
             v-for="(col, i) in columns"
             :key="i"
             class="print-inspector__col"
           >
-            <ElInput v-model="col.title" size="small" placeholder="表头" />
-            <div class="print-inspector__col-field">
-              <ElInput v-model="col.field" size="small" placeholder="field" />
-              <ElButton size="small" @click="openFieldPicker('column', i)">
-                选
-              </ElButton>
-            </div>
-            <div class="print-inspector__col-ops">
-              <span class="text-xs text-gray-500">宽</span>
-              <ElInputNumber
-                v-model="col.width"
-                class="print-inspector__col-width"
+            <div class="print-inspector__col-id">
+              <ElInput
+                v-model="col.title"
                 size="small"
-                :min="24"
-                :max="400"
-                :step="1"
-                :precision="0"
-                controls-position="right"
+                placeholder="表头"
+                @blur="onColumnMetaChange"
               />
-              <span class="text-xs text-gray-500">表尾合计</span>
-              <ElSwitch v-model="col.tableSummary" size="small" />
+              <div class="print-inspector__col-field">
+                <ElInput
+                  v-model="col.field"
+                  size="small"
+                  placeholder="field"
+                  @blur="onColumnMetaChange"
+                />
+                <ElButton size="small" @click="openFieldPicker('column', i)">
+                  选
+                </ElButton>
+              </div>
               <ElButton
                 size="small"
                 text
@@ -567,18 +692,144 @@ function elementTypeLabel(el: PrintElementRef) {
                 删
               </ElButton>
             </div>
+            <div class="print-inspector__col-ops">
+              <span class="print-inspector__col-label">宽</span>
+              <ElInputNumber
+                v-model="col.width"
+                class="print-inspector__col-width"
+                size="small"
+                :min="24"
+                :max="400"
+                :step="1"
+                :precision="0"
+                controls-position="right"
+                @change="onColumnMetaChange"
+              />
+              <template v-if="showColFormat(col)">
+                <span class="print-inspector__col-label">格式</span>
+                <ElSelect
+                  v-model="col.agreeColFormat"
+                  class="print-inspector__col-format"
+                  size="small"
+                  clearable
+                  placeholder="原值"
+                  @change="onColumnFlagChange"
+                >
+                  <ElOption
+                    v-for="p in AGREE_PRINT_FORMAT_PRESETS"
+                    :key="p.value"
+                    :label="p.label"
+                    :value="p.value"
+                  />
+                </ElSelect>
+              </template>
+              <template v-if="isNumericDataCol(col)">
+                <span class="print-inspector__col-label">合计</span>
+                <ElSwitch
+                  v-model="col.tableSummary"
+                  size="small"
+                  @change="onColumnFlagChange"
+                />
+                <span class="print-inspector__col-label">隐零</span>
+                <ElSwitch
+                  v-model="col.agreeHideZero"
+                  size="small"
+                  @change="onColumnFlagChange"
+                />
+              </template>
+              <span class="print-inspector__col-label">合并</span>
+              <ElSwitch
+                v-model="col.agreeMergeSame"
+                size="small"
+                @change="onColumnFlagChange"
+              />
+            </div>
           </div>
         </ElForm>
 
         <div v-else class="text-xs text-gray-500">装饰元素无需绑定数据。</div>
       </ElTabPane>
 
-      <ElTabPane label="筛选" name="filter">
-        <div v-if="!isTable" class="text-xs text-gray-500">
-          请先选中一张<strong>表格</strong>。筛选决定打印哪些行；表尾合计请到「数据」Tab
-          按列开关。
-        </div>
-        <template v-else>
+      <ElTabPane label="规则" name="rules">
+        <ElCollapse class="mb-2">
+          <ElCollapseItem title="表达式怎么写" name="help">
+            <div
+              v-for="block in PRINT_EXPR_HELP"
+              :key="block.title"
+              class="print-inspector__help-block"
+            >
+              <div class="print-inspector__help-title">{{ block.title }}</div>
+              <ul>
+                <li v-for="(line, i) in block.lines" :key="i">{{ line }}</li>
+              </ul>
+            </div>
+          </ElCollapseItem>
+        </ElCollapse>
+
+        <p class="print-inspector__hint mb-2">
+          显隐控制<strong>整块印不印</strong>。画布仍显示全部元素，请用<strong>快速预览</strong>核对。
+        </p>
+        <ElForm label-position="top" size="small">
+          <ElFormItem label="条件显隐">
+            <ElInput
+              v-model="agreeVisibleWhen"
+              type="textarea"
+              :rows="2"
+              placeholder="如 hasRewards、amount > 500000；空则始终打印"
+              @blur="persistRulesSilent"
+            />
+            <div class="mt-1 flex flex-wrap gap-1">
+              <ElButton
+                v-for="p in PRINT_EXPR_PRESETS.visibleWhen"
+                :key="p.value"
+                size="small"
+                @click="applyVisiblePreset(p.value)"
+              >
+                {{ p.label }}
+              </ElButton>
+            </div>
+            <ElAlert
+              v-if="agreeVisibleWhen"
+              class="mt-2"
+              :type="visibleAlertType"
+              :closable="false"
+              :title="
+                visibleCheck.ok
+                  ? visibleSampleLabel(visibleCheck.preview)
+                  : visibleCheck.message
+              "
+            />
+          </ElFormItem>
+          <ElFormItem label="回流组">
+            <ElInput
+              v-model="agreeFlowGroup"
+              placeholder="页眉 header；房屋 houses；奖励 rewards"
+              @blur="persistRulesSilent"
+            />
+          </ElFormItem>
+          <ElFormItem v-if="isTextLike" label="文本格式">
+            <ElSelect
+              v-model="agreeFormat"
+              clearable
+              placeholder="原值"
+              class="w-full"
+              @change="persistRulesSilent"
+            >
+              <ElOption
+                v-for="p in AGREE_PRINT_FORMAT_PRESETS"
+                :key="p.value"
+                :label="p.label"
+                :value="p.value"
+              />
+            </ElSelect>
+          </ElFormItem>
+          <ElButton type="primary" size="small" @click="persistRules()">
+            写入规则
+          </ElButton>
+        </ElForm>
+
+        <template v-if="isTable">
+          <div class="print-inspector__rule-split">筛哪些行</div>
           <ElAlert
             class="mb-2"
             type="success"
@@ -595,7 +846,7 @@ function elementTypeLabel(el: PrintElementRef) {
             去绑定数据源
           </ElButton>
           <p class="print-inspector__desc">
-            点「筛选打印行」用列、条件、值拼过滤规则。画布设计态仍显示全部样例行，请用<strong>快速预览</strong>看过滤结果。
+            筛行只决定这张表印哪些行，和上面「整块隐藏」不是一回事。画布仍显示全部样例行，请用<strong>快速预览</strong>看过滤结果。
           </p>
           <div class="print-inspector__filter-brief mb-2">
             <ElTag size="small" :type="rowFilter ? 'warning' : 'info'">
@@ -694,30 +945,48 @@ function elementTypeLabel(el: PrintElementRef) {
 }
 
 .print-inspector__col {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   min-width: 0;
   padding-bottom: 8px;
   margin-bottom: 8px;
   border-bottom: 1px dashed #e5e7eb;
 }
 
+.print-inspector__col-id {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto;
+  gap: 4px;
+  align-items: center;
+}
+
 .print-inspector__col-ops {
   display: flex;
-  flex-wrap: wrap;
-  grid-column: 1 / -1;
-  gap: 6px 8px;
+  flex-wrap: nowrap;
+  gap: 4px 6px;
   align-items: center;
+  overflow-x: auto;
+}
+
+.print-inspector__col-label {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #6b7280;
 }
 
 .print-inspector__col-width {
   flex-shrink: 0;
-  width: 112px;
+  width: 88px;
 }
 
 .print-inspector__col-width :deep(.el-input-number) {
-  width: 112px;
+  width: 88px;
+}
+
+.print-inspector__col-format {
+  flex: 1;
+  min-width: 104px;
 }
 
 .print-inspector__desc {
@@ -732,5 +1001,31 @@ function elementTypeLabel(el: PrintElementRef) {
   gap: 4px;
   font-size: 12px;
   color: #374151;
+}
+
+.print-inspector__rule-split {
+  padding-top: 12px;
+  margin: 16px 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+  border-top: 1px solid #e5e7eb;
+}
+
+.print-inspector__help-block {
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: #4b5563;
+}
+
+.print-inspector__help-title {
+  margin-bottom: 4px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.print-inspector__help-block ul {
+  padding-left: 16px;
+  margin: 0;
 }
 </style>

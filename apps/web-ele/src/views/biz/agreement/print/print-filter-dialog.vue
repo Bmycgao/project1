@@ -1,5 +1,10 @@
 <script lang="ts" setup>
-import type { PrintFilterCond, PrintFilterOp } from './print-row-filter';
+import type {
+  PrintFilterColumn,
+  PrintFilterCond,
+  PrintFilterOp,
+  PrintFilterPreset,
+} from './print-row-filter';
 /**
  * 筛选打印行弹窗：可视化拼 agreeRowFilter，主业是决定表格印哪些行
  */
@@ -23,6 +28,7 @@ import {
 
 import { AGREE_PRINT_TABLE_FIELDS } from './fields';
 import {
+  buildFilterPresets,
   compileFilterConds,
   describeFilterExpr,
   emptyCond,
@@ -31,12 +37,11 @@ import {
   parseFilterExpr,
   previewFilterRowCount,
   PRINT_FILTER_OP_OPTIONS,
-  PRINT_TABLE_FILTER_PRESETS,
 } from './print-row-filter';
 
 const props = defineProps<{
   /** 画布列（没有则用预设列） */
-  columns: { field: string; title: string }[];
+  columns: PrintFilterColumn[];
   /** 当前 agreeRowFilter */
   filterExpr: string;
   modelValue: boolean;
@@ -67,9 +72,7 @@ const columnOptions = computed(() =>
   listFilterColumns(props.tableField, props.columns),
 );
 
-const presets = computed(
-  () => PRINT_TABLE_FILTER_PRESETS[props.tableField] || [],
-);
+const presets = computed(() => buildFilterPresets(columnOptions.value));
 
 /** 当前可视化/高级编辑将写出的表达式 */
 const draftExpr = computed(() => {
@@ -126,7 +129,7 @@ function removeCond(index: number) {
  * 套用快捷筛选
  * @param preset 预设
  */
-function applyPreset(preset: { conds: PrintFilterCond[]; join: 'and' | 'or' }) {
+function applyPreset(preset: PrintFilterPreset) {
   advanced.value = false;
   join.value = preset.join;
   conds.value = preset.conds.map((c) => ({ ...c }));
@@ -139,7 +142,7 @@ function close() {
 /** 写入模板：只改 agreeRowFilter，不改列结构 */
 function apply() {
   if (!props.tableField) {
-    ElMessage.warning('请先绑定表格数据源（房屋 / 补偿 / 奖励）');
+    ElMessage.warning('请先绑定表格数据源');
     return;
   }
   if (advanced.value) {
@@ -204,13 +207,13 @@ function onAdvancedToggle(val: boolean | number | string) {
       class="mb-3"
       type="info"
       :closable="false"
-      :title="`当前表：${tableLabel}${tableField ? ` (${tableField})` : ''}。这里决定打印哪些行，不是做合计。`"
+      :title="`当前表：${tableLabel}${tableField ? ` (${tableField})` : ''}。决定打印哪些行，不是合计。快捷项按当前列生成；具体条件用下面规则。样例行数仅设计器预览，正式打印走接口 JSON。`"
     />
 
     <div v-if="presets.length" class="mb-3 flex flex-wrap gap-1">
       <ElButton
         v-for="p in presets"
-        :key="p.label"
+        :key="`${p.conds[0]?.field}-${p.conds[0]?.op}-${p.label}`"
         size="small"
         @click="applyPreset(p)"
       >
@@ -235,7 +238,7 @@ function onAdvancedToggle(val: boolean | number | string) {
       v-model="advancedExpr"
       type="textarea"
       :rows="3"
-      placeholder="复杂条件可手写，如 houseType == &quot;住宅&quot; && evalValue > 0"
+      placeholder="复杂条件可手写，如 amount > 0 && !EMPTY(name)"
     />
 
     <div v-else class="print-filter-dialog__conds">
@@ -282,7 +285,7 @@ function onAdvancedToggle(val: boolean | number | string) {
       :closable="false"
       :title="
         tableField
-          ? `样例将打印 ${rowCount.kept} / ${rowCount.total} 行。${summary}`
+          ? `样例将打印 ${rowCount.kept} / ${rowCount.total} 行（仅设计器预览）。${summary}`
           : '请先绑定表格数据源后再筛选'
       "
     />

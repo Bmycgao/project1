@@ -14,7 +14,7 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
       paperNumberTop: 819,
       paperNumberDisabled: false,
       paperNumberContinue: true,
-      watermarkOptions: {},
+      watermarkOptions: { content: '' },
       panelLayoutOptions: {},
       printElements: [
         {
@@ -42,6 +42,7 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
             field: 'agreementNo',
             fontSize: 10,
             testData: 'XY-2026-001',
+            agreeFlowGroup: 'header',
           },
           printElementType: { title: '文本', type: 'text' },
         },
@@ -55,6 +56,8 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
             field: 'signDate',
             fontSize: 10,
             testData: '2026-03-01',
+            agreeFormat: 'date',
+            agreeFlowGroup: 'header',
           },
           printElementType: { title: '文本', type: 'text' },
         },
@@ -82,6 +85,7 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
             field: 'compensatee',
             fontSize: 10,
             testData: '张三',
+            agreeFlowGroup: 'header',
           },
           printElementType: { title: '文本', type: 'text' },
         },
@@ -95,6 +99,7 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
             field: 'acquirer',
             fontSize: 10,
             testData: '某区征收办',
+            agreeFlowGroup: 'header',
           },
           printElementType: { title: '文本', type: 'text' },
         },
@@ -108,6 +113,7 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
             field: 'agreementName',
             fontSize: 10,
             testData: '某某项目征收补偿协议',
+            agreeFlowGroup: 'header',
           },
           printElementType: { title: '文本', type: 'text' },
         },
@@ -121,6 +127,7 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
             fontSize: 12,
             fontWeight: '600',
             hideTitle: true,
+            agreeFlowGroup: 'houses',
           },
           printElementType: { title: '文本', type: 'text' },
         },
@@ -133,6 +140,7 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
             field: 'houses',
             tableHeaderRepeat: 'page',
             tableFooterRepeat: 'last',
+            agreeFlowGroup: 'houses',
             columns: [
               [
                 {
@@ -143,6 +151,7 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
                   colspan: 1,
                   rowspan: 1,
                   checked: true,
+                  agreeMergeSame: true,
                 },
                 {
                   title: '序号',
@@ -179,6 +188,7 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
                   colspan: 1,
                   rowspan: 1,
                   checked: true,
+                  agreeMergeSame: true,
                 },
                 {
                   title: '建筑面积',
@@ -206,6 +216,8 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
                   colspan: 1,
                   rowspan: 1,
                   checked: true,
+                  tableSummary: 'sum',
+                  agreeColFormat: 'money0',
                 },
               ],
             ],
@@ -222,6 +234,7 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
             fontSize: 12,
             fontWeight: '600',
             hideTitle: true,
+            agreeFlowGroup: 'compensation',
           },
           printElementType: { title: '文本', type: 'text' },
         },
@@ -234,6 +247,7 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
             field: 'compensationItems',
             tableHeaderRepeat: 'page',
             tableFooterRepeat: 'last',
+            agreeFlowGroup: 'compensation',
             columns: [
               [
                 {
@@ -309,6 +323,7 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
                   colspan: 1,
                   rowspan: 1,
                   checked: true,
+                  agreeColFormat: 'money',
                 },
                 {
                   title: '金额',
@@ -319,6 +334,7 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
                   rowspan: 1,
                   checked: true,
                   tableSummary: 'sum',
+                  agreeColFormat: 'money',
                 },
               ],
             ],
@@ -336,6 +352,7 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
             fontWeight: '600',
             hideTitle: true,
             agreeVisibleWhen: 'hasRewards',
+            agreeFlowGroup: 'rewards',
           },
           printElementType: { title: '文本', type: 'text' },
         },
@@ -349,6 +366,7 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
             tableHeaderRepeat: 'page',
             tableFooterRepeat: 'last',
             agreeVisibleWhen: 'hasRewards',
+            agreeFlowGroup: 'rewards',
             columns: [
               [
                 {
@@ -378,6 +396,7 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
                   rowspan: 1,
                   checked: true,
                   tableSummary: 'sum',
+                  agreeColFormat: 'money',
                 },
                 {
                   title: '说明',
@@ -404,6 +423,7 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
             fontSize: 11,
             fontWeight: '600',
             testData: '760000',
+            agreeFormat: 'money',
           },
           printElementType: { title: '文本', type: 'text' },
         },

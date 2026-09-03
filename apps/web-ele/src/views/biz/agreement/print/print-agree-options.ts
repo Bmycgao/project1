@@ -1,6 +1,8 @@
 /**
  * hiprint getJson 只会序列化内置 options，agree* 业务字段需要从上一份 JSON 合并回去
+ * 筛行/显隐常在内存里改、不重挂画布，必须以 memory 为准，不能只靠模糊匹配
  */
+import { mergePanelWatermark } from './print-watermark';
 import { cloneTemplate } from './template-store';
 
 /** 打印前处理用的扩展字段（引擎不认识） */
@@ -9,6 +11,7 @@ export const AGREE_PRINT_CUSTOM_KEYS = [
   'agreeVisibleWhen',
   'agreeValueExpr',
   'agreeFormat',
+  'agreeFlowGroup',
 ] as const;
 
 type PrintEl = {
@@ -17,30 +20,69 @@ type PrintEl = {
 };
 
 /**
- * 两份模板按「类型 + 字段 + 位置」对齐后，把自定义字段写回画布 JSON
+ * 以画布 getJson 为版式（坐标），把 memory 里的 agree* 写回去
  * @param canvas getJson 结果
- * @param memory 合并前内存中的完整模板
+ * @param memory 合并前内存中的完整模板（筛行/显隐的准绳）
  */
 export function mergeAgreeCustomOptions(
   canvas: Record<string, any>,
   memory?: null | Record<string, any>,
 ): Record<string, any> {
-  if (!canvas?.panels?.length || !memory?.panels?.length) return canvas;
-  const panels = canvas.panels as Record<string, any>[];
+  if (!canvas?.panels?.length) return canvas;
+  if (!memory?.panels?.length) return canvas;
+  const next = cloneTemplate(canvas);
+  mergePanelWatermark(next, memory);
+  const panels = next.panels as Record<string, any>[];
   panels.forEach((panel, pi) => {
     const canvasEls = (panel.printElements || []) as PrintEl[];
     const memEls = (memory.panels[pi]?.printElements || []) as PrintEl[];
     if (canvasEls.length === 0 || memEls.length === 0) return;
     const used = new Set<number>();
-    canvasEls.forEach((el) => {
-      const idx = bestMemoryMatch(el, memEls, used);
+    canvasEls.forEach((el, ei) => {
+      const idx = matchMemoryIndex(el, ei, memEls, used);
       if (idx < 0) return;
       used.add(idx);
       const memEl = memEls[idx];
       if (memEl) copyCustomOptions(el, memEl);
     });
   });
-  return canvas;
+  return next;
+}
+
+/**
+ * 对齐内存元素：同下标同类型 → 同 field → 再模糊打分
+ * @param canvasEl 画布元素
+ * @param canvasIndex 画布下标
+ * @param memEls 同页内存元素
+ * @param used 已占用下标
+ */
+function matchMemoryIndex(
+  canvasEl: PrintEl,
+  canvasIndex: number,
+  memEls: PrintEl[],
+  used: Set<number>,
+): number {
+  const type = String(canvasEl.printElementType?.type || '');
+  const field = String(canvasEl.options?.field || '');
+  const same = memEls[canvasIndex];
+  if (
+    same &&
+    !used.has(canvasIndex) &&
+    String(same.printElementType?.type || '') === type
+  ) {
+    const memField = String(same.options?.field || '');
+    if (!field || !memField || field === memField) return canvasIndex;
+  }
+  if (field) {
+    const byField = memEls.findIndex(
+      (mem, i) =>
+        !used.has(i) &&
+        String(mem.printElementType?.type || '') === type &&
+        String(mem.options?.field || '') === field,
+    );
+    if (byField !== -1) return byField;
+  }
+  return bestMemoryMatch(canvasEl, memEls, used);
 }
 
 /**
@@ -78,40 +120,64 @@ function bestMemoryMatch(
 }
 
 /**
- * 复制 agree* 以及列上的 agreeColExpr
+ * 复制 agree* 以及列上的 agreeColExpr / agreeMergeSame / agreeHideZero / agreeColFormat
+ * 内存为空则从画布删掉，避免 getJson 里的旧筛行在「清除筛选」后复活
  * @param target 画布元素
  * @param source 内存元素
  */
 function copyCustomOptions(target: PrintEl, source: PrintEl) {
-  const to = target.options || (target.options = {});
+  const to = target.options || {};
   const from = source.options || {};
+  const customKeys = new Set<string>(AGREE_PRINT_CUSTOM_KEYS);
+  const next: Record<string, any> = {};
+  for (const [key, value] of Object.entries(to)) {
+    if (!customKeys.has(key)) next[key] = value;
+  }
   for (const key of AGREE_PRINT_CUSTOM_KEYS) {
-    if (from[key] !== undefined && from[key] !== '') {
-      to[key] = from[key];
+    const val = from[key];
+    if (val !== undefined && val !== null && String(val).trim() !== '') {
+      next[key] = val;
     }
   }
-  if (from.columns && to.columns) {
-    mergeColumnAgreeExpr(to.columns, from.columns);
+  target.options = next;
+  if (from.columns && next.columns) {
+    mergeColumnAgreeMeta(next.columns, from.columns);
   }
 }
 
 /**
- * 按 field 把列上的 agreeColExpr 写回（getJson 会丢掉）
+ * 按 field 把列上的 agreeColExpr / agreeMergeSame / agreeHideZero / agreeColFormat 写回（getJson 会丢掉）
  * @param targetCols hiprint 二维 columns
  * @param sourceCols 内存 columns
  */
-function mergeColumnAgreeExpr(targetCols: unknown, sourceCols: unknown) {
-  const exprByField = new Map<string, string>();
+function mergeColumnAgreeMeta(targetCols: unknown, sourceCols: unknown) {
+  const metaByField = new Map<
+    string,
+    { expr: string; format: string; hideZero: boolean; merge: boolean }
+  >();
   walkColumns(sourceCols, (col) => {
     const field = String(col.field || '');
-    const expr = String(col.agreeColExpr || '').trim();
-    if (field && expr) exprByField.set(field, expr);
+    if (!field) return;
+    metaByField.set(field, {
+      expr: String(col.agreeColExpr || '').trim(),
+      merge: Boolean(col.agreeMergeSame),
+      hideZero: Boolean(col.agreeHideZero),
+      format: String(col.agreeColFormat || '').trim(),
+    });
   });
-  if (exprByField.size === 0) return;
+  if (metaByField.size === 0) return;
   walkColumns(targetCols, (col) => {
     const field = String(col.field || '');
-    const expr = exprByField.get(field);
-    if (expr) col.agreeColExpr = expr;
+    const meta = metaByField.get(field);
+    if (!meta) return;
+    if (meta.expr) col.agreeColExpr = meta.expr;
+    else delete col.agreeColExpr;
+    if (meta.merge) col.agreeMergeSame = true;
+    else delete col.agreeMergeSame;
+    if (meta.hideZero) col.agreeHideZero = true;
+    else delete col.agreeHideZero;
+    if (meta.format) col.agreeColFormat = meta.format;
+    else delete col.agreeColFormat;
   });
 }
 
@@ -138,49 +204,4 @@ function walkColumns(cols: unknown, visit: (col: Record<string, any>) => void) {
 export function panelWidthPt(panel: Record<string, any> | undefined) {
   const mm = Number(panel?.width) || 210;
   return (mm * 72) / 25.4;
-}
-
-/**
- * A4 等面板高度（mm）转设计器坐标
- * @param panel 面板
- */
-export function panelHeightPt(panel: Record<string, any> | undefined) {
-  const mm = Number(panel?.height) || 297;
-  return (mm * 72) / 25.4;
-}
-
-export type PrintAlignMode = 'bottom' | 'center' | 'left' | 'right' | 'top';
-
-/**
- * 对齐当前元素（页边距约 20）
- * @param template 模板
- * @param ref 元素定位
- * @param mode 对齐方式
- */
-export function alignPrintElement(
-  template: Record<string, any>,
-  ref: { elementIndex: number; panelIndex: number },
-  mode: PrintAlignMode,
-): Record<string, any> {
-  const next = cloneTemplate(template);
-  const panel = next.panels?.[ref.panelIndex];
-  const el = panel?.printElements?.[ref.elementIndex];
-  if (!el?.options) {
-    throw new Error('未找到要对齐的元素');
-  }
-  const width = Number(el.options.width) || 0;
-  const height = Number(el.options.height) || 0;
-  const margin = 20;
-  if (mode === 'left') {
-    el.options.left = margin;
-  } else if (mode === 'right') {
-    el.options.left = Math.max(margin, panelWidthPt(panel) - width - margin);
-  } else if (mode === 'center') {
-    el.options.left = Math.max(0, (panelWidthPt(panel) - width) / 2);
-  } else if (mode === 'top') {
-    el.options.top = Number(panel?.paperHeader) || margin;
-  } else {
-    el.options.top = Math.max(margin, panelHeightPt(panel) - height - margin);
-  }
-  return next;
 }

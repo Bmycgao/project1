@@ -1,19 +1,12 @@
 <script lang="ts" setup>
 /**
  * 协议打印模板设计面板（系统管理编辑页嵌入）
- * 交互参考 sv-print：撤销/缩放/对齐/复制删除/点选同步
+ * 交互参考 sv-print：撤销/缩放/复制删除/点选同步
  */
 import type { AgreePrintFieldItem } from './fields';
-import type { PrintAlignMode } from './print-agree-options';
+import type { AgreePrintData } from './types';
 
-import {
-  computed,
-  nextTick,
-  onBeforeUnmount,
-  onMounted,
-  ref,
-  watch,
-} from 'vue';
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 import {
   ElButton,
@@ -27,14 +20,11 @@ import {
 import { getPrintTemplate, updatePrintTemplate } from '#/api';
 
 import { agreePrintTemplate } from './agreement-template';
-import ElementRulesDrawer from './element-rules-drawer.vue';
 import { ensureHiprint } from './ensure-hiprint';
 import { AGREE_PRINT_ALL_FIELDS, formatPrintFieldLabel } from './fields';
 import { preparePrintTemplate } from './prepare-template';
-import {
-  alignPrintElement,
-  mergeAgreeCustomOptions,
-} from './print-agree-options';
+import { mergeAgreeCustomOptions } from './print-agree-options';
+import PrintDataJsonDialog from './print-data-json-dialog.vue';
 import PrintDataPanel from './print-data-panel.vue';
 import {
   AGREE_PRINT_FIELD_DND,
@@ -48,6 +38,7 @@ import {
   sanitizePrintTemplate,
 } from './print-element-meta';
 import PrintInspector from './print-inspector.vue';
+import PrintWatermarkDialog from './print-watermark-dialog.vue';
 import { buildDesignerSamplePrintData } from './sample-print-data';
 import { cloneTemplate, loadAgreePrintTemplate } from './template-store';
 
@@ -68,26 +59,24 @@ const ZOOM_MAX = 160;
 
 const designing = ref(false);
 const previewOpen = ref(false);
-const rulesOpen = ref(false);
+const watermarkOpen = ref(false);
 const jsonOpen = ref(false);
+const dataJsonOpen = ref(false);
 const jsonText = ref('');
 const previewHtmlHost = ref<HTMLElement | null>(null);
 const customSaved = ref(false);
 const templateCode = ref('');
 const currentTemplateJson = ref<Record<string, any>>({});
-/** 高级规则抽屉专用：打开时快照一份纯 JSON，避免响应式 Proxy 导致 patch 失败 */
-const rulesDrawerTemplateJson = ref<null | Record<string, any>>(null);
 const selectedElementKey = ref('');
 const inspectorRef = ref<null | {
   applyDictionaryPick: (item: AgreePrintFieldItem) => void;
 }>(null);
 const zoom = ref(100);
-const showGrid = ref(true);
 const canUndo = ref(false);
 const canRedo = ref(false);
 const ctxMenu = ref({ open: false, x: 0, y: 0 });
 
-const samplePrintData = computed(() => buildDesignerSamplePrintData());
+const samplePrintData = ref(buildDesignerSamplePrintData());
 
 let $ref: any = null;
 let templateInst: any = null;
@@ -114,7 +103,7 @@ async function fetchTemplateJson(): Promise<Record<string, any>> {
   return loadAgreePrintTemplate();
 }
 
-/** 读取画布 JSON，并把 agree* 从内存模板补回去 */
+/** 读取画布 JSON：坐标来自 hiprint，筛行/显隐以内存模板为准 */
 function readCanvasJson(): null | Record<string, any> {
   if (!templateInst) return null;
   const raw =
@@ -232,7 +221,7 @@ async function mountDesigner(
         scheduleCanvasSync();
       },
     });
-    templateInst.design('#agree-print-design-canvas', { grid: showGrid.value });
+    templateInst.design('#agree-print-design-canvas', { grid: false });
     syncSelectedElementKey(currentTemplateJson.value);
     await nextTick();
     bindCanvasEvents();
@@ -243,7 +232,7 @@ async function mountDesigner(
 }
 
 /**
- * 重建后尽量保留当前选中元素（key 含坐标，对齐后会变）
+ * 重建后尽量保留当前选中元素（key 含坐标，拖动后会变）
  * @param json 模板
  */
 function syncSelectedElementKey(json: Record<string, any>) {
@@ -822,7 +811,7 @@ defineExpose({
 async function onReset() {
   try {
     await ElMessageBox.confirm(
-      '将重新加载默认版式到画布（需点保存才会写入服务端），是否继续？',
+      '将重新加载默认版式到画布，并恢复内置样例数据（需点保存才会写入服务端），是否继续？',
       '恢复默认',
       { type: 'warning' },
     );
@@ -831,34 +820,44 @@ async function onReset() {
   }
   customSaved.value = false;
   history = [];
+  samplePrintData.value = buildDesignerSamplePrintData();
   await mountDesigner(cloneTemplate(agreePrintTemplate));
   resetHistory(currentTemplateJson.value);
-  ElMessage.success('已加载默认版式');
+  ElMessage.success('已加载默认版式和样例数据');
 }
 
-/** 打开高级规则抽屉前同步最新 JSON 快照 */
-function openRulesDrawer() {
+/** 打开水印对话框前同步画布 JSON */
+function openWatermarkDialog() {
   const j = readCanvasJson();
-  if (j) {
-    currentTemplateJson.value = j;
-    rulesDrawerTemplateJson.value = cloneTemplate(j);
-  } else if (currentTemplateJson.value?.panels?.length) {
-    rulesDrawerTemplateJson.value = cloneTemplate(currentTemplateJson.value);
-  } else {
+  if (j) currentTemplateJson.value = j;
+  if (!currentTemplateJson.value?.panels?.length) {
     ElMessage.warning('设计器尚未就绪，请稍后再试');
     return;
   }
-  rulesOpen.value = true;
+  watermarkOpen.value = true;
 }
 
-/** 应用高级规则：只改 agree*，不重挂画布 */
-async function onRulesApply(json: Record<string, any>) {
-  if (!json?.panels?.length) {
-    ElMessage.error('规则应用失败：模板 JSON 无效');
-    return;
-  }
-  await onCanvasPatch(json, { remount: false });
-  ElMessage.success('高级规则已保存，请用「快速预览」查看显隐效果');
+/**
+ * 水印写回后重挂，画布与预览共用同一份 watermarkOptions
+ * @param json 带水印的模板
+ */
+async function onWatermarkApply(json: Record<string, any>) {
+  await onCanvasPatch(json, { remount: true });
+  ElMessage.success('水印已应用到画布，请用「快速预览」确认打印效果');
+}
+
+/** 打开数据源 JSON 编辑器 */
+function openDataJsonEditor() {
+  dataJsonOpen.value = true;
+}
+
+/**
+ * 用粘贴的业务 JSON 替换设计器样例，快速预览 / 筛行行数跟着变
+ * @param data 解析后的 printData
+ */
+function onDataJsonApply(data: AgreePrintData) {
+  samplePrintData.value = data;
+  ElMessage.success('已应用数据源 JSON，请用「快速预览」核对');
 }
 
 /** 打开 JSON 编辑器 */
@@ -926,28 +925,8 @@ function resetZoom() {
 }
 
 /**
- * 对齐当前检视器选中的元素
- * @param mode 对齐方式
+ * 复制当前元素（右下偏移）
  */
-async function alignSelected(mode: PrintAlignMode) {
-  ctxMenu.value.open = false;
-  const json = readCanvasJson() || currentTemplateJson.value;
-  const el = listPrintElements(json).find(
-    (e) => e.key === selectedElementKey.value,
-  );
-  if (!el) {
-    ElMessage.warning('请先点选画布上的元素');
-    return;
-  }
-  try {
-    const next = alignPrintElement(json, el, mode);
-    await onCanvasPatch(next);
-  } catch (error: any) {
-    ElMessage.error(error?.message || '对齐失败');
-  }
-}
-
-/** 复制当前元素（右下偏移） */
 async function duplicateSelected() {
   ctxMenu.value.open = false;
   const json = readCanvasJson() || currentTemplateJson.value;
@@ -986,18 +965,6 @@ async function deleteSelected() {
     await onCanvasPatch(next);
   } catch (error: any) {
     ElMessage.error(error?.message || '删除失败');
-  }
-}
-
-/** 开关设计器网格（需重挂） */
-async function toggleGrid() {
-  showGrid.value = !showGrid.value;
-  const json = readCanvasJson() || currentTemplateJson.value;
-  designing.value = true;
-  try {
-    await mountDesigner(json, { rebuildToolbox: false });
-  } finally {
-    designing.value = false;
   }
 }
 
@@ -1127,24 +1094,6 @@ onBeforeUnmount(() => {
           <ElButton size="small" @click="resetZoom">{{ zoom }}%</ElButton>
           <ElButton size="small" @click="nudgeZoom(10)">+</ElButton>
         </ElButtonGroup>
-        <ElButtonGroup>
-          <ElButton size="small" @click="alignSelected('left')">左齐</ElButton>
-          <ElButton size="small" @click="alignSelected('center')">
-            居中
-          </ElButton>
-          <ElButton size="small" @click="alignSelected('right')">右齐</ElButton>
-          <ElButton size="small" @click="alignSelected('top')">顶齐</ElButton>
-          <ElButton size="small" @click="alignSelected('bottom')">
-            底齐
-          </ElButton>
-        </ElButtonGroup>
-        <ElButton
-          size="small"
-          :type="showGrid ? 'primary' : 'default'"
-          @click="toggleGrid"
-        >
-          网格
-        </ElButton>
         <span class="agree-print-designer__hint">
           点纸面同步右侧；Ctrl+D 复制，Delete 删除
           <code v-if="templateCode">{{ templateCode }}</code>
@@ -1153,8 +1102,11 @@ onBeforeUnmount(() => {
       </div>
       <div class="flex flex-wrap gap-2">
         <ElButton size="small" @click="onPreview">快速预览</ElButton>
-        <ElButton size="small" @click="openRulesDrawer">高级规则</ElButton>
+        <ElButton size="small" @click="openWatermarkDialog">水印</ElButton>
         <ElButton size="small" @click="openJsonEditor">编辑 JSON</ElButton>
+        <ElButton size="small" @click="openDataJsonEditor">
+          数据源 JSON
+        </ElButton>
         <ElButton size="small" @click="onReset">恢复默认</ElButton>
         <ElButton size="small" type="primary" @click="onSave">
           {{ delegateSave ? '保存' : '保存模板' }}
@@ -1203,11 +1155,10 @@ onBeforeUnmount(() => {
       </aside>
     </div>
 
-    <ElementRulesDrawer
-      v-model="rulesOpen"
-      :template-json="rulesDrawerTemplateJson"
-      :sample-data="samplePrintData"
-      @rules-apply="onRulesApply"
+    <PrintWatermarkDialog
+      v-model="watermarkOpen"
+      :template-json="currentTemplateJson"
+      @apply="onWatermarkApply"
     />
 
     <ElDialog
@@ -1249,6 +1200,12 @@ onBeforeUnmount(() => {
       </template>
     </ElDialog>
 
+    <PrintDataJsonDialog
+      v-model="dataJsonOpen"
+      :initial-data="samplePrintData"
+      @apply="onDataJsonApply"
+    />
+
     <div
       v-if="ctxMenu.open"
       class="agree-print-ctx"
@@ -1258,11 +1215,6 @@ onBeforeUnmount(() => {
     >
       <button type="button" @click="duplicateSelected">复制</button>
       <button type="button" @click="deleteSelected">删除</button>
-      <button type="button" @click="alignSelected('left')">左齐</button>
-      <button type="button" @click="alignSelected('center')">水平居中</button>
-      <button type="button" @click="alignSelected('right')">右齐</button>
-      <button type="button" @click="alignSelected('top')">顶齐</button>
-      <button type="button" @click="alignSelected('bottom')">底齐</button>
     </div>
   </div>
 </template>
@@ -1366,6 +1318,8 @@ onBeforeUnmount(() => {
 }
 
 .agree-print-quick-preview :deep(.hiprint-printPaper) {
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
   background: #fff;
   box-shadow: 0 1px 6px rgb(0 0 0 / 12%);
 }

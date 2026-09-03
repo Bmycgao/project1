@@ -12,10 +12,7 @@ export {
 } from './fields';
 export { formatPrintValue } from './format-print-value';
 export { preparePrintTemplate } from './prepare-template';
-export {
-  alignPrintElement,
-  mergeAgreeCustomOptions,
-} from './print-agree-options';
+export { mergeAgreeCustomOptions } from './print-agree-options';
 export {
   buildBoundPrintElement,
   buildCalcResultElement,
@@ -43,12 +40,32 @@ export {
   validatePrintExpr,
 } from './print-expr';
 export {
+  compactPanelFlow,
+  ensureDefaultFlowGroups,
+  snapshotFlowGroups,
+} from './print-flow';
+export {
+  buildFilterPresets,
   compileFilterConds,
   describeFilterExpr,
   parseFilterExpr,
   previewFilterRowCount,
 } from './print-row-filter';
-export { buildDesignerSamplePrintData } from './sample-print-data';
+export {
+  buildPrintIdentity,
+  maskAgreePrintData,
+  mergePrintFieldRules,
+  PRINT_SENSITIVE_FIELD_RULES,
+} from './print-sensitive';
+export { applyTablePrintRuntime } from './print-table-runtime';
+export {
+  applyWatermarkToTemplate,
+  isWatermarkEnabled,
+} from './print-watermark';
+export {
+  buildDesignerSamplePrintData,
+  parseAgreePrintDataJson,
+} from './sample-print-data';
 export {
   clearAgreePrintTemplate,
   cloneTemplate,

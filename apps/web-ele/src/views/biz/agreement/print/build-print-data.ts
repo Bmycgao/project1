@@ -1,6 +1,8 @@
 import type { AgreementDetail } from '../types';
 import type { AgreePrintData, AgreePrintMoneyRow } from './types';
 
+import { buildPrintIdentity } from './print-sensitive';
+
 /**
  * 数字转中文大写金额（协议打印用，覆盖常见整数与两位小数）
  * @param value 金额
@@ -158,11 +160,12 @@ export function buildAgreePrintData(detail: AgreementDetail): AgreePrintData {
     rewardTotal,
     hasRewards: rewardItems.length > 0,
     isHighAmount: amountNum > 500_000,
-    qrcodeContent: `AGREE:${agreementNo}|${compensatee}`,
-    barcodeContent: agreementNo,
+    ...buildPrintIdentity(
+      agreementNo,
+      text(basic.agreementName, '征收补偿协议'),
+    ),
     houseCount: houses.length,
     totalBuildArea,
     totalEvalValue,
-    printMeta: `${text(basic.agreementName, '协议')}|${agreementNo}|${compensatee}`,
   };
 }

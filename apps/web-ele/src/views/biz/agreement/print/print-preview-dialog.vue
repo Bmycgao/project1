@@ -1,23 +1,31 @@
 <script lang="ts" setup>
 /**
- * 协议打印预览：按 templateCode 拉模板，条件裁剪 + 房屋户名合并
+ * 协议打印预览：按 templateCode 拉模板，可用协议详情或粘贴的数据源 JSON
  */
+import type { AgreeFieldRule } from '../field-access';
 import type { AgreementDetail } from '../types';
 import type { AgreePrintData } from './types';
 
-import { nextTick, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
+
+import { useAccessStore } from '@vben/stores';
 
 import { ElButton, ElDialog, ElMessage } from 'element-plus';
 
 import { buildAgreePrintData } from './build-print-data';
 import { ensureHiprint } from './ensure-hiprint';
 import { preparePrintTemplate } from './prepare-template';
+import PrintDataJsonDialog from './print-data-json-dialog.vue';
+import { maskAgreePrintData, mergePrintFieldRules } from './print-sensitive';
+import { buildDesignerSamplePrintData } from './sample-print-data';
 import { loadPrintTemplateByCode } from './template-store';
 
 const props = withDefaults(
   defineProps<{
     /** 当前协议详情 */
     detail: AgreementDetail | null;
+    /** 页面字段权限（与列表/详情同源）；不传则用默认规则 */
+    fieldRules?: AgreeFieldRule[];
     /** 是否显示对话框 */
     modelValue: boolean;
     /** 打印模板编码 */
@@ -28,6 +36,7 @@ const props = withDefaults(
   {
     templateCode: 'PrintAgreement',
     title: '打印预览',
+    fieldRules: undefined,
   },
 );
 
@@ -35,24 +44,51 @@ const emit = defineEmits<{
   'update:modelValue': [boolean];
 }>();
 
+const accessStore = useAccessStore();
+
 const loading = ref(false);
 const previewRef = ref<HTMLElement | null>(null);
 const printData = ref<AgreePrintData | null>(null);
+/** 粘贴的数据源，优先于当前协议详情 */
+const dataOverride = ref<AgreePrintData | null>(null);
+const dataJsonOpen = ref(false);
 /** hiprint 模板实例，供打印复用 */
 let templateInst: any = null;
+
+/** 弹窗里编辑器用的底稿：覆盖 > 已渲染 > 当前协议 > 样例 */
+const dataJsonInitial = computed(() => {
+  if (dataOverride.value) return dataOverride.value;
+  if (printData.value) return printData.value;
+  if (props.detail) return buildAgreePrintData(props.detail);
+  return buildDesignerSamplePrintData();
+});
 
 /** 关闭弹窗 */
 function close() {
   emit('update:modelValue', false);
 }
 
-/** 创建带条件/合并能力的模板实例 */
+/**
+ * 本次预览/打印实际用的数据
+ */
+function resolvePrintData(): AgreePrintData | null {
+  if (dataOverride.value) return dataOverride.value;
+  if (props.detail) return buildAgreePrintData(props.detail);
+  return null;
+}
+
+/** 创建带条件/合并能力的模板实例；正式打印先按字段权限打码 */
 async function createTemplate(data: AgreePrintData) {
   const { PrintTemplate } = await ensureHiprint();
   const raw = await loadPrintTemplateByCode(props.templateCode);
+  const masked = maskAgreePrintData(
+    data,
+    mergePrintFieldRules(props.fieldRules),
+    accessStore.accessCodes,
+  );
   const { template: prepared, printData: enriched } = preparePrintTemplate(
     raw,
-    data,
+    masked,
   );
   const inst = new PrintTemplate({ template: prepared });
   (inst as any).__agreePrintData = enriched;
@@ -63,14 +99,15 @@ async function createTemplate(data: AgreePrintData) {
  * 渲染预览 HTML 到容器
  */
 async function renderPreview() {
-  if (!props.detail) {
-    ElMessage.warning('暂无协议数据');
+  const data = resolvePrintData();
+  if (!data) {
+    ElMessage.warning('暂无协议数据，可点「使用数据 JSON」粘贴');
     return;
   }
   loading.value = true;
   templateInst = null;
   try {
-    printData.value = buildAgreePrintData(props.detail);
+    printData.value = data;
     templateInst = await createTemplate(printData.value);
     await nextTick();
     const el = previewRef.value;
@@ -98,10 +135,13 @@ async function renderPreview() {
 
 /** 浏览器打印 */
 async function onPrint() {
-  if (!props.detail) return;
+  const data = dataOverride.value || printData.value || resolvePrintData();
+  if (!data) {
+    ElMessage.warning('暂无协议数据，可点「使用数据 JSON」粘贴');
+    return;
+  }
   try {
     loading.value = true;
-    const data = printData.value || buildAgreePrintData(props.detail);
     if (!templateInst) {
       templateInst = await createTemplate(data);
     }
@@ -122,6 +162,16 @@ async function onPrint() {
   }
 }
 
+/**
+ * 用粘贴 JSON 覆盖当前协议数据并重渲染
+ * @param data 解析后的 printData
+ */
+function onDataJsonApply(data: AgreePrintData) {
+  dataOverride.value = data;
+  void renderPreview();
+  ElMessage.success('已按数据源 JSON 刷新预览');
+}
+
 watch(
   () => [props.modelValue, props.detail, props.templateCode] as const,
   ([open]) => {
@@ -129,6 +179,8 @@ watch(
       void renderPreview();
     } else {
       templateInst = null;
+      dataOverride.value = null;
+      printData.value = null;
       if (previewRef.value) previewRef.value.innerHTML = '';
     }
   },
@@ -147,16 +199,27 @@ watch(
     @update:model-value="emit('update:modelValue', $event)"
   >
     <div v-loading="loading" class="agree-print-preview">
-      <div class="mb-2 text-xs text-gray-500">模板：{{ templateCode }}</div>
+      <div class="mb-2 text-xs text-gray-500">
+        模板：{{ templateCode }}
+        <span v-if="dataOverride" class="text-amber-600">
+          （当前使用粘贴的数据源 JSON）
+        </span>
+      </div>
       <div ref="previewRef" class="agree-print-preview__body"></div>
     </div>
     <template #footer>
+      <ElButton @click="dataJsonOpen = true">使用数据 JSON</ElButton>
       <ElButton @click="close">关闭</ElButton>
       <ElButton type="primary" :loading="loading" @click="onPrint">
         打印
       </ElButton>
     </template>
   </ElDialog>
+  <PrintDataJsonDialog
+    v-model="dataJsonOpen"
+    :initial-data="dataJsonInitial"
+    @apply="onDataJsonApply"
+  />
 </template>
 
 <style scoped>
@@ -177,6 +240,8 @@ watch(
 }
 
 .agree-print-preview__body :deep(.hiprint-printPaper) {
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
   background: #fff;
   box-shadow: 0 1px 6px rgb(0 0 0 / 12%);
 }

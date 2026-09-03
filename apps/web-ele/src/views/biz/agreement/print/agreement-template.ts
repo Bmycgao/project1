@@ -1,8 +1,12 @@
 /**
  * 协议打印默认模板（A4）
- * - 房屋表：户名列支持运行时行合并
+ * - 房屋表：户名 / 房屋类型支持运行时上下行合并（列上 agreeMergeSame）
+ * - 评估价值 / 补偿金额等列用 agreeColFormat，合计仍按数字加总
+ * - 签约日期默认 agreeFormat=date
  * - 补偿表：多级表头（列合并）
  * - 奖励区：agreeVisibleWhen=hasRewards，无奖励数据时不打印
+ * - 页眉键值：agreeFlowGroup=header；同行缺一格则通栏，整行没了才上移
+ * - 房屋/补偿/奖励：标题+表同组，整段隐藏后下方上移
  */
 export const agreePrintTemplate = {
   panels: [
@@ -17,7 +21,8 @@ export const agreePrintTemplate = {
       paperNumberTop: 819,
       paperNumberDisabled: false,
       paperNumberContinue: true,
-      watermarkOptions: {},
+      /** 空 content 表示关闭；设计器「水印」写入 hiprint watermarkOptions */
+      watermarkOptions: { content: '' },
       panelLayoutOptions: {},
       printElements: [
         {
@@ -45,6 +50,7 @@ export const agreePrintTemplate = {
             field: 'agreementNo',
             fontSize: 10,
             testData: 'XY-2026-001',
+            agreeFlowGroup: 'header',
           },
           printElementType: { title: '文本', type: 'text' },
         },
@@ -58,6 +64,8 @@ export const agreePrintTemplate = {
             field: 'signDate',
             fontSize: 10,
             testData: '2026-03-01',
+            agreeFormat: 'date',
+            agreeFlowGroup: 'header',
           },
           printElementType: { title: '文本', type: 'text' },
         },
@@ -85,6 +93,7 @@ export const agreePrintTemplate = {
             field: 'compensatee',
             fontSize: 10,
             testData: '张三',
+            agreeFlowGroup: 'header',
           },
           printElementType: { title: '文本', type: 'text' },
         },
@@ -98,6 +107,7 @@ export const agreePrintTemplate = {
             field: 'acquirer',
             fontSize: 10,
             testData: '某区征收办',
+            agreeFlowGroup: 'header',
           },
           printElementType: { title: '文本', type: 'text' },
         },
@@ -111,6 +121,7 @@ export const agreePrintTemplate = {
             field: 'agreementName',
             fontSize: 10,
             testData: '某某项目征收补偿协议',
+            agreeFlowGroup: 'header',
           },
           printElementType: { title: '文本', type: 'text' },
         },
@@ -124,6 +135,7 @@ export const agreePrintTemplate = {
             fontSize: 12,
             fontWeight: '600',
             hideTitle: true,
+            agreeFlowGroup: 'houses',
           },
           printElementType: { title: '文本', type: 'text' },
         },
@@ -136,6 +148,7 @@ export const agreePrintTemplate = {
             field: 'houses',
             tableHeaderRepeat: 'page',
             tableFooterRepeat: 'last',
+            agreeFlowGroup: 'houses',
             /** 示例：仅打印评估价值大于 0 的行（可在设计器 options 修改） */
             agreeRowFilter: 'evalValue > 0',
             columns: [
@@ -148,6 +161,7 @@ export const agreePrintTemplate = {
                   colspan: 1,
                   rowspan: 1,
                   checked: true,
+                  agreeMergeSame: true,
                 },
                 {
                   title: '序号',
@@ -184,6 +198,7 @@ export const agreePrintTemplate = {
                   colspan: 1,
                   rowspan: 1,
                   checked: true,
+                  agreeMergeSame: true,
                 },
                 {
                   title: '建筑面积',
@@ -211,6 +226,8 @@ export const agreePrintTemplate = {
                   colspan: 1,
                   rowspan: 1,
                   checked: true,
+                  tableSummary: 'sum',
+                  agreeColFormat: 'money0',
                 },
               ],
             ],
@@ -227,6 +244,7 @@ export const agreePrintTemplate = {
             fontSize: 12,
             fontWeight: '600',
             hideTitle: true,
+            agreeFlowGroup: 'compensation',
           },
           printElementType: { title: '文本', type: 'text' },
         },
@@ -239,6 +257,7 @@ export const agreePrintTemplate = {
             field: 'compensationItems',
             tableHeaderRepeat: 'page',
             tableFooterRepeat: 'last',
+            agreeFlowGroup: 'compensation',
             /** 两行表头：项目信息 / 计价信息 做列合并 */
             columns: [
               [
@@ -315,6 +334,7 @@ export const agreePrintTemplate = {
                   colspan: 1,
                   rowspan: 1,
                   checked: true,
+                  agreeColFormat: 'money',
                 },
                 {
                   title: '金额',
@@ -325,6 +345,7 @@ export const agreePrintTemplate = {
                   rowspan: 1,
                   checked: true,
                   tableSummary: 'sum',
+                  agreeColFormat: 'money',
                 },
               ],
             ],
@@ -343,6 +364,7 @@ export const agreePrintTemplate = {
             hideTitle: true,
             /** 无奖励数据时整段不打印 */
             agreeVisibleWhen: 'hasRewards',
+            agreeFlowGroup: 'rewards',
           },
           printElementType: { title: '文本', type: 'text' },
         },
@@ -356,6 +378,7 @@ export const agreePrintTemplate = {
             tableHeaderRepeat: 'page',
             tableFooterRepeat: 'last',
             agreeVisibleWhen: 'hasRewards',
+            agreeFlowGroup: 'rewards',
             columns: [
               [
                 {
@@ -385,6 +408,7 @@ export const agreePrintTemplate = {
                   rowspan: 1,
                   checked: true,
                   tableSummary: 'sum',
+                  agreeColFormat: 'money',
                 },
                 {
                   title: '说明',

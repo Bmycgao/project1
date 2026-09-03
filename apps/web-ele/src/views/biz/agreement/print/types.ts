@@ -2,7 +2,7 @@
  * 协议打印：运行时灌入 hiprint 的业务数据结构
  */
 export interface AgreePrintHouseRow {
-  /** 户名（连续相同可合并单元格） */
+  /** 户名（列上可开相同值合并） */
   householdName: string;
   /** 序号 */
   index: number;

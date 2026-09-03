@@ -87,7 +87,7 @@ export function createPrintExprScope(
     FORMAT_MONEY: (v, digits = 2) =>
       formatPrintValue(v, digits === 0 ? 'money0' : 'money'),
     FORMAT_DATE: (v, style = 'date') =>
-      formatPrintValue(v, style === 'dateCn' ? 'dateCn' : 'date'),
+      formatPrintValue(v, String(style || 'date')),
     IN: (v, ...candidates) => candidates.some((c) => String(c) === String(v)),
     NOT_IN: (v, ...candidates) =>
       !candidates.some((c) => String(c) === String(v)),
