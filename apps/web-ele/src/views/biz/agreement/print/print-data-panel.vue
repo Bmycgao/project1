@@ -14,7 +14,10 @@ import {
   AGREE_PRINT_TEXT_FIELDS,
   TABLE_COLUMN_PRESETS,
 } from './fields';
-import { AGREE_PRINT_FIELD_DND } from './print-element-meta';
+import {
+  AGREE_PRINT_FIELD_DND,
+  setAgreePrintHtml5Drag,
+} from './print-element-meta';
 
 const props = defineProps<{
   /** 样例 printData（仅预览，非正式协议） */
@@ -71,6 +74,7 @@ function tableColumns(field: string) {
  */
 function onDragStart(e: DragEvent, item: AgreePrintFieldItem) {
   dragging = true;
+  setAgreePrintHtml5Drag({ kind: AGREE_PRINT_FIELD_DND, item });
   const payload = JSON.stringify({ kind: AGREE_PRINT_FIELD_DND, item });
   e.dataTransfer?.setData('text/plain', payload);
   if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy';
@@ -79,6 +83,7 @@ function onDragStart(e: DragEvent, item: AgreePrintFieldItem) {
 function onDragEnd() {
   window.setTimeout(() => {
     dragging = false;
+    setAgreePrintHtml5Drag(null);
   }, 0);
 }
 

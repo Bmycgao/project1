@@ -12,6 +12,8 @@ export const AGREE_PRINT_CUSTOM_KEYS = [
   'agreeValueExpr',
   'agreeFormat',
   'agreeFlowGroup',
+  /** 表尾行结构（colspan），打印前编译成 footerFormatter */
+  'agreeFooters',
 ] as const;
 
 type PrintEl = {
@@ -135,6 +137,13 @@ function copyCustomOptions(target: PrintEl, source: PrintEl) {
   }
   for (const key of AGREE_PRINT_CUSTOM_KEYS) {
     const val = from[key];
+    if (key === 'agreeFooters') {
+      // Vue Proxy / 特殊对象不能 structuredClone，用 JSON 深拷贝
+      if (Array.isArray(val) && val.length > 0) {
+        next[key] = JSON.parse(JSON.stringify(val));
+      }
+      continue;
+    }
     if (val !== undefined && val !== null && String(val).trim() !== '') {
       next[key] = val;
     }

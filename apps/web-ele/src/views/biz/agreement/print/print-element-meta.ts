@@ -521,6 +521,27 @@ export const AGREE_PRINT_FIELD_DND = 'agree-print-field';
 /** 左侧积木拖到纸面（绕开 hiprint jQuery 拖拽，兼容画布缩放） */
 export const AGREE_PRINT_TOOLBOX_DND = 'agree-print-toolbox';
 
+/** HTML5 拖拽会话：部分浏览器除 drop 外读不到 dataTransfer，用内存兜底 */
+export type AgreePrintHtml5DragSession =
+  | null
+  | { item: AgreePrintFieldItem; kind: typeof AGREE_PRINT_FIELD_DND }
+  | { kind: typeof AGREE_PRINT_TOOLBOX_DND; tid: string };
+
+let agreePrintHtml5Drag: AgreePrintHtml5DragSession = null;
+
+/**
+ * 记录当前积木 / 字段拖拽
+ * @param session 拖拽载荷，dragend 时传 null
+ */
+export function setAgreePrintHtml5Drag(session: AgreePrintHtml5DragSession) {
+  agreePrintHtml5Drag = session;
+}
+
+/** 读取当前 HTML5 拖拽（drop 解析失败时兜底） */
+export function getAgreePrintHtml5Drag() {
+  return agreePrintHtml5Drag;
+}
+
 /** 积木 tid → printElementType（design 时缺 tid 会让表格 css() 崩） */
 const TOOLBOX_TYPE_META: Record<
   string,
@@ -554,14 +575,15 @@ function typeMeta(key: string) {
 }
 
 /**
- * hiprint 画表会走 columns.find；缺 tid 或空列会崩。分组格保持空 field。
+ * hiprint 画表会走 columns[0].forEach / columns[idx].columns；缺 tid、空列、空行会崩
  * @param template 即将挂到画布的 JSON
  */
 export function sanitizePrintTemplate(template: Record<string, any>) {
   const next = cloneTemplate(template);
   normalizeTemplateWatermark(next);
   for (const panel of next.panels || []) {
-    for (const el of panel.printElements || []) {
+    panel.printElements = (panel.printElements || []).filter(Boolean);
+    for (const el of panel.printElements) {
       const type = String(el?.printElementType?.type || '');
       if (!el.printElementType) el.printElementType = { type };
       if (!el.printElementType.tid) {
@@ -572,7 +594,8 @@ export function sanitizePrintTemplate(template: Record<string, any>) {
         else if (type === 'table')
           el.printElementType.tid = 'agreePrintModule.table';
       }
-      if (type !== 'table' || !el.options) continue;
+      if (!el.options) el.options = {};
+      if (type !== 'table') continue;
       el.options.columns = normalizeTableColumns(el.options.columns);
       if (el.options.field === '') delete el.options.field;
     }
@@ -581,7 +604,7 @@ export function sanitizePrintTemplate(template: Record<string, any>) {
 }
 
 /**
- * 列必须是二维数组；叶子格补 field，分组格保持空 field
+ * 列必须是二维数组且每行都是格子数组；叶子格补 field，分组格保持空 field
  * @param columns options.columns
  */
 function normalizeTableColumns(columns: unknown): Record<string, any>[][] {
@@ -590,30 +613,36 @@ function normalizeTableColumns(columns: unknown): Record<string, any>[][] {
       ? columns
       : [columns]
     : [[]];
-  const next = rows.map((row, ri) => {
-    const cells = Array.isArray(row) ? row : [];
-    return cells.map((cell: Record<string, any>, ci: number) => {
-      const colspan = Number(cell?.colspan) || 1;
-      const rowspan = Number(cell?.rowspan) || 1;
-      let field = String(cell?.field || '').trim();
-      const isGroup = colspan > 1 && (!field || /^col\d+_\d+$/.test(field));
-      if (isGroup) {
-        field = '';
-      } else if (!field) {
-        field = `col${ri + 1}_${ci + 1}`;
-      }
-      return {
-        ...cell,
-        title: cell?.title || field || '分组',
-        field,
-        width: Number(cell?.width) > 0 ? Number(cell.width) : 80,
-        colspan,
-        rowspan,
-        checked: cell?.checked !== false,
-      };
-    });
-  });
-  /** hiprint TablePrintElement.css 会对 columns[0].find，空行会炸 */
+  const next = rows
+    .filter((row): row is unknown[] => Array.isArray(row))
+    .map((row, ri) => {
+      const cells = row.filter(
+        (cell): cell is Record<string, any> =>
+          Boolean(cell) && typeof cell === 'object',
+      );
+      return cells.map((cell: Record<string, any>, ci: number) => {
+        const colspan = Number(cell?.colspan) || 1;
+        const rowspan = Number(cell?.rowspan) || 1;
+        let field = String(cell?.field || '').trim();
+        const isGroup = colspan > 1 && (!field || /^col\d+_\d+$/.test(field));
+        if (isGroup) {
+          field = '';
+        } else if (!field) {
+          field = `col${ri + 1}_${ci + 1}`;
+        }
+        return {
+          ...cell,
+          title: cell?.title || field || '分组',
+          field,
+          width: Number(cell?.width) > 0 ? Number(cell.width) : 80,
+          colspan,
+          rowspan,
+          checked: cell?.checked !== false,
+        };
+      });
+    })
+    .filter((row) => row.length > 0);
+  /** hiprint TablePrintElement 会对 columns[0] 做 forEach，空行会炸 */
   if (next.length === 0 || !next[0]?.length) {
     return [
       [

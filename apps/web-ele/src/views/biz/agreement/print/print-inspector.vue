@@ -5,6 +5,7 @@ import type {
   PrintFieldPickMode,
   PrintFieldTreeNode,
 } from './print-field-tree';
+import type { AgreeFooterCell, AgreeFooterRow } from './print-table-footer';
 /**
  * 打印检视器：数据绑定 + 规则（显隐 / 表格筛行）
  */
@@ -59,8 +60,16 @@ import {
   listFilterColumns,
   previewFilterRowCount,
 } from './print-row-filter';
+import {
+  createEmptyFooterRow,
+  mergeFooterCells,
+  normalizeAgreeFooters,
+  splitFooterCell,
+} from './print-table-footer';
 
 const props = defineProps<{
+  /** 画布高亮的列下标 */
+  highlightColIndex?: number;
   sampleData: AgreePrintData;
   selectedKey: string;
   templateJson: null | Record<string, any>;
@@ -69,6 +78,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   /** 写回模板；筛行可静默，改列/绑定需重绘画布 */
   canvasPatch: [Record<string, any>, { remount?: boolean }?];
+  /** 检视器内点列时通知画布高亮 */
+  highlightCol: [number];
   'update:selectedKey': [string];
 }>();
 
@@ -98,11 +109,16 @@ interface ColDraft {
 
 const bindField = ref('');
 const bindTitle = ref('');
+const columns = ref<ColDraft[]>([]);
+/** 表尾行草稿 */
+const footerRows = ref<AgreeFooterRow[]>([]);
+/** 表尾编辑焦点 */
+const footerFocusRow = ref(0);
+const footerFocusCell = ref(0);
 const rowFilter = ref('');
 const agreeVisibleWhen = ref('');
 const agreeFlowGroup = ref('');
 const agreeFormat = ref('');
-const columns = ref<ColDraft[]>([]);
 /** 回填列草稿时忽略 InputNumber change，避免写回循环 */
 let syncingCols = false;
 
@@ -199,6 +215,10 @@ watch(
       agreeHideZero: c.agreeHideZero,
       agreeColFormat: c.agreeColFormat,
     }));
+    footerRows.value = normalizeAgreeFooters(
+      el.options.agreeFooters as AgreeFooterRow[] | undefined,
+      columns.value.length,
+    );
     void nextTick(() => {
       syncingCols = false;
     });
@@ -258,7 +278,37 @@ function applyDictionaryPick(item: AgreePrintFieldItem) {
   ElMessage.info('横线/矩形等装饰无需绑定数据');
 }
 
-defineExpose({ applyDictionaryPick });
+defineExpose({
+  applyDictionaryPick,
+  /**
+   * 画布点列后滚到对应列卡片
+   * @param colIndex 列下标
+   */
+  focusColumn(colIndex: number) {
+    activeTab.value = 'data';
+    emit('highlightCol', colIndex);
+    void nextTick(() => {
+      document
+        .querySelector(`.print-inspector__col[data-col-index="${colIndex}"]`)
+        ?.scrollIntoView({ block: 'nearest' });
+    });
+  },
+  /**
+   * 画布点表尾后定位编辑焦点
+   * @param rowIndex 表尾行
+   * @param cellIndex 表尾格
+   */
+  focusFooterCell(rowIndex: number, cellIndex: number) {
+    activeTab.value = 'data';
+    footerFocusRow.value = rowIndex;
+    footerFocusCell.value = cellIndex;
+    void nextTick(() => {
+      document
+        .querySelector('.print-inspector__footer')
+        ?.scrollIntoView({ block: 'nearest' });
+    });
+  },
+});
 
 /**
  * 打开点选树：改已有元素绑定（拖放仍负责新建）
@@ -549,6 +599,102 @@ function removeColumn(index: number) {
   persistColumns({ remount: true, silent: true });
 }
 
+/**
+ * 写回表尾行 agreeFooters（不重挂，画布覆盖层刷新即可）
+ */
+function persistFooters(opts?: { silent?: boolean }) {
+  const el = selected.value;
+  if (!el || !props.templateJson) return;
+  const normalized = normalizeAgreeFooters(
+    footerRows.value,
+    columns.value.length || 1,
+  );
+  footerRows.value = normalized;
+  const next = patchElementOptions(props.templateJson, el, {
+    /** 空则用 null 触发清除（patch 对 ''/null 会删 key） */
+    agreeFooters: normalized.length > 0 ? normalized : null,
+  });
+  emit('canvasPatch', next, { remount: false });
+  if (!opts?.silent) ElMessage.success('表尾行已写入');
+}
+
+/** 添加一行「每列一格」的表尾 */
+function addFooterRow() {
+  const n = Math.max(1, columns.value.length);
+  footerRows.value = [...footerRows.value, createEmptyFooterRow(n)];
+  persistFooters({ silent: true });
+  ElMessage.success('已添加表尾行，可编辑文案或合并格子');
+}
+
+/**
+ * 删除表尾行
+ * @param rowIndex 行下标
+ */
+function removeFooterRow(rowIndex: number) {
+  footerRows.value = footerRows.value.filter((_, i) => i !== rowIndex);
+  persistFooters({ silent: true });
+}
+
+/**
+ * 与右侧一格合并（结构 colspan）
+ * @param rowIndex 行
+ * @param cellIndex 格
+ */
+function mergeFooterWithNext(rowIndex: number, cellIndex: number) {
+  const row = footerRows.value[rowIndex];
+  if (!row || cellIndex >= row.cells.length - 1) {
+    ElMessage.warning('右侧没有可合并的格子');
+    return;
+  }
+  const nextRows = footerRows.value.map((r, i) =>
+    i === rowIndex
+      ? mergeFooterCells(r, cellIndex, cellIndex + 1)
+      : { cells: r.cells.map((c) => ({ ...c })) },
+  );
+  footerRows.value = nextRows;
+  footerFocusRow.value = rowIndex;
+  footerFocusCell.value = cellIndex;
+  persistFooters({ silent: true });
+}
+
+/**
+ * 拆分当前格
+ * @param rowIndex 行
+ * @param cellIndex 格
+ */
+function splitFooterAt(rowIndex: number, cellIndex: number) {
+  const row = footerRows.value[rowIndex];
+  if (!row) return;
+  const cell = row.cells[cellIndex];
+  if (!cell || cell.colspan <= 1) {
+    ElMessage.warning('该格未合并，无需拆分');
+    return;
+  }
+  const nextRows = footerRows.value.map((r, i) =>
+    i === rowIndex
+      ? splitFooterCell(r, cellIndex)
+      : { cells: r.cells.map((c) => ({ ...c })) },
+  );
+  footerRows.value = nextRows;
+  persistFooters({ silent: true });
+}
+
+/**
+ * 表尾格失焦写回
+ * @param cell 格子
+ */
+function onFooterCellBlur(_cell: AgreeFooterCell) {
+  persistFooters({ silent: true });
+}
+
+/**
+ * 点列卡片时通知画布高亮
+ * @param colIndex 列下标
+ */
+function onColCardClick(colIndex: number) {
+  emit('highlightCol', colIndex);
+}
+
 function onSelectElement(key: string) {
   emit('update:selectedKey', key);
 }
@@ -657,13 +803,16 @@ function elementTypeLabel(el: PrintElementRef) {
             多行表头：下列为数据列。分组标题请在画布修改；加列会追加到末行。
           </p>
           <p class="print-inspector__hint mb-2">
-            合并 / 隐零 /
-            格式只在<strong>快速预览</strong>里看。标题、字段失焦即写入。
+            画布表体可滚动。单击列选中，双击切换「相同值合并」。表尾行可结构
+            colspan（与相同值合并无关）。
           </p>
           <div
             v-for="(col, i) in columns"
             :key="i"
             class="print-inspector__col"
+            :class="{ 'is-col-highlight': highlightColIndex === i }"
+            :data-col-index="i"
+            @click="onColCardClick(i)"
           >
             <div class="print-inspector__col-id">
               <ElInput
@@ -744,6 +893,73 @@ function elementTypeLabel(el: PrintElementRef) {
                 @change="onColumnFlagChange"
               />
             </div>
+          </div>
+
+          <div class="print-inspector__footer mt-3">
+            <div class="print-inspector__col-head">
+              <span>表尾行（结构合并）</span>
+              <ElButton size="small" text @click="addFooterRow">加行</ElButton>
+            </div>
+            <p class="print-inspector__hint mb-2">
+              挂在数据区下方，行数固定。可把相邻格合成一格（如备注跨两列），与列上「相同值合并」无关。也可用工具栏「合并表尾」。
+            </p>
+            <div
+              v-for="(row, ri) in footerRows"
+              :key="ri"
+              class="print-inspector__footer-row mb-2"
+            >
+              <div class="mb-1 flex items-center justify-between">
+                <span class="text-xs text-gray-500">表尾行 #{{ ri + 1 }}</span>
+                <ElButton
+                  size="small"
+                  text
+                  type="danger"
+                  @click="removeFooterRow(ri)"
+                >
+                  删行
+                </ElButton>
+              </div>
+              <div
+                v-for="(cell, ci) in row.cells"
+                :key="`${ri}-${ci}`"
+                class="print-inspector__footer-cell"
+                :class="{
+                  'is-focus': footerFocusRow === ri && footerFocusCell === ci,
+                }"
+                @click="
+                  footerFocusRow = ri;
+                  footerFocusCell = ci;
+                "
+              >
+                <ElInput
+                  v-model="cell.text"
+                  size="small"
+                  placeholder="文案"
+                  @blur="onFooterCellBlur(cell)"
+                />
+                <ElInput
+                  v-model="cell.field"
+                  size="small"
+                  placeholder="可选 field"
+                  @blur="onFooterCellBlur(cell)"
+                />
+                <span class="print-inspector__col-label">
+                  跨{{ cell.colspan }}列
+                </span>
+                <ElButton
+                  size="small"
+                  @click.stop="mergeFooterWithNext(ri, ci)"
+                >
+                  与右合并
+                </ElButton>
+                <ElButton size="small" @click.stop="splitFooterAt(ri, ci)">
+                  拆分
+                </ElButton>
+              </div>
+            </div>
+            <p v-if="footerRows.length === 0" class="print-inspector__hint">
+              暂无表尾行。点「加行」后可在画布底部看到灰色示意行。
+            </p>
           </div>
         </ElForm>
 
@@ -1027,5 +1243,33 @@ function elementTypeLabel(el: PrintElementRef) {
 .print-inspector__help-block ul {
   padding-left: 16px;
   margin: 0;
+}
+
+.print-inspector__col.is-col-highlight {
+  padding: 6px;
+  background: #eff6ff;
+  border: 1px solid #93c5fd;
+  border-radius: 4px;
+}
+
+.print-inspector__footer-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  padding: 6px;
+  margin-bottom: 4px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+}
+
+.print-inspector__footer-cell.is-focus {
+  background: #fffbeb;
+  border-color: #f59e0b;
+}
+
+.print-inspector__footer-cell :deep(.el-input) {
+  width: 96px;
 }
 </style>

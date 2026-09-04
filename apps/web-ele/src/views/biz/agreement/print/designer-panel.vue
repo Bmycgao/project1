@@ -4,9 +4,18 @@
  * 交互参考 sv-print：撤销/缩放/复制删除/点选同步
  */
 import type { AgreePrintFieldItem } from './fields';
+import type { CanvasHighlightCol } from './print-canvas-table-body';
+import type { AgreeFooterRow } from './print-table-footer';
 import type { AgreePrintData } from './types';
 
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from 'vue';
 
 import {
   ElButton,
@@ -24,6 +33,10 @@ import { ensureHiprint } from './ensure-hiprint';
 import { AGREE_PRINT_ALL_FIELDS, formatPrintFieldLabel } from './fields';
 import { preparePrintTemplate } from './prepare-template';
 import { mergeAgreeCustomOptions } from './print-agree-options';
+import {
+  clearCanvasTableBodies,
+  fillCanvasTableBodies,
+} from './print-canvas-table-body';
 import PrintDataJsonDialog from './print-data-json-dialog.vue';
 import PrintDataPanel from './print-data-panel.vue';
 import {
@@ -32,12 +45,18 @@ import {
   buildBoundPrintElement,
   buildToolboxPrintElement,
   duplicatePrintElement,
+  getAgreePrintHtml5Drag,
   insertPrintElement,
+  listLeafTableCells,
   listPrintElements,
+  patchElementOptions,
+  patchLeafTableColumns,
   removePrintElement,
   sanitizePrintTemplate,
+  setAgreePrintHtml5Drag,
 } from './print-element-meta';
 import PrintInspector from './print-inspector.vue';
+import { mergeFooterCells, splitFooterCell } from './print-table-footer';
 import PrintWatermarkDialog from './print-watermark-dialog.vue';
 import { buildDesignerSamplePrintData } from './sample-print-data';
 import { cloneTemplate, loadAgreePrintTemplate } from './template-store';
@@ -68,8 +87,39 @@ const customSaved = ref(false);
 const templateCode = ref('');
 const currentTemplateJson = ref<Record<string, any>>({});
 const selectedElementKey = ref('');
+/** 画布表体当前高亮列（必须带表身份，避免多表同列一起亮） */
+const highlightCol = ref<CanvasHighlightCol | null>(null);
+/** 检视器列高亮：仅当前选中表，避免切表后数字还对上 */
+const inspectorHighlightColIndex = computed(() => {
+  const hl = highlightCol.value;
+  const table = selectedTableRef();
+  if (
+    !hl ||
+    !table ||
+    hl.panelIndex !== table.panelIndex ||
+    hl.elementIndex !== table.elementIndex
+  ) {
+    return -1;
+  }
+  return hl.colIndex;
+});
+/** 画布表尾选中起止格 */
+const footerSel = ref<null | {
+  cellIndex: number;
+  elementIndex: number;
+  panelIndex: number;
+  rowIndex: number;
+}>(null);
+const footerSelEnd = ref<null | {
+  cellIndex: number;
+  elementIndex: number;
+  panelIndex: number;
+  rowIndex: number;
+}>(null);
 const inspectorRef = ref<null | {
   applyDictionaryPick: (item: AgreePrintFieldItem) => void;
+  focusColumn?: (colIndex: number) => void;
+  focusFooterCell?: (rowIndex: number, cellIndex: number) => void;
 }>(null);
 const zoom = ref(100);
 const canUndo = ref(false);
@@ -106,12 +156,28 @@ async function fetchTemplateJson(): Promise<Record<string, any>> {
 /** 读取画布 JSON：坐标来自 hiprint，筛行/显隐以内存模板为准 */
 function readCanvasJson(): null | Record<string, any> {
   if (!templateInst) return null;
-  const raw =
-    typeof templateInst.getJson === 'function'
-      ? templateInst.getJson()
-      : templateInst.getJsonTid?.();
+  const host =
+    canvasHost ||
+    document.querySelector<HTMLElement>('#agree-print-design-canvas');
+  /** 覆盖层不进 getJson；先拆掉以免引擎扫到我们的格子 */
+  clearCanvasTableBodies(host);
+  let raw: any;
+  try {
+    raw =
+      typeof templateInst.getJson === 'function'
+        ? templateInst.getJson()
+        : templateInst.getJsonTid?.();
+  } catch (error) {
+    console.warn('[print-designer] getJson failed', error);
+    void refreshCanvasTableBodiesSoon();
+    return currentTemplateJson.value
+      ? cloneTemplate(currentTemplateJson.value)
+      : null;
+  }
   if (!raw?.panels) return null;
-  return mergeAgreeCustomOptions(raw, currentTemplateJson.value);
+  const merged = mergeAgreeCustomOptions(raw, currentTemplateJson.value);
+  void refreshCanvasTableBodiesSoon();
+  return merged;
 }
 
 function refreshHistoryFlags() {
@@ -156,6 +222,7 @@ function scheduleCanvasSync() {
     currentTemplateJson.value = j;
     pushHistory(j);
     syncSelectedElementKey(j);
+    refreshCanvasTableBodies();
   }, 400);
 }
 
@@ -208,10 +275,12 @@ async function mountDesigner(
       // ignore
     }
 
+    /** 给引擎一份纯 JSON，避免 Vue Proxy 让 columns[0] 变成 undefined */
     const safeTpl = sanitizePrintTemplate(tpl);
-    currentTemplateJson.value = cloneTemplate(safeTpl);
+    const plain = cloneTemplate(safeTpl);
+    currentTemplateJson.value = cloneTemplate(plain);
     templateInst = new PrintTemplate({
-      template: currentTemplateJson.value,
+      template: plain,
       settingContainer: '#PrintElementOptionSetting',
       fields: AGREE_PRINT_ALL_FIELDS.map((f) => ({
         field: f.field,
@@ -226,9 +295,230 @@ async function mountDesigner(
     await nextTick();
     bindCanvasEvents();
     if (rebuildToolbox) bindToolboxHtml5Drag();
+    void refreshCanvasTableBodiesSoon();
   } finally {
     remounting = false;
   }
+}
+
+/**
+ * 当前检视器选中的表格身份；非表格则无
+ */
+function selectedTableRef() {
+  const hit = listPrintElements(currentTemplateJson.value).find(
+    (e) => e.key === selectedElementKey.value && e.type === 'table',
+  );
+  return hit
+    ? { panelIndex: hit.panelIndex, elementIndex: hit.elementIndex }
+    : null;
+}
+
+/**
+ * 按内存模板 + 样例，给画布表格铺可滚动示意表体（可点列 / 表尾）
+ */
+function refreshCanvasTableBodies() {
+  if (remounting) return;
+  const host =
+    canvasHost ||
+    document.querySelector<HTMLElement>('#agree-print-design-canvas');
+  fillCanvasTableBodies(
+    host,
+    currentTemplateJson.value,
+    samplePrintData.value,
+    {
+      highlightCol: highlightCol.value,
+      activeTable: selectedTableRef(),
+      highlightFooter: footerSel.value,
+      highlightFooterEnd: footerSelEnd.value,
+      onBodyColumnClick: onCanvasBodyColumnClick,
+      onBodyColumnDblClick: onCanvasBodyColumnDblClick,
+      onFooterCellClick: onCanvasFooterCellClick,
+    },
+  );
+}
+
+/**
+ * 选中纸面表格元素
+ * @param panelIndex 面板
+ * @param elementIndex 元素
+ */
+function selectTableElement(panelIndex: number, elementIndex: number) {
+  const list = listPrintElements(currentTemplateJson.value);
+  const hit = list.find(
+    (e) => e.panelIndex === panelIndex && e.elementIndex === elementIndex,
+  );
+  if (hit) selectedElementKey.value = hit.key;
+}
+
+/**
+ * 单击表体列：选中表格 + 高亮列
+ */
+function onCanvasBodyColumnClick(payload: {
+  colIndex: number;
+  elementIndex: number;
+  field: string;
+  panelIndex: number;
+}) {
+  selectTableElement(payload.panelIndex, payload.elementIndex);
+  highlightCol.value = {
+    panelIndex: payload.panelIndex,
+    elementIndex: payload.elementIndex,
+    colIndex: payload.colIndex,
+  };
+  footerSel.value = null;
+  footerSelEnd.value = null;
+  refreshCanvasTableBodies();
+  inspectorRef.value?.focusColumn?.(payload.colIndex);
+}
+
+/**
+ * 双击表体列：切换相同值合并（agreeMergeSame）
+ */
+function onCanvasBodyColumnDblClick(payload: {
+  colIndex: number;
+  elementIndex: number;
+  field: string;
+  panelIndex: number;
+}) {
+  const json = currentTemplateJson.value;
+  if (!json) return;
+  selectTableElement(payload.panelIndex, payload.elementIndex);
+  highlightCol.value = {
+    panelIndex: payload.panelIndex,
+    elementIndex: payload.elementIndex,
+    colIndex: payload.colIndex,
+  };
+  const el =
+    json.panels?.[payload.panelIndex]?.printElements?.[payload.elementIndex];
+  if (!el?.options) return;
+  const leaves = listLeafTableCells(el.options.columns).map((c) => ({ ...c }));
+  const col = leaves[payload.colIndex];
+  if (!col) return;
+  col.agreeMergeSame = !col.agreeMergeSame;
+  const next = patchLeafTableColumns(
+    json,
+    { panelIndex: payload.panelIndex, elementIndex: payload.elementIndex },
+    leaves,
+  );
+  void onCanvasPatch(next, { remount: false });
+  ElMessage.success(
+    col.agreeMergeSame
+      ? `已开启「${col.title || col.field || '该列'}」相同值合并`
+      : `已关闭「${col.title || col.field || '该列'}」相同值合并`,
+  );
+}
+
+/**
+ * 单击表尾格：选中 / Shift 扩选
+ */
+function onCanvasFooterCellClick(payload: {
+  cellIndex: number;
+  elementIndex: number;
+  panelIndex: number;
+  rowIndex: number;
+  shiftKey: boolean;
+}) {
+  selectTableElement(payload.panelIndex, payload.elementIndex);
+  highlightCol.value = null;
+  const cur = {
+    panelIndex: payload.panelIndex,
+    elementIndex: payload.elementIndex,
+    rowIndex: payload.rowIndex,
+    cellIndex: payload.cellIndex,
+  };
+  if (
+    payload.shiftKey &&
+    footerSel.value &&
+    footerSel.value.panelIndex === cur.panelIndex &&
+    footerSel.value.elementIndex === cur.elementIndex &&
+    footerSel.value.rowIndex === cur.rowIndex
+  ) {
+    footerSelEnd.value = cur;
+  } else {
+    footerSel.value = cur;
+    footerSelEnd.value = null;
+  }
+  refreshCanvasTableBodies();
+  inspectorRef.value?.focusFooterCell?.(payload.rowIndex, payload.cellIndex);
+}
+
+/**
+ * 合并当前表尾选中区间（结构 colspan）
+ */
+async function mergeSelectedFooterCells() {
+  const json = currentTemplateJson.value;
+  const start = footerSel.value;
+  if (!json || !start) {
+    ElMessage.warning('请先点选表尾格子（可 Shift 点另一格扩选）');
+    return;
+  }
+  const end = footerSelEnd.value || start;
+  if (start.rowIndex !== end.rowIndex) {
+    ElMessage.warning('只能合并同一行的表尾格子');
+    return;
+  }
+  const el =
+    json.panels?.[start.panelIndex]?.printElements?.[start.elementIndex];
+  if (!el?.options) return;
+  const rows = (el.options.agreeFooters || []) as AgreeFooterRow[];
+  if (!rows[start.rowIndex]) return;
+  const nextRows = rows.map((r, i) =>
+    i === start.rowIndex
+      ? mergeFooterCells(r, start.cellIndex, end.cellIndex)
+      : { cells: r.cells.map((c) => ({ ...c })) },
+  );
+  const next = patchElementOptions(
+    json,
+    { panelIndex: start.panelIndex, elementIndex: start.elementIndex },
+    { agreeFooters: nextRows },
+  );
+  footerSelEnd.value = null;
+  footerSel.value = {
+    ...start,
+    cellIndex: Math.min(start.cellIndex, end.cellIndex),
+  };
+  await onCanvasPatch(next, { remount: false });
+  ElMessage.success('表尾格子已合并（结构 colspan，与相同值合并无关）');
+}
+
+/**
+ * 拆分当前表尾选中格
+ */
+async function splitSelectedFooterCell() {
+  const json = currentTemplateJson.value;
+  const start = footerSel.value;
+  if (!json || !start) {
+    ElMessage.warning('请先点选要拆分的表尾格子');
+    return;
+  }
+  const el =
+    json.panels?.[start.panelIndex]?.printElements?.[start.elementIndex];
+  if (!el?.options) return;
+  const rows = (el.options.agreeFooters || []) as AgreeFooterRow[];
+  if (!rows[start.rowIndex]) return;
+  const nextRows = rows.map((r, i) =>
+    i === start.rowIndex
+      ? splitFooterCell(r, start.cellIndex)
+      : { cells: r.cells.map((c) => ({ ...c })) },
+  );
+  const next = patchElementOptions(
+    json,
+    { panelIndex: start.panelIndex, elementIndex: start.elementIndex },
+    { agreeFooters: nextRows },
+  );
+  footerSelEnd.value = null;
+  await onCanvasPatch(next, { remount: false });
+  ElMessage.success('表尾格子已拆分');
+}
+
+/** hiprint 画完表头后再铺表体 */
+async function refreshCanvasTableBodiesSoon() {
+  await nextTick();
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      refreshCanvasTableBodies();
+    });
+  });
 }
 
 /**
@@ -437,6 +727,8 @@ function unbindCanvasEvents() {
   canvasHost?.removeEventListener('mousedown', onCanvasPointer, true);
   canvasHost?.removeEventListener('click', onCanvasPointer, true);
   canvasHost?.removeEventListener('contextmenu', onCanvasContextMenu);
+  canvasHost?.removeEventListener('dragover', onCanvasCaptureDragOver, true);
+  canvasHost?.removeEventListener('drop', onCanvasCaptureDrop, true);
   canvasHost = null;
 }
 
@@ -447,6 +739,29 @@ function bindCanvasEvents() {
   canvasHost?.addEventListener('mousedown', onCanvasPointer, true);
   canvasHost?.addEventListener('click', onCanvasPointer, true);
   canvasHost?.addEventListener('contextmenu', onCanvasContextMenu);
+  canvasHost?.addEventListener('dragover', onCanvasCaptureDragOver, true);
+  canvasHost?.addEventListener('drop', onCanvasCaptureDrop, true);
+}
+
+/**
+ * 画布捕获 dragover：让积木/字段能落到 hiprint 表格上
+ * @param e 拖拽
+ */
+function onCanvasCaptureDragOver(e: DragEvent) {
+  if (!getAgreePrintHtml5Drag()) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+}
+
+/**
+ * 画布捕获 drop：表格引擎会拦 HTML5 drop，这里抢先放置
+ * @param e 放下
+ */
+function onCanvasCaptureDrop(e: DragEvent) {
+  if (!getAgreePrintHtml5Drag()) return;
+  e.preventDefault();
+  e.stopPropagation();
+  void onCanvasDrop(e);
 }
 
 /** 左击纸面：等 hiprint 选中后再同步检视器 */
@@ -495,21 +810,35 @@ async function onCanvasPatch(
   opts?: { remount?: boolean },
 ) {
   customSaved.value = true;
-  currentTemplateJson.value = cloneTemplate(json);
-  pushHistory(json);
+  const safe = sanitizePrintTemplate(json);
+  currentTemplateJson.value = cloneTemplate(safe);
+  pushHistory(safe);
   if (opts?.remount === false) {
-    syncSelectedElementKey(json);
+    syncSelectedElementKey(safe);
+    void refreshCanvasTableBodiesSoon();
     return;
   }
   designing.value = true;
   try {
-    await mountDesigner(json, { rebuildToolbox: false });
+    await mountDesigner(safe, { rebuildToolbox: false });
   } catch (error: any) {
     console.error('[print-designer] canvas patch failed', error);
     ElMessage.error(error?.message || '刷新设计器失败');
   } finally {
     designing.value = false;
   }
+}
+
+/**
+ * 检视器点列时同步画布高亮（绑到当前选中表）
+ * @param colIndex 列下标
+ */
+function onInspectorHighlightCol(colIndex: number) {
+  const table = selectedTableRef();
+  highlightCol.value = table && colIndex >= 0 ? { ...table, colIndex } : null;
+  footerSel.value = null;
+  footerSelEnd.value = null;
+  refreshCanvasTableBodies();
 }
 
 /**
@@ -545,18 +874,21 @@ function onCanvasDragLeave(e: DragEvent) {
  */
 function parseFieldDrag(e: DragEvent): AgreePrintFieldItem | null {
   const raw = e.dataTransfer?.getData('text/plain');
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as {
-      item?: AgreePrintFieldItem;
-      kind?: string;
-    };
-    if (parsed?.kind === AGREE_PRINT_FIELD_DND && parsed.item?.field) {
-      return parsed.item;
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as {
+        item?: AgreePrintFieldItem;
+        kind?: string;
+      };
+      if (parsed?.kind === AGREE_PRINT_FIELD_DND && parsed.item?.field) {
+        return parsed.item;
+      }
+    } catch {
+      // 非本面板拖拽
     }
-  } catch {
-    // 非本面板拖拽
   }
+  const session = getAgreePrintHtml5Drag();
+  if (session?.kind === AGREE_PRINT_FIELD_DND) return session.item;
   return null;
 }
 
@@ -650,6 +982,7 @@ function onToolboxDragStart(e: DragEvent) {
   toolboxDragging = true;
   const tid = readToolboxTid(e.currentTarget as HTMLElement);
   if (!tid) return;
+  setAgreePrintHtml5Drag({ kind: AGREE_PRINT_TOOLBOX_DND, tid });
   const payload = JSON.stringify({ kind: AGREE_PRINT_TOOLBOX_DND, tid });
   e.dataTransfer?.setData('text/plain', payload);
   if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy';
@@ -658,6 +991,7 @@ function onToolboxDragStart(e: DragEvent) {
 function onToolboxDragEnd() {
   window.setTimeout(() => {
     toolboxDragging = false;
+    setAgreePrintHtml5Drag(null);
   }, 0);
 }
 
@@ -703,15 +1037,18 @@ function readToolboxTid(el: HTMLElement | null) {
  */
 function parseToolboxDrag(e: DragEvent): null | string {
   const raw = e.dataTransfer?.getData('text/plain');
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as { kind?: string; tid?: string };
-    if (parsed?.kind === AGREE_PRINT_TOOLBOX_DND && parsed.tid) {
-      return parsed.tid;
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as { kind?: string; tid?: string };
+      if (parsed?.kind === AGREE_PRINT_TOOLBOX_DND && parsed.tid) {
+        return parsed.tid;
+      }
+    } catch {
+      // 非积木拖拽
     }
-  } catch {
-    // 非积木拖拽
   }
+  const session = getAgreePrintHtml5Drag();
+  if (session?.kind === AGREE_PRINT_TOOLBOX_DND) return session.tid;
   return null;
 }
 
@@ -857,7 +1194,8 @@ function openDataJsonEditor() {
  */
 function onDataJsonApply(data: AgreePrintData) {
   samplePrintData.value = data;
-  ElMessage.success('已应用数据源 JSON，请用「快速预览」核对');
+  void refreshCanvasTableBodiesSoon();
+  ElMessage.success('已应用数据源 JSON，画布表体与快速预览会用这份数据');
 }
 
 /** 打开 JSON 编辑器 */
@@ -1054,6 +1392,28 @@ watch(
   },
 );
 
+watch(samplePrintData, () => {
+  void refreshCanvasTableBodiesSoon();
+});
+
+/** 换选元素时清掉不属于当前表的列高亮，并刷新表外圈 */
+watch(selectedElementKey, () => {
+  if (remounting) return;
+  const table = selectedTableRef();
+  const hl = highlightCol.value;
+  if (
+    hl &&
+    table &&
+    hl.panelIndex === table.panelIndex &&
+    hl.elementIndex === table.elementIndex
+  ) {
+    refreshCanvasTableBodies();
+    return;
+  }
+  if (hl) highlightCol.value = null;
+  refreshCanvasTableBodies();
+});
+
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onDesignerKeydown);
   window.removeEventListener('click', closeCtxMenu);
@@ -1095,12 +1455,19 @@ onBeforeUnmount(() => {
           <ElButton size="small" @click="nudgeZoom(10)">+</ElButton>
         </ElButtonGroup>
         <span class="agree-print-designer__hint">
-          点纸面同步右侧；Ctrl+D 复制，Delete 删除
+          点表头选整表；点表体列选列，双击开/关相同值合并；表尾格可 Shift
+          扩选后点「合并表尾」
           <code v-if="templateCode">{{ templateCode }}</code>
           <span v-if="customSaved" class="text-amber-600">（未保存）</span>
         </span>
       </div>
       <div class="flex flex-wrap gap-2">
+        <ElButton size="small" @click="mergeSelectedFooterCells">
+          合并表尾
+        </ElButton>
+        <ElButton size="small" @click="splitSelectedFooterCell">
+          拆分表尾
+        </ElButton>
         <ElButton size="small" @click="onPreview">快速预览</ElButton>
         <ElButton size="small" @click="openWatermarkDialog">水印</ElButton>
         <ElButton size="small" @click="openJsonEditor">编辑 JSON</ElButton>
@@ -1118,7 +1485,7 @@ onBeforeUnmount(() => {
       <aside class="agree-print-designer__left">
         <div class="agree-print-designer__side-title">元素</div>
         <div class="agree-print-designer__ep-hint">
-          拖到纸面；表格也可点一下放置
+          拖到纸面；表格也可点一下放置。画布上用表头左上角橙色点拖动表格
         </div>
         <div class="agree-print-ep"></div>
         <PrintDataPanel
@@ -1148,7 +1515,9 @@ onBeforeUnmount(() => {
           v-model:selected-key="selectedElementKey"
           :template-json="currentTemplateJson"
           :sample-data="samplePrintData"
+          :highlight-col-index="inspectorHighlightColIndex"
           @canvas-patch="onCanvasPatch"
+          @highlight-col="onInspectorHighlightCol"
         />
         <div class="agree-print-designer__side-title">样式（位置 / 字体）</div>
         <div id="PrintElementOptionSetting"></div>
@@ -1294,20 +1663,150 @@ onBeforeUnmount(() => {
 }
 
 .agree-print-designer__center {
-  padding: 16px;
+  padding: 20px 24px 28px;
   overflow: auto;
-  background: #e5e7eb;
+  background:
+    radial-gradient(
+        circle at 1px 1px,
+        rgb(100 116 139 / 28%) 1px,
+        transparent 0
+      )
+      0 0 / 18px 18px,
+    #c5ccd4;
 }
 
 .agree-print-designer__center.is-drop-target {
   outline: 2px dashed #3b82f6;
   outline-offset: -8px;
-  background: #dbeafe;
+  background:
+    radial-gradient(circle at 1px 1px, rgb(59 130 246 / 35%) 1px, transparent 0)
+      0 0 / 18px 18px,
+    #dbeafe;
 }
 
 .agree-print-canvas {
   min-height: 520px;
   transform-origin: top left;
+}
+
+.agree-print-canvas :deep(.hiprint-printPaper) {
+  background: #fff;
+  box-shadow:
+    0 1px 2px rgb(15 23 42 / 6%),
+    0 14px 36px rgb(15 23 42 / 14%);
+}
+
+.agree-print-canvas :deep(.agree-print-design-body-overlay) {
+  position: absolute;
+  right: 0;
+  left: 0;
+  z-index: 2;
+  box-sizing: border-box;
+  overflow: hidden auto;
+  pointer-events: none;
+
+  /* 隐藏滚动条，避免占宽导致表体列和多行表头错位 */
+  scrollbar-width: none;
+  background: repeating-linear-gradient(
+    -45deg,
+    rgb(248 250 252 / 88%),
+    rgb(248 250 252 / 88%) 6px,
+    rgb(241 245 249 / 88%) 6px,
+    rgb(241 245 249 / 88%) 12px
+  );
+}
+
+.agree-print-canvas :deep(.agree-print-design-body-overlay::-webkit-scrollbar) {
+  width: 0;
+  height: 0;
+}
+
+.agree-print-canvas :deep(.agree-print-design-body-overlay.is-table-active) {
+  box-shadow: inset 0 0 0 2px #60a5fa;
+}
+
+.agree-print-canvas :deep(.agree-print-design-grid) {
+  width: 100%;
+}
+
+.agree-print-canvas :deep(.agree-print-design-body),
+.agree-print-canvas :deep(.agree-print-design-foot-row) {
+  display: grid;
+  width: 100%;
+  border-top: 1px solid #000;
+  border-left: 1px solid #000;
+}
+
+.agree-print-canvas :deep(.agree-print-design-body) {
+  grid-auto-rows: 16pt;
+}
+
+.agree-print-canvas :deep(.agree-print-design-cell) {
+  box-sizing: border-box;
+  min-height: 16pt;
+  padding: 0 4pt;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 9pt;
+  font-weight: 400;
+  line-height: 16pt;
+  color: #111;
+  white-space: nowrap;
+  pointer-events: auto;
+  cursor: pointer;
+  background: #fff;
+  border: 0;
+  border-right: 1px solid #000;
+  border-bottom: 1px solid #000;
+}
+
+.agree-print-canvas :deep(.agree-print-design-cell.is-col-selected) {
+  background: #eff6ff;
+  box-shadow: inset 0 0 0 1.5px #3b82f6;
+}
+
+.agree-print-canvas :deep(.agree-print-design-cell.is-merge-col) {
+  display: flex;
+  align-items: center;
+  background: #f8fafc;
+}
+
+.agree-print-canvas :deep(.agree-print-design-cell.is-footer-selected) {
+  background: #fef3c7;
+}
+
+.agree-print-canvas :deep(.agree-print-design-cell.is-footer) {
+  background: #f8fafc;
+}
+
+.agree-print-canvas :deep(.agree-print-design-cell.is-placeholder) {
+  color: transparent;
+  pointer-events: none;
+  cursor: default;
+  background: transparent;
+  border-color: #d1d5db;
+  border-right-style: dashed;
+  border-bottom-style: dashed;
+}
+
+.agree-print-canvas :deep(.agree-print-design-cell.is-empty) {
+  color: #9ca3af;
+  cursor: default;
+}
+
+/** 引擎表体藏在覆盖层下，避免重影；保留 DOM 给 hiprint 读 columns */
+.agree-print-canvas :deep(.hiprint-printElement-tableTarget > tbody),
+.agree-print-canvas :deep(.hiprint-printElement-tableTarget > tfoot) {
+  visibility: hidden;
+}
+
+/** 表头左上角拖动手柄：盖住表体覆盖层，缩小以免挡住「序号」 */
+.agree-print-canvas :deep(.design .hiprint-printElement-table-handle) {
+  z-index: 6;
+  width: 10px;
+  height: 10px;
+  cursor: move;
+  background: #f97316;
 }
 
 .agree-print-quick-preview {

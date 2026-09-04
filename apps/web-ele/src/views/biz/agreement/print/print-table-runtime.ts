@@ -8,6 +8,7 @@ import {
   tableSummaryDecimals,
 } from './format-print-value';
 import { listLeafTableCells, toTableColumnRows } from './print-element-meta';
+import { applyAgreeFootersRuntime } from './print-table-footer';
 
 /**
  * 生成表体 rowspan 合并函数源码（同一列、连续相同、非空才合）
@@ -127,4 +128,5 @@ export function applyTablePrintRuntime(el: { options?: Record<string, any> }) {
     );
   }
   applyColumnFormatters(opts.columns);
+  applyAgreeFootersRuntime(opts, leaf.length);
 }

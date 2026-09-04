@@ -138,11 +138,12 @@ function ensureBuiltinPrintTemplates() {
       changed = true;
       continue;
     }
-    const patched = patchTemplateQrcode(cur.templateJson, seed.templateJson);
-    if (patched !== cur.templateJson) {
+    const patchedQr = patchTemplateQrcode(cur.templateJson, seed.templateJson);
+    const patchedBox = patchDesignTableBoxes(patchedQr);
+    if (patchedBox !== cur.templateJson) {
       printTemplateStore[idx] = {
         ...cur,
-        templateJson: patched,
+        templateJson: patchedBox,
         updatedAt: new Date().toISOString(),
       };
       changed = true;
@@ -171,6 +172,53 @@ function patchTemplateQrcode(
   if (!seedQr) return current;
   const next = structuredClone(current);
   next.panels[0].printElements = [...curEls, structuredClone(seedQr)];
+  return next;
+}
+
+/** 仍是旧 54pt 占位框时，拉高设计态表格并下移后续模块 */
+const OLD_TABLE_BOX_H = 54;
+const HOUSE_TABLE_BOX_H = 96;
+const COMP_TABLE_BOX_H = 114;
+const REWARD_TABLE_BOX_H = 96;
+
+/**
+ * 旧模板三张表都是 54pt 时，套用更大的设计态框高（不覆盖用户已拉高的表）
+ * @param current 当前 templateJson
+ */
+function patchDesignTableBoxes(current: Record<string, any>) {
+  const els = current?.panels?.[0]?.printElements;
+  if (!Array.isArray(els)) return current;
+  const houses = els.find((e: any) => e?.options?.field === 'houses');
+  const comp = els.find((e: any) => e?.options?.field === 'compensationItems');
+  const rewards = els.find((e: any) => e?.options?.field === 'rewardItems');
+  if (!houses?.options || !comp?.options || !rewards?.options) return current;
+  if (Number(houses.options.height) !== OLD_TABLE_BOX_H) return current;
+  if (Number(comp.options.height) !== OLD_TABLE_BOX_H) return current;
+  if (Number(rewards.options.height) !== OLD_TABLE_BOX_H) return current;
+
+  const next = structuredClone(current);
+  const list = next.panels[0].printElements as {
+    options?: Record<string, any>;
+  }[];
+  for (const el of list) {
+    const o = el.options;
+    if (!o) continue;
+    if (o.field === 'houses') o.height = HOUSE_TABLE_BOX_H;
+    if (o.title === '二、补偿安置') o.top = 272;
+    if (o.field === 'compensationItems') {
+      o.top = 294;
+      o.height = COMP_TABLE_BOX_H;
+    }
+    if (o.title === '三、奖励补贴') o.top = 438;
+    if (o.field === 'rewardItems') {
+      o.top = 460;
+      o.height = REWARD_TABLE_BOX_H;
+    }
+    if (o.field === 'amount' && o.title === '协议金额（小写）') o.top = 590;
+    if (o.field === 'amountCn') o.top = 614;
+    if (String(o.title || '').includes('被征收人签字')) o.top = 650;
+    if (String(o.title || '').includes('征收人盖章')) o.top = 650;
+  }
   return next;
 }
 

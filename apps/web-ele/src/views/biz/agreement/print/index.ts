@@ -14,6 +14,15 @@ export { formatPrintValue } from './format-print-value';
 export { preparePrintTemplate } from './prepare-template';
 export { mergeAgreeCustomOptions } from './print-agree-options';
 export {
+  clearCanvasTableBodies,
+  fillCanvasTableBodies,
+} from './print-canvas-table-body';
+export type {
+  CanvasActiveTable,
+  CanvasHighlightCol,
+  CanvasTableBodyHandlers,
+} from './print-canvas-table-body';
+export {
   buildBoundPrintElement,
   buildCalcResultElement,
   buildToolboxPrintElement,
@@ -57,6 +66,14 @@ export {
   mergePrintFieldRules,
   PRINT_SENSITIVE_FIELD_RULES,
 } from './print-sensitive';
+export {
+  applyAgreeFootersRuntime,
+  createEmptyFooterRow,
+  mergeFooterCells,
+  normalizeAgreeFooters,
+  splitFooterCell,
+} from './print-table-footer';
+export type { AgreeFooterCell, AgreeFooterRow } from './print-table-footer';
 export { applyTablePrintRuntime } from './print-table-runtime';
 export {
   applyWatermarkToTemplate,

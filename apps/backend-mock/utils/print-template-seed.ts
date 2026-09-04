@@ -135,7 +135,8 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
           options: {
             left: 20,
             top: 146,
-            height: 54,
+            /** 设计态框：单行表头约露出 4 行表体；正式打印仍按数据长高 */
+            height: 96,
             width: 550,
             field: 'houses',
             tableHeaderRepeat: 'page',
@@ -227,7 +228,7 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
         {
           options: {
             left: 20,
-            top: 230,
+            top: 272,
             height: 16,
             width: 200,
             title: '二、补偿安置',
@@ -241,8 +242,9 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
         {
           options: {
             left: 20,
-            top: 252,
-            height: 54,
+            top: 294,
+            /** 设计态框：两行表头约露出 3～4 行表体 */
+            height: 114,
             width: 550,
             field: 'compensationItems',
             tableHeaderRepeat: 'page',
@@ -344,7 +346,7 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
         {
           options: {
             left: 20,
-            top: 340,
+            top: 438,
             height: 16,
             width: 200,
             title: '三、奖励补贴',
@@ -359,8 +361,9 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
         {
           options: {
             left: 20,
-            top: 362,
-            height: 54,
+            top: 460,
+            /** 设计态框：单行表头约露出 4 行表体 */
+            height: 96,
             width: 550,
             field: 'rewardItems',
             tableHeaderRepeat: 'page',
@@ -415,7 +418,7 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
         {
           options: {
             left: 20,
-            top: 450,
+            top: 590,
             height: 16,
             width: 540,
             title: '协议金额（小写）',
@@ -430,7 +433,7 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
         {
           options: {
             left: 20,
-            top: 474,
+            top: 614,
             height: 16,
             width: 540,
             title: '协议金额（大写）',
@@ -444,7 +447,7 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
         {
           options: {
             left: 20,
-            top: 510,
+            top: 650,
             height: 16,
             width: 250,
             title: '被征收人签字：______________',
@@ -456,7 +459,7 @@ export const BASE_AGREEMENT_PRINT_TEMPLATE = {
         {
           options: {
             left: 300,
-            top: 510,
+            top: 650,
             height: 16,
             width: 250,
             title: '征收人盖章：______________',
