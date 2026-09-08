@@ -2,6 +2,7 @@
  * 表格表尾行：结构 colspan（与「相同值合并」无关）
  * 存 options.agreeFooters，打印前编译成 hiprint footerFormatter
  */
+import { normalizePrintAlign } from './print-element-meta';
 
 /** 表尾一格 */
 export type AgreeFooterCell = {
@@ -58,10 +59,7 @@ export function normalizeAgreeFooters(
       text: String(c.text ?? ''),
       field: String(c.field ?? '').trim(),
       colspan: Math.max(1, Number(c.colspan) || 1),
-      align:
-        c.align === 'center' || c.align === 'right'
-          ? c.align
-          : ('left' as const),
+      align: normalizePrintAlign(c.align),
     }));
     let total = cells.reduce((s, c) => s + c.colspan, 0);
     while (total < target) {
@@ -150,7 +148,7 @@ export function createFooterFormatterSrc(footers: AgreeFooterRow[]) {
       text: String(c.text ?? ''),
       field: String(c.field ?? '').trim(),
       colspan: Math.max(1, Number(c.colspan) || 1),
-      align: c.align === 'center' || c.align === 'right' ? c.align : 'left',
+      align: normalizePrintAlign(c.align),
     })),
   );
   return `function footerFormatter(options, rows, optionsColumn, printData) {
@@ -165,7 +163,7 @@ export function createFooterFormatterSrc(footers: AgreeFooterRow[]) {
         if (cell.field && printData && printData[cell.field] != null) {
           text = String(printData[cell.field]);
         }
-        html += '<td colspan="' + cell.colspan + '" style="text-align:' + cell.align + ';padding:0 4pt;border:1px solid #000;">' + text + '</td>';
+        html += '<td colspan="' + cell.colspan + '" align="' + cell.align + '" style="text-align:' + cell.align + ';padding:0 4pt;border:1px solid #000;">' + text + '</td>';
       }
       html += '</tr>';
     }

@@ -1,13 +1,13 @@
 <script lang="ts" setup>
 import type { AgreePrintFieldItem } from './fields';
 /**
- * 数据源：拖到纸面生成已绑定元素；已选中纸面元素时点选改为改绑定
+ * 数据源：拖到画布精准定位；点选时自动添加，已有文本选中则改绑定
  */
 import type { AgreePrintData } from './types';
 
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 
-import { ElCollapse, ElCollapseItem, ElInput } from 'element-plus';
+import { ElCollapse, ElCollapseItem, ElInput, ElSwitch } from 'element-plus';
 
 import {
   AGREE_PRINT_TABLE_FIELDS,
@@ -22,6 +22,10 @@ import {
 const props = defineProps<{
   /** 样例 printData（仅预览，非正式协议） */
   data: AgreePrintData;
+  /** 当前画布选中元素的绑定字段 */
+  selectedField?: string;
+  /** 当前画布选中元素类型，用于说明单击行为 */
+  selectedType?: string;
 }>();
 
 const emit = defineEmits<{
@@ -31,7 +35,34 @@ const emit = defineEmits<{
 
 const keyword = ref('');
 const extraOpen = ref<string[]>(['tables']);
+const showKeys = ref(false);
 let dragging = false;
+
+const actionHint = computed(() => {
+  if (props.selectedType && props.selectedType !== 'table') {
+    return props.selectedField
+      ? `已选中绑定字段 ${props.selectedField}：单击主表字段可改绑；拖动会新建元素。`
+      : '已选中文本元素：单击主表字段可绑定；拖动会新建元素。';
+  }
+  if (props.selectedType === 'table') {
+    return '已选中表格：列和数据源请在右侧编辑；从这里单击或拖动表名会新建另一张表。';
+  }
+  return '未选择元素：单击会在当前页自动添加；拖到画布可精确指定位置。';
+});
+
+watch(keyword, (value) => {
+  if (value.trim()) extraOpen.value = ['tables', 'main'];
+});
+
+watch(
+  () => props.selectedType,
+  (type) => {
+    const group = type === 'table' ? 'tables' : type ? 'main' : '';
+    if (group && !extraOpen.value.includes(group)) {
+      extraOpen.value = [...extraOpen.value, group];
+    }
+  },
+);
 
 /**
  * 按关键字过滤一组字段，并带上样例展示
@@ -99,41 +130,36 @@ function onPick(item: AgreePrintFieldItem) {
 
 <template>
   <div class="print-data-panel">
-    <div class="print-data-panel__title">数据源</div>
-    <div class="print-data-panel__hint">
-      拖到纸面 =
-      新建并绑定。已有元素请在右侧点「选择字段」改绑（绑的是字段名，不是某条协议）。
+    <div class="print-data-panel__title">可绑定字段</div>
+    <div class="print-data-panel__status">
+      {{ actionHint }}
     </div>
-    <ElInput
-      v-model="keyword"
-      size="small"
-      clearable
-      placeholder="搜索字段"
-      class="mb-2"
-    />
-
-    <div class="print-data-panel__group">主表</div>
-    <div class="print-data-panel__fields">
-      <button
-        v-for="row in textRows"
-        :key="row.field"
-        type="button"
-        class="print-data-panel__row"
-        draggable="true"
-        :title="
-          row.sample ? `样例 ${row.sample}，拖到纸面生成` : '拖到纸面生成'
-        "
-        @dragstart="onDragStart($event, row)"
-        @dragend="onDragEnd"
-        @click="onPick(row)"
-      >
-        <span class="print-data-panel__name">{{ row.text }}</span>
-        <code class="print-data-panel__key">{{ row.field }}</code>
-      </button>
+    <div class="print-data-panel__tools">
+      <ElInput
+        v-model="keyword"
+        size="small"
+        clearable
+        placeholder="搜索中文名、字段名或样例值"
+      />
+      <ElSwitch
+        v-model="showKeys"
+        :width="58"
+        size="small"
+        inline-prompt
+        active-text="字段名"
+        inactive-text="中文"
+        title="切换显示中文名称或 JSON 字段名"
+      />
     </div>
 
     <ElCollapse v-model="extraOpen" class="print-data-panel__extra">
-      <ElCollapseItem title="表格（拖表名生成整表）" name="tables">
+      <ElCollapseItem name="tables">
+        <template #title>
+          <div class="print-data-panel__collapse-title">
+            <strong>表格数据</strong>
+            <span>拖动表名，新建整表</span>
+          </div>
+        </template>
         <div
           v-for="row in tableRows"
           :key="row.field"
@@ -143,13 +169,16 @@ function onPick(item: AgreePrintFieldItem) {
             type="button"
             class="print-data-panel__row print-data-panel__row--table"
             draggable="true"
-            :title="`拖到纸面生成「${row.text}」表`"
+            :title="`单击添加或拖到画布生成「${row.text}」表`"
             @dragstart="onDragStart($event, row)"
             @dragend="onDragEnd"
             @click="onPick(row)"
           >
+            <span class="print-data-panel__grip">⠿</span>
             <span class="print-data-panel__name">{{ row.text }}</span>
-            <code class="print-data-panel__key">{{ row.field }}</code>
+            <code v-if="showKeys" class="print-data-panel__key">
+              {{ row.field }}
+            </code>
             <span class="print-data-panel__val">{{ row.sample }}</span>
           </button>
           <div class="print-data-panel__cols">
@@ -161,6 +190,40 @@ function onPick(item: AgreePrintFieldItem) {
               {{ col.title }}
             </span>
           </div>
+        </div>
+      </ElCollapseItem>
+      <ElCollapseItem name="main">
+        <template #title>
+          <div class="print-data-panel__collapse-title">
+            <strong>主表字段</strong>
+            <span>单击添加/改绑，拖动定位</span>
+          </div>
+        </template>
+        <div class="print-data-panel__fields">
+          <button
+            v-for="row in textRows"
+            :key="row.field"
+            type="button"
+            class="print-data-panel__row"
+            :class="{ 'is-current': row.field === selectedField }"
+            draggable="true"
+            :title="`${row.text} (${row.field})${row.sample ? `；样例 ${row.sample}` : ''}；单击添加/改绑，拖到画布新建`"
+            @dragstart="onDragStart($event, row)"
+            @dragend="onDragEnd"
+            @click="onPick(row)"
+          >
+            <span class="print-data-panel__grip">⠿</span>
+            <span class="print-data-panel__name">{{ row.text }}</span>
+            <code v-if="showKeys" class="print-data-panel__key">
+              {{ row.field }}
+            </code>
+            <span v-else class="print-data-panel__val">
+              {{ row.sample || '暂无样例' }}
+            </span>
+          </button>
+        </div>
+        <div v-if="textRows.length === 0" class="print-data-panel__empty">
+          没有匹配的主表字段
         </div>
       </ElCollapseItem>
     </ElCollapse>
@@ -184,23 +247,26 @@ function onPick(item: AgreePrintFieldItem) {
   font-weight: 600;
 }
 
-.print-data-panel__hint {
+.print-data-panel__status {
+  padding: 7px 8px;
   margin-bottom: 8px;
   font-size: 11px;
   line-height: 1.5;
-  color: #6b7280;
+  color: #1d4ed8;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
 }
 
-.print-data-panel__group {
-  margin: 8px 0 4px;
-  font-size: 11px;
-  font-weight: 600;
-  color: #6b7280;
+.print-data-panel__tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
 }
 
 .print-data-panel__fields {
-  flex: 1;
-  min-height: 120px;
+  max-height: 300px;
   overflow: auto;
   background: #fff;
   border: 1px solid #e5e7eb;
@@ -209,7 +275,7 @@ function onPick(item: AgreePrintFieldItem) {
 
 .print-data-panel__row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 4px;
   width: 100%;
   padding: 6px 8px;
@@ -224,12 +290,17 @@ function onPick(item: AgreePrintFieldItem) {
   background: #eff6ff;
 }
 
+.print-data-panel__row.is-current {
+  color: #1d4ed8;
+  background: #dbeafe;
+}
+
 .print-data-panel__row:last-child {
   border-bottom: none;
 }
 
 .print-data-panel__row--table {
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   background: #fff;
   border: 1px solid #e5e7eb;
   border-radius: 6px 6px 0 0;
@@ -237,6 +308,10 @@ function onPick(item: AgreePrintFieldItem) {
 
 .print-data-panel__name {
   color: #111827;
+}
+
+.print-data-panel__grip {
+  color: #94a3b8;
 }
 
 .print-data-panel__key {
@@ -275,5 +350,30 @@ function onPick(item: AgreePrintFieldItem) {
 
 .print-data-panel__extra {
   margin-top: 8px;
+  overflow: auto;
+}
+
+.print-data-panel__collapse-title {
+  display: flex;
+  flex: 1;
+  gap: 6px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.print-data-panel__collapse-title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 10px;
+  font-weight: 400;
+  color: #6b7280;
+  white-space: nowrap;
+}
+
+.print-data-panel__empty {
+  padding: 12px;
+  font-size: 11px;
+  color: #9ca3af;
+  text-align: center;
 }
 </style>

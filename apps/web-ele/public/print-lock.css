@@ -9,6 +9,8 @@
   margin: 0;
 }
 
+/* 实际 size 由 applyPrintPageSizeFromTemplate 按模板宽高动态写入 */
+
 .hiprint-printPaper * {
   box-sizing: border-box;
   -moz-box-sizing: border-box; /* Firefox */
@@ -233,6 +235,50 @@ table.hiprint-printElement-tableTarget {
 /*.hiprint-printElement-tableTarget tr,*/
 .hiprint-printElement-tableTarget td {
   height: 18pt;
+}
+
+/*
+ * 浏览器会在纸张边界处对超高表格做分页。明确分页语义，保证「快速预览」
+ * 和系统打印都不会把一行内容从中间截断，且每张续页都保留表头。
+ *
+ * hiprint 会先按 paperFooter 拆成独立纸张，并只在最后一张续页插入表尾；
+ * 因此保留 table-footer-group 的正常排版，不会把业务合计复制到前面的续页。
+ */
+.hiprint-printElement-tableTarget {
+  break-inside: auto;
+  page-break-inside: auto;
+}
+
+.hiprint-printElement-tableTarget > thead {
+  display: table-header-group !important;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.hiprint-printElement-tableTarget > tbody {
+  display: table-row-group !important;
+}
+
+/* hiprint 只在末张续页插入 tfoot；保留原生表尾分组使其始终排在 tbody 后。 */
+.hiprint-printElement-tableTarget > tfoot {
+  display: table-footer-group !important;
+}
+
+.hiprint-printElement-tableTarget > tbody > tr,
+.hiprint-printElement-tableTarget > tfoot > tr {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+/* 列 align 必须压过 .hiprint-printElement-table 的 text-align:left */
+.hiprint-printElement-tableTarget td[align='left'] {
+  text-align: left !important;
+}
+.hiprint-printElement-tableTarget td[align='center'] {
+  text-align: center !important;
+}
+.hiprint-printElement-tableTarget td[align='right'] {
+  text-align: right !important;
 }
 
 .hiprint-printPaper .hiprint-paperNumber {

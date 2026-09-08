@@ -14,28 +14,22 @@ export { formatPrintValue } from './format-print-value';
 export { preparePrintTemplate } from './prepare-template';
 export { mergeAgreeCustomOptions } from './print-agree-options';
 export {
-  clearCanvasTableBodies,
-  fillCanvasTableBodies,
-} from './print-canvas-table-body';
-export type {
-  CanvasActiveTable,
-  CanvasHighlightCol,
-  CanvasTableBodyHandlers,
-} from './print-canvas-table-body';
-export {
   buildBoundPrintElement,
   buildCalcResultElement,
   buildToolboxPrintElement,
   duplicatePrintElement,
   getElementOptions,
   hasMultiRowTableHeader,
+  insertLeafTableColumn,
   insertPrintElement,
   listLeafTableCells,
   listPrintElements,
+  normalizePrintAlign,
   patchElementOptions,
   patchLeafTableColumns,
   patchTableColumnFieldByIndex,
   patchTableColumns,
+  printAlignCss,
   removePrintElement,
   sanitizePrintTemplate,
 } from './print-element-meta';
@@ -53,6 +47,28 @@ export {
   ensureDefaultFlowGroups,
   snapshotFlowGroups,
 } from './print-flow';
+export {
+  applyPrintPageSizeFromTemplate,
+  fitPrintPreviewHost,
+  normalizePrintPreviewPages,
+} from './print-page-css';
+export {
+  applyPaperToTemplate,
+  describePrintPaper,
+  insertBlankPanelAfter,
+  mmToCssPx,
+  mmToPt,
+  previewDialogWidthCss,
+  PRINT_PAPER_PRESETS,
+  readTemplatePaperSpec,
+  removePrintPanel,
+  splitPanelAtY,
+} from './print-paper';
+export type {
+  PrintPaperOrientation,
+  PrintPaperSizeId,
+  PrintPaperSpec,
+} from './print-paper';
 export {
   buildFilterPresets,
   compileFilterConds,
@@ -74,7 +90,25 @@ export {
   splitFooterCell,
 } from './print-table-footer';
 export type { AgreeFooterCell, AgreeFooterRow } from './print-table-footer';
-export { applyTablePrintRuntime } from './print-table-runtime';
+export {
+  applyAgreeBodyCellExprsToRows,
+  applyAgreeBodyCellMergesToRows,
+  applyAgreeBodyHMergesToPrintData,
+  applyTablePrintRuntime,
+  computeRowHColSpans,
+  mergeLeafHSpans,
+  normalizeAgreeBodyCellExprs,
+  normalizeAgreeBodyCellMerges,
+  removeAgreeBodyCellMergeAt,
+  splitLeafHSpan,
+  upsertAgreeBodyCellExpr,
+  upsertAgreeBodyCellMerge,
+} from './print-table-runtime';
+export type {
+  AgreeBodyCellExprRule,
+  AgreeBodyCellMergeRule,
+  AgreeBodyHMergeRule,
+} from './print-table-runtime';
 export {
   applyWatermarkToTemplate,
   isWatermarkEnabled,

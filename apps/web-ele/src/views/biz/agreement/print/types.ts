@@ -4,6 +4,8 @@
 export interface AgreePrintHouseRow {
   /** 户名（列上可开相同值合并） */
   householdName: string;
+  /** 本行叶子列 colspan，有则覆盖列上「空并左」 */
+  agreeHMerge?: number[];
   /** 序号 */
   index: number;
   address: string;
@@ -23,6 +25,8 @@ export interface AgreePrintMoneyRow {
   unitPrice?: number | string;
   amount: number | string;
   remark: string;
+  /** 本行叶子列 colspan，有则覆盖列上「空并左」 */
+  agreeHMerge?: number[];
 }
 
 /** 传给 hiprint.print / getHtml 的数据 JSON */

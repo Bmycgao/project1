@@ -17,7 +17,7 @@ import {
 } from '#/api';
 
 import { agreePrintTemplate } from '../../biz/agreement/print/agreement-template';
-import DesignerPanel from '../../biz/agreement/print/designer-panel.vue';
+import DesignerPanel from '../../biz/agreement/print/designer/agreement-print-designer.vue';
 import { cloneTemplate } from '../../biz/agreement/print/template-store';
 
 const route = useRoute();

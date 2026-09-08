@@ -4,7 +4,7 @@
  */
 import { Page } from '@vben/common-ui';
 
-import DesignerPanel from '../designer-panel.vue';
+import DesignerPanel from './agreement-print-designer.vue';
 </script>
 
 <template>

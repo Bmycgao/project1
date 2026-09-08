@@ -3,6 +3,7 @@ import type { AgreePrintData } from './types';
 import { formatPrintValue } from './format-print-value';
 import { listLeafTableCells } from './print-element-meta';
 import { evalPrintExpr, evalPrintText, filterPrintRows } from './print-expr';
+import { applyAgreeBodyCellExprsToRows } from './print-table-runtime';
 import { cloneTemplate } from './template-store';
 
 /**
@@ -34,9 +35,8 @@ export function enrichPrintDataForTemplate(
       if (type === 'table' && field) {
         const rows = bag[field];
         if (Array.isArray(rows)) {
-          const computedCols = listLeafTableCells(opts.columns).filter(
-            (c) => c.agreeColExpr && c.field,
-          );
+          const leaves = listLeafTableCells(opts.columns);
+          const computedCols = leaves.filter((c) => c.agreeColExpr && c.field);
           let nextRows = rows as Record<string, unknown>[];
           if (computedCols.length > 0) {
             nextRows = nextRows.map((row, index) => {
@@ -44,14 +44,21 @@ export function enrichPrintDataForTemplate(
               for (const col of computedCols) {
                 patched[col.field] = evalPrintExpr(col.agreeColExpr, {
                   ...ctx,
-                  ...row,
-                  row,
+                  ...patched,
+                  row: patched,
                   index,
+                  i: index,
                 });
               }
               return patched;
             });
           }
+          nextRows = applyAgreeBodyCellExprsToRows(
+            nextRows,
+            opts.agreeBodyCellExprs,
+            leaves.map((col) => col.field),
+            ctx,
+          );
           if (opts.agreeRowFilter) {
             nextRows = filterPrintRows(
               nextRows,

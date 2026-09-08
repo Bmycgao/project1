@@ -2,6 +2,7 @@
  * hiprint getJson 只会序列化内置 options，agree* 业务字段需要从上一份 JSON 合并回去
  * 筛行/显隐常在内存里改、不重挂画布，必须以 memory 为准，不能只靠模糊匹配
  */
+import { mergePanelPaperSpec, restoreDroppedPrintPanels } from './print-paper';
 import { mergePanelWatermark } from './print-watermark';
 import { cloneTemplate } from './template-store';
 
@@ -10,10 +11,17 @@ export const AGREE_PRINT_CUSTOM_KEYS = [
   'agreeRowFilter',
   'agreeVisibleWhen',
   'agreeValueExpr',
+  'agreeTextSections',
   'agreeFormat',
   'agreeFlowGroup',
   /** 表尾行结构（colspan），打印前编译成 footerFormatter */
   'agreeFooters',
+  /** 表体按行横合（保存后打印/附件一预览套到真实行） */
+  'agreeBodyHMerges',
+  /** 表体任意连续矩形合并（rowspan + colspan） */
+  'agreeBodyCellMerges',
+  /** 表体某一行、某一格的计算覆盖 */
+  'agreeBodyCellExprs',
 ] as const;
 
 type PrintEl = {
@@ -33,7 +41,9 @@ export function mergeAgreeCustomOptions(
   if (!canvas?.panels?.length) return canvas;
   if (!memory?.panels?.length) return canvas;
   const next = cloneTemplate(canvas);
+  restoreDroppedPrintPanels(next, memory);
   mergePanelWatermark(next, memory);
+  mergePanelPaperSpec(next, memory);
   const panels = next.panels as Record<string, any>[];
   panels.forEach((panel, pi) => {
     const canvasEls = (panel.printElements || []) as PrintEl[];
@@ -122,7 +132,7 @@ function bestMemoryMatch(
 }
 
 /**
- * 复制 agree* 以及列上的 agreeColExpr / agreeMergeSame / agreeHideZero / agreeColFormat
+ * 复制 agree* 以及列上的 agreeColExpr / agreeMergeSame / agreeHMergeEmpty / agreeHideZero / agreeColFormat
  * 内存为空则从画布删掉，避免 getJson 里的旧筛行在「清除筛选」后复活
  * @param target 画布元素
  * @param source 内存元素
@@ -137,7 +147,12 @@ function copyCustomOptions(target: PrintEl, source: PrintEl) {
   }
   for (const key of AGREE_PRINT_CUSTOM_KEYS) {
     const val = from[key];
-    if (key === 'agreeFooters') {
+    if (
+      key === 'agreeFooters' ||
+      key === 'agreeBodyHMerges' ||
+      key === 'agreeBodyCellMerges' ||
+      key === 'agreeBodyCellExprs'
+    ) {
       // Vue Proxy / 特殊对象不能 structuredClone，用 JSON 深拷贝
       if (Array.isArray(val) && val.length > 0) {
         next[key] = JSON.parse(JSON.stringify(val));
@@ -155,14 +170,20 @@ function copyCustomOptions(target: PrintEl, source: PrintEl) {
 }
 
 /**
- * 按 field 把列上的 agreeColExpr / agreeMergeSame / agreeHideZero / agreeColFormat 写回（getJson 会丢掉）
+ * 按 field 把列上的 agreeColExpr / agreeMergeSame / agreeHMergeEmpty / agreeHideZero / agreeColFormat 写回（getJson 会丢掉）
  * @param targetCols hiprint 二维 columns
  * @param sourceCols 内存 columns
  */
 function mergeColumnAgreeMeta(targetCols: unknown, sourceCols: unknown) {
   const metaByField = new Map<
     string,
-    { expr: string; format: string; hideZero: boolean; merge: boolean }
+    {
+      expr: string;
+      format: string;
+      hideZero: boolean;
+      hMergeEmpty: boolean;
+      merge: boolean;
+    }
   >();
   walkColumns(sourceCols, (col) => {
     const field = String(col.field || '');
@@ -170,6 +191,7 @@ function mergeColumnAgreeMeta(targetCols: unknown, sourceCols: unknown) {
     metaByField.set(field, {
       expr: String(col.agreeColExpr || '').trim(),
       merge: Boolean(col.agreeMergeSame),
+      hMergeEmpty: Boolean(col.agreeHMergeEmpty),
       hideZero: Boolean(col.agreeHideZero),
       format: String(col.agreeColFormat || '').trim(),
     });
@@ -183,6 +205,8 @@ function mergeColumnAgreeMeta(targetCols: unknown, sourceCols: unknown) {
     else delete col.agreeColExpr;
     if (meta.merge) col.agreeMergeSame = true;
     else delete col.agreeMergeSame;
+    if (meta.hMergeEmpty) col.agreeHMergeEmpty = true;
+    else delete col.agreeHMergeEmpty;
     if (meta.hideZero) col.agreeHideZero = true;
     else delete col.agreeHideZero;
     if (meta.format) col.agreeColFormat = meta.format;

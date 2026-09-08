@@ -6,6 +6,7 @@ import type {
   AgreementDetail,
   AgreementModuleKey,
 } from './agreement-detail-types';
+
 import {
   AGREE_ALL_ROWS,
   patchAgreeListRow,
@@ -41,7 +42,7 @@ export function createDefaultAgreementDetail(
       department: '征收事务部',
       acquirer: '市土地储备中心',
       compensatee: name,
-      amount: 5880000,
+      amount: 5_880_000,
       signDate: '2026-03-15',
       statusValue: String(listRow?.statusValue || '告知单'),
       remark: '',
@@ -67,7 +68,7 @@ export function createDefaultAgreementDetail(
         structure: '钢混',
         yearBuilt: '2012',
         floor: '2',
-        evalValue: 4586400,
+        evalValue: 4_586_400,
       },
     ],
     basicTables: {},
@@ -77,7 +78,7 @@ export function createDefaultAgreementDetail(
       decorateEval: '否',
       hasMortgage: '否',
       mortgagee: '',
-      debtAmount: 1280000.5,
+      debtAmount: 1_280_000.5,
       hasSeal: '否',
       sealCourt: '',
       signDate: '2026-03-15',
@@ -116,7 +117,7 @@ export function createDefaultAgreementDetail(
     compensation: {
       settleType: '产权调换',
       settleAddress: '',
-      amount: 4586400,
+      amount: 4_586_400,
       remark: '',
     },
     compensationItems: [
@@ -125,8 +126,8 @@ export function createDefaultAgreementDetail(
         name: '房屋补偿',
         calcType: '面积×单价',
         quantity: 128.6,
-        unitPrice: 20000,
-        amount: 2572000,
+        unitPrice: 20_000,
+        amount: 2_572_000,
         remark: '',
       },
       {
@@ -134,8 +135,8 @@ export function createDefaultAgreementDetail(
         name: '装修补偿',
         calcType: '评估',
         quantity: 1,
-        unitPrice: 860000,
-        amount: 860000,
+        unitPrice: 860_000,
+        amount: 860_000,
         remark: '',
       },
       {
@@ -143,8 +144,8 @@ export function createDefaultAgreementDetail(
         name: '搬迁补助',
         calcType: '定额',
         quantity: 1,
-        unitPrice: 50000,
-        amount: 50000,
+        unitPrice: 50_000,
+        amount: 50_000,
         remark: '',
       },
       {
@@ -152,8 +153,8 @@ export function createDefaultAgreementDetail(
         name: '临时安置',
         calcType: '定额',
         quantity: 6,
-        unitPrice: 18400,
-        amount: 110400,
+        unitPrice: 18_400,
+        amount: 110_400,
         remark: '',
       },
     ],
@@ -162,21 +163,21 @@ export function createDefaultAgreementDetail(
         id: 'ri-1',
         name: '签约奖励',
         condition: '约定期内签约',
-        amount: 80000,
+        amount: 80_000,
         remark: '',
       },
       {
         id: 'ri-2',
         name: '搬迁奖励',
         condition: '按期腾空',
-        amount: 30000,
+        amount: 30_000,
         remark: '',
       },
       {
         id: 'ri-3',
         name: '配合征收奖励',
         condition: '无信访',
-        amount: 20000,
+        amount: 20_000,
         remark: '',
       },
     ],
@@ -204,10 +205,7 @@ export function getOrCreateAgreementDetail(
 ) {
   const key = String(agreementNo);
   let node = detailCache.get(key);
-  if (!node) {
-    node = createDefaultAgreementDetail(key, extra);
-    detailCache.set(key, node);
-  } else {
+  if (node) {
     if (!node.basicTables || typeof node.basicTables !== 'object') {
       node.basicTables = {};
     }
@@ -215,9 +213,11 @@ export function getOrCreateAgreementDetail(
       node.basic = createDefaultAgreementDetail(key, extra).basic;
     }
     const fresh = createDefaultAgreementDetail(key, extra);
-    if (!Array.isArray(node.compensationItems)) {
-      node.compensationItems = fresh.compensationItems;
-    }
+    node.compensationItems = Array.isArray(node.compensationItems)
+      ? node.compensationItems.filter(
+          (row: { id?: string }) => row?.id !== 'ci-hmerge-demo',
+        )
+      : fresh.compensationItems;
     if (!Array.isArray(node.rewardItems)) {
       node.rewardItems = fresh.rewardItems;
     }
@@ -230,6 +230,9 @@ export function getOrCreateAgreementDetail(
     if (!node.extraTables || typeof node.extraTables !== 'object') {
       node.extraTables = {};
     }
+  } else {
+    node = createDefaultAgreementDetail(key, extra);
+    detailCache.set(key, node);
   }
   return structuredClone(node);
 }
@@ -267,8 +270,7 @@ export function saveAgreementDetailAll(payload: Partial<AgreementDetail>) {
   // 详情保存时同步列表展示字段
   patchAgreeListRow(agreementNo, {
     statusValue: next.statusValue,
-    compensatee:
-      next.basic?.compensatee || next.rightHolders?.[0]?.name,
+    compensatee: next.basic?.compensatee || next.rightHolders?.[0]?.name,
     houseAddress: next.signing?.houseAddress || next.houses?.[0]?.address,
     signType: next.signType,
     isSigned: next.isSigned,
@@ -307,12 +309,12 @@ export function saveAgreementDetailModule(
     current.population = data.population ?? current.population;
   } else if (data?.extraForms || data?.extraTables) {
     current.extraForms = {
-      ...(current.extraForms || {}),
-      ...(data.extraForms || {}),
+      ...current.extraForms,
+      ...data.extraForms,
     };
     current.extraTables = {
-      ...(current.extraTables || {}),
-      ...(data.extraTables || {}),
+      ...current.extraTables,
+      ...data.extraTables,
     };
   } else {
     throw new Error(`未知模块：${module}`);
@@ -338,9 +340,7 @@ export function submitAgreementDetail(payload: Partial<AgreementDetail>) {
       saved.rightHolders?.[0]?.name ||
       findListCompensatee(saved.agreementNo),
     houseAddress:
-      saved.signing?.houseAddress ||
-      saved.houses?.[0]?.address ||
-      undefined,
+      saved.signing?.houseAddress || saved.houses?.[0]?.address || undefined,
   });
   return saved;
 }
@@ -397,9 +397,7 @@ export function rejectAgreementByNos(agreementNos: string[], remark?: string) {
       statusValue: '告知单',
       compensation: {
         ...detail.compensation,
-        remark: remark
-          ? `驳回：${remark}`
-          : detail.compensation?.remark || '',
+        remark: remark ? `驳回：${remark}` : detail.compensation?.remark || '',
       },
     });
     patchAgreeListRow(no, { statusValue: '告知单' });

@@ -77,6 +77,27 @@ export function listPrintElements(
 }
 
 /**
+ * 用自绘画布的“面板:元素”键定位检视器元素。
+ * 画布键刻意保持短且稳定，检视器键还包含类型/字段/坐标，二者不能直接比较。
+ */
+export function findPrintElementByCanvasKey(
+  template: null | Record<string, any> | undefined,
+  canvasKey: string,
+  expectedType?: string,
+): PrintElementRef | undefined {
+  const match = /^(\d+):(\d+)$/.exec(String(canvasKey || '').trim());
+  if (!match) return undefined;
+  const panelIndex = Number(match[1]);
+  const elementIndex = Number(match[2]);
+  return listPrintElements(template).find(
+    (item) =>
+      item.panelIndex === panelIndex &&
+      item.elementIndex === elementIndex &&
+      (!expectedType || item.type === expectedType),
+  );
+}
+
+/**
  * 读取指定元素的 options
  * @param template 模板 JSON
  * @param ref 元素定位
@@ -136,6 +157,8 @@ export interface LeafTableCell {
   agreeColExpr: string;
   /** 同一列上下相同值合并 */
   agreeMergeSame: boolean;
+  /** 此列为空时并入左边格子（只影响本行） */
+  agreeHMergeEmpty: boolean;
   /** 值为 0 时格子显示空 */
   agreeHideZero: boolean;
   /** 单元格展示格式（money / dateCn 等），不改原始数字 */
@@ -178,22 +201,45 @@ function roundLeafWidth(raw: unknown) {
   return Math.round(n);
 }
 
+/**
+ * 规范单元格水平对齐
+ * @param raw 列/格上的 align
+ */
+export function normalizePrintAlign(raw: unknown): 'center' | 'left' | 'right' {
+  return raw === 'center' || raw === 'right' ? raw : 'left';
+}
+
+/**
+ * 画布格子 CSS：text-align + flex 合并格用的 justify-content
+ * @param raw 列/格 align
+ */
+export function printAlignCss(raw: unknown) {
+  const align = normalizePrintAlign(raw);
+  const justify =
+    align === 'center'
+      ? 'center'
+      : align === 'right'
+        ? 'flex-end'
+        : 'flex-start';
+  return `text-align:${align};justify-content:${justify}`;
+}
+
 function cellToLeaf(
   rowIndex: number,
   cellIndex: number,
   cell: Record<string, any>,
 ): LeafTableCell {
-  const align = cell?.align;
   return {
     rowIndex,
     cellIndex,
     title: String(cell?.title || ''),
     field: String(cell?.field || ''),
     width: roundLeafWidth(cell?.width),
-    align: align === 'center' || align === 'right' ? align : 'left',
+    align: normalizePrintAlign(cell?.align),
     tableSummary: cell?.tableSummary === 'sum',
     agreeColExpr: String(cell?.agreeColExpr || ''),
     agreeMergeSame: Boolean(cell?.agreeMergeSame),
+    agreeHMergeEmpty: Boolean(cell?.agreeHMergeEmpty),
     agreeHideZero: Boolean(cell?.agreeHideZero),
     agreeColFormat: String(cell?.agreeColFormat || ''),
   };
@@ -247,6 +293,216 @@ export function listLeafTableCells(columns: unknown): LeafTableCell[] {
   return placed.map((p) => cellToLeaf(p.rowIndex, p.cellIndex, p.cell));
 }
 
+export interface TableHeaderGroupRule {
+  fromLeaf: number;
+  title: string;
+  toLeaf: number;
+}
+
+/** 从现有 rowspan/colspan 矩阵还原分组范围 */
+export function extractTableHeaderGroups(
+  columns: unknown,
+): TableHeaderGroupRule[] {
+  const rows = toTableColumnRows(columns);
+  const occupied: boolean[][] = rows.map(() => []);
+  const groups: TableHeaderGroupRule[] = [];
+  rows.forEach((row, rowIndex) => {
+    row.forEach((cell) => {
+      let startCol = 0;
+      while (occupied[rowIndex]?.[startCol]) startCol += 1;
+      const colspan = Math.max(1, Number(cell?.colspan) || 1);
+      const rowspan = Math.max(1, Number(cell?.rowspan) || 1);
+      for (let r = rowIndex; r < rowIndex + rowspan; r += 1) {
+        const occupiedRow = occupied[r] || (occupied[r] = []);
+        for (let c = startCol; c < startCol + colspan; c += 1) {
+          occupiedRow[c] = true;
+        }
+      }
+      if (isGroupHeaderCell(cell)) {
+        groups.push({
+          fromLeaf: startCol,
+          title: String(cell.title || '分组标题'),
+          toLeaf: startCol + colspan - 1,
+        });
+      }
+    });
+  });
+  return groups;
+}
+
+function headerGroupsCross(
+  left: TableHeaderGroupRule,
+  right: TableHeaderGroupRule,
+) {
+  const overlap =
+    left.fromLeaf <= right.toLeaf && right.fromLeaf <= left.toLeaf;
+  const nested =
+    (left.fromLeaf <= right.fromLeaf && left.toLeaf >= right.toLeaf) ||
+    (right.fromLeaf <= left.fromLeaf && right.toLeaf >= left.toLeaf);
+  return overlap && !nested;
+}
+
+/** 把层级分组规则编译回 hiprint 多行表头矩阵 */
+export function buildTableHeaderColumns(
+  leaves: Record<string, any>[],
+  groups: TableHeaderGroupRule[],
+) {
+  const normalized = groups
+    .map((group) => ({
+      fromLeaf: Math.max(0, Math.min(group.fromLeaf, group.toLeaf)),
+      title: String(group.title || '').trim() || '分组标题',
+      toLeaf: Math.min(
+        leaves.length - 1,
+        Math.max(group.fromLeaf, group.toLeaf),
+      ),
+    }))
+    .filter((group) => group.toLeaf > group.fromLeaf);
+  for (let i = 0; i < normalized.length; i += 1) {
+    for (let j = i + 1; j < normalized.length; j += 1) {
+      const left = normalized[i];
+      const right = normalized[j];
+      if (left && right && headerGroupsCross(left, right)) {
+        throw new Error('表头分组只能相互包含或完全分开，不能交叉重叠');
+      }
+    }
+  }
+  const parentOf = normalized.map((group, index) => {
+    let parent = -1;
+    let parentSize = Number.POSITIVE_INFINITY;
+    normalized.forEach((candidate, candidateIndex) => {
+      if (candidateIndex === index) return;
+      const contains =
+        candidate.fromLeaf <= group.fromLeaf &&
+        candidate.toLeaf >= group.toLeaf &&
+        (candidate.fromLeaf < group.fromLeaf ||
+          candidate.toLeaf > group.toLeaf);
+      const size = candidate.toLeaf - candidate.fromLeaf;
+      if (contains && size < parentSize) {
+        parent = candidateIndex;
+        parentSize = size;
+      }
+    });
+    return parent;
+  });
+  const depthOf = (index: number) => {
+    let depth = 0;
+    let parent = parentOf[index] ?? -1;
+    while (parent >= 0) {
+      depth += 1;
+      parent = parentOf[parent] ?? -1;
+    }
+    return depth;
+  };
+  const totalRows =
+    normalized.length > 0
+      ? Math.max(...normalized.map((_, index) => depthOf(index))) + 2
+      : 1;
+  const rows: Record<string, any>[][] = Array.from(
+    { length: totalRows },
+    () => [],
+  );
+
+  const appendContents = (
+    fromLeaf: number,
+    toLeaf: number,
+    parentIndex: number,
+    depth: number,
+  ) => {
+    const children = normalized
+      .map((group, index) => ({ group, index }))
+      .filter((item) => parentOf[item.index] === parentIndex)
+      .toSorted((a, b) => a.group.fromLeaf - b.group.fromLeaf);
+    const depthRow = rows[depth] || (rows[depth] = []);
+    let cursor = fromLeaf;
+    for (const child of children) {
+      while (cursor < child.group.fromLeaf) {
+        depthRow.push({
+          ...cloneTemplate(leaves[cursor] || {}),
+          colspan: 1,
+          rowspan: totalRows - depth,
+        });
+        cursor += 1;
+      }
+      let width = 0;
+      for (const leaf of leaves.slice(
+        child.group.fromLeaf,
+        child.group.toLeaf + 1,
+      )) {
+        width += Number(leaf?.width) || 80;
+      }
+      depthRow.push({
+        align: 'center',
+        colspan: child.group.toLeaf - child.group.fromLeaf + 1,
+        field: '',
+        rowspan: 1,
+        title: child.group.title,
+        width,
+      });
+      appendContents(
+        child.group.fromLeaf,
+        child.group.toLeaf,
+        child.index,
+        depth + 1,
+      );
+      cursor = child.group.toLeaf + 1;
+    }
+    while (cursor <= toLeaf) {
+      depthRow.push({
+        ...cloneTemplate(leaves[cursor] || {}),
+        colspan: 1,
+        rowspan: totalRows - depth,
+      });
+      cursor += 1;
+    }
+  };
+  appendContents(0, leaves.length - 1, -1, 0);
+  return rows.filter((row) => row.length > 0);
+}
+
+/**
+ * 把连续叶子列建立分组；在已有分组内部继续分组即可形成多层表头。
+ * 叶子格完整保留，因此字段绑定、列公式、格式和列宽不会丢失。
+ */
+export function groupTableHeaderColumns(
+  columns: unknown,
+  fromLeaf: number,
+  toLeaf: number,
+  title: string,
+): Record<string, any>[][] {
+  const rows = toTableColumnRows(columns);
+  const leaves = listLeafTableCells(rows).map((leaf) =>
+    cloneTemplate(rows[leaf.rowIndex]?.[leaf.cellIndex] || {}),
+  );
+  const start = Math.max(0, Math.min(fromLeaf, toLeaf));
+  const end = Math.min(leaves.length - 1, Math.max(fromLeaf, toLeaf));
+  if (end <= start) throw new Error('分组表头至少需要连续两列');
+  const nextGroup = {
+    fromLeaf: start,
+    title: String(title || '').trim() || '分组标题',
+    toLeaf: end,
+  };
+  const groups = extractTableHeaderGroups(rows).filter(
+    (group) =>
+      group.fromLeaf !== nextGroup.fromLeaf ||
+      group.toLeaf !== nextGroup.toLeaf,
+  );
+  return buildTableHeaderColumns(leaves, [...groups, nextGroup]);
+}
+
+/** 多行/分组表头转为单行，完整保留所有叶子格配置 */
+export function flattenTableHeaderColumns(
+  columns: unknown,
+): Record<string, any>[][] {
+  const rows = toTableColumnRows(columns);
+  const leaves = listLeafTableCells(rows);
+  return [
+    leaves.map((leaf) => {
+      const source = rows[leaf.rowIndex]?.[leaf.cellIndex] || {};
+      return { ...cloneTemplate(source), colspan: 1, rowspan: 1 };
+    }),
+  ];
+}
+
 function applyLeafFields(
   cell: Record<string, any>,
   patch: Partial<LeafTableCell>,
@@ -254,7 +510,7 @@ function applyLeafFields(
   if (patch.title !== undefined) cell.title = patch.title;
   if (patch.field !== undefined) cell.field = patch.field;
   if (patch.width !== undefined) cell.width = patch.width;
-  if (patch.align !== undefined) cell.align = patch.align;
+  if (patch.align !== undefined) cell.align = normalizePrintAlign(patch.align);
   if (patch.tableSummary) cell.tableSummary = 'sum';
   else if (patch.tableSummary === false) delete cell.tableSummary;
   const expr = String(patch.agreeColExpr || '').trim();
@@ -262,6 +518,8 @@ function applyLeafFields(
   else delete cell.agreeColExpr;
   if (patch.agreeMergeSame) cell.agreeMergeSame = true;
   else delete cell.agreeMergeSame;
+  if (patch.agreeHMergeEmpty) cell.agreeHMergeEmpty = true;
+  else delete cell.agreeHMergeEmpty;
   if (patch.agreeHideZero) cell.agreeHideZero = true;
   else delete cell.agreeHideZero;
   const colFormat = String(patch.agreeColFormat || '').trim();
@@ -274,7 +532,7 @@ function newLeafCell(patch: Partial<LeafTableCell>): Record<string, any> {
     title: patch.title || '新列',
     field: patch.field || '',
     width: patch.width || 80,
-    align: patch.align || 'left',
+    align: patch.align ? normalizePrintAlign(patch.align) : 'left',
     colspan: 1,
     rowspan: 1,
     checked: true,
@@ -292,9 +550,12 @@ function newLeafCell(patch: Partial<LeafTableCell>): Record<string, any> {
 export function patchTableColumns(
   template: Record<string, any>,
   ref: Pick<PrintElementRef, 'elementIndex' | 'panelIndex'>,
-  columns: Record<string, unknown>[],
+  columns: Record<string, unknown>[] | Record<string, unknown>[][],
 ): Record<string, any> {
-  return patchElementOptions(template, ref, { columns: [columns] });
+  const rows = Array.isArray(columns[0])
+    ? (columns as Record<string, unknown>[][])
+    : [columns as Record<string, unknown>[]];
+  return patchElementOptions(template, ref, { columns: rows });
 }
 
 /**
@@ -349,6 +610,41 @@ export function patchLeafTableColumns(
   }
 
   el.options.columns = rows;
+  return next;
+}
+
+/**
+ * 在指定叶子列右侧插入一列，并同步扩展其所属的多层表头分组。
+ * 例如在「计价信息 > 单价」右侧加列，新增列仍归属「计价信息」。
+ */
+export function insertLeafTableColumn(
+  template: Record<string, any>,
+  ref: Pick<PrintElementRef, 'elementIndex' | 'panelIndex'>,
+  afterLeafIndex: number,
+  patch: Partial<LeafTableCell> = {},
+): Record<string, any> {
+  const next = cloneTemplate(template);
+  const el = next?.panels?.[ref.panelIndex]?.printElements?.[ref.elementIndex];
+  if (!el?.options) throw new Error('当前元素没有表格列');
+  const leaves = listLeafTableCells(el.options.columns).map((leaf) => {
+    const cell = toTableColumnRows(el.options.columns)[leaf.rowIndex]?.[
+      leaf.cellIndex
+    ];
+    return cloneTemplate(cell || {});
+  });
+  if (leaves.length === 0) throw new Error('表格列为空，无法插入列');
+  const insertAt = Math.min(
+    leaves.length,
+    Math.max(0, Math.floor(afterLeafIndex) + 1),
+  );
+  leaves.splice(insertAt, 0, newLeafCell(patch));
+  const groups = extractTableHeaderGroups(el.options.columns).map((group) => ({
+    ...group,
+    fromLeaf:
+      group.fromLeaf > afterLeafIndex ? group.fromLeaf + 1 : group.fromLeaf,
+    toLeaf: group.toLeaf >= afterLeafIndex ? group.toLeaf + 1 : group.toLeaf,
+  }));
+  el.options.columns = buildTableHeaderColumns(leaves, groups);
   return next;
 }
 
@@ -582,6 +878,13 @@ export function sanitizePrintTemplate(template: Record<string, any>) {
   const next = cloneTemplate(template);
   normalizeTemplateWatermark(next);
   for (const panel of next.panels || []) {
+    /**
+     * 关掉 hiprint 自带的“跨页自动续排”：它按 paperFooter 边界判断元素是否要
+     * 挪到下一页，设计态下命中时会把表格的 designTarget 算成 undefined 直接崩掉
+     * （尤其是横向纸变矮、表格没跟着降高时最容易触发）。我们已经有手动加页/
+     * 从此处起新页，不需要引擎再自动分页，统一关掉最稳。
+     */
+    panel.panelPageRule = 'none';
     panel.printElements = (panel.printElements || []).filter(Boolean);
     for (const el of panel.printElements) {
       const type = String(el?.printElementType?.type || '');

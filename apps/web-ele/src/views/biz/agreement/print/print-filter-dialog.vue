@@ -27,6 +27,7 @@ import {
 } from 'element-plus';
 
 import { AGREE_PRINT_TABLE_FIELDS } from './fields';
+import { validatePrintExpr } from './print-expr';
 import {
   buildFilterPresets,
   compileFilterConds,
@@ -88,6 +89,20 @@ const summary = computed(() =>
   describeFilterExpr(draftExpr.value, columnOptions.value),
 );
 
+const expressionCheck = computed(() => {
+  const rows = (props.sampleData as unknown as Record<string, unknown>)[
+    props.tableField
+  ];
+  const row = Array.isArray(rows) ? rows[0] || {} : {};
+  return validatePrintExpr(draftExpr.value, {
+    ...(props.sampleData as unknown as Record<string, unknown>),
+    ...row,
+    i: 0,
+    index: 0,
+    row,
+  });
+});
+
 /**
  * 打开弹窗时回填已有筛选
  * @param expr 已保存的 agreeRowFilter
@@ -146,6 +161,10 @@ function apply() {
     return;
   }
   if (advanced.value) {
+    if (!expressionCheck.value.ok) {
+      ElMessage.error(`筛选表达式未写入：${expressionCheck.value.message}`);
+      return;
+    }
     emit('apply', advancedExpr.value.trim());
     close();
     return;
@@ -208,6 +227,14 @@ function onAdvancedToggle(val: boolean | number | string) {
       type="info"
       :closable="false"
       :title="`当前表：${tableLabel}${tableField ? ` (${tableField})` : ''}。决定打印哪些行，不是合计。快捷项按当前列生成；具体条件用下面规则。样例行数仅设计器预览，正式打印走接口 JSON。`"
+    />
+
+    <ElAlert
+      v-if="draftExpr && !expressionCheck.ok"
+      class="mt-2"
+      type="error"
+      :closable="false"
+      :title="expressionCheck.message"
     />
 
     <div v-if="presets.length" class="mb-3 flex flex-wrap gap-1">

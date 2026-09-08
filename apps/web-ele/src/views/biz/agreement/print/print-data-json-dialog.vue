@@ -71,7 +71,7 @@ function onApply() {
       class="mb-2"
       type="info"
       :closable="false"
-      title="贴的是业务数据（compensatee、houses 等），不是带 panels 的模板。缺的字段用当前数据补齐。请勿粘贴生产库真实姓名/证号。画布格子可能仍显示元素 testData，请用快速预览核对。"
+      title="贴的是业务数据（compensatee、houses 等），不是带 panels 的模板。应用后画布与快速预览都会立即使用这份数据；表格会按设计高度显示可容纳的行，完整结果以快速预览为准。缺的字段用当前数据补齐。请勿粘贴生产库真实姓名/证号。"
     />
     <ElInput
       v-model="jsonText"

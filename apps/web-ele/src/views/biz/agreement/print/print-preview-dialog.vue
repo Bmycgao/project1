@@ -16,6 +16,16 @@ import { buildAgreePrintData } from './build-print-data';
 import { ensureHiprint } from './ensure-hiprint';
 import { preparePrintTemplate } from './prepare-template';
 import PrintDataJsonDialog from './print-data-json-dialog.vue';
+import {
+  applyPrintPageSizeFromTemplate,
+  fitPrintPreviewHost,
+  normalizePrintPreviewPages,
+} from './print-page-css';
+import {
+  describePrintPaper,
+  previewDialogWidthCss,
+  readTemplatePaperSpec,
+} from './print-paper';
 import { maskAgreePrintData, mergePrintFieldRules } from './print-sensitive';
 import { buildDesignerSamplePrintData } from './sample-print-data';
 import { loadPrintTemplateByCode } from './template-store';
@@ -52,8 +62,13 @@ const printData = ref<AgreePrintData | null>(null);
 /** 粘贴的数据源，优先于当前协议详情 */
 const dataOverride = ref<AgreePrintData | null>(null);
 const dataJsonOpen = ref(false);
+/** 当前预览纸张说明 */
+const paperHint = ref('');
+const dialogWidth = ref('920px');
 /** hiprint 模板实例，供打印复用 */
 let templateInst: any = null;
+/** 最近一次准备好的模板（取纸张） */
+let lastPrepared: null | Record<string, any> = null;
 
 /** 弹窗里编辑器用的底稿：覆盖 > 已渲染 > 当前协议 > 样例 */
 const dataJsonInitial = computed(() => {
@@ -91,6 +106,12 @@ async function createTemplate(data: AgreePrintData) {
     masked,
   );
   const inst = new PrintTemplate({ template: prepared });
+  applyPrintPageSizeFromTemplate(prepared);
+  lastPrepared = prepared;
+  paperHint.value = describePrintPaper(readTemplatePaperSpec(prepared));
+  dialogWidth.value = previewDialogWidthCss(
+    Number(prepared?.panels?.[0]?.width) || 210,
+  );
   (inst as any).__agreePrintData = enriched;
   return inst;
 }
@@ -110,6 +131,7 @@ async function renderPreview() {
     printData.value = data;
     templateInst = await createTemplate(printData.value);
     await nextTick();
+    await nextTick();
     const el = previewRef.value;
     if (!el) return;
     el.innerHTML = '';
@@ -125,6 +147,11 @@ async function renderPreview() {
             : $html),
       );
     }
+    await nextTick();
+    const w = Number(lastPrepared?.panels?.[0]?.width) || 210;
+    const h = Number(lastPrepared?.panels?.[0]?.height) || 297;
+    normalizePrintPreviewPages(el, h);
+    fitPrintPreviewHost(el, w);
   } catch (error: any) {
     console.error(error);
     ElMessage.error(error?.message || '打印预览失败');
@@ -181,7 +208,11 @@ watch(
       templateInst = null;
       dataOverride.value = null;
       printData.value = null;
-      if (previewRef.value) previewRef.value.innerHTML = '';
+      lastPrepared = null;
+      if (previewRef.value) {
+        previewRef.value.innerHTML = '';
+        previewRef.value.style.zoom = '1';
+      }
     }
   },
 );
@@ -191,7 +222,7 @@ watch(
   <ElDialog
     :model-value="modelValue"
     :title="title"
-    width="920px"
+    :width="dialogWidth"
     top="4vh"
     destroy-on-close
     append-to-body
@@ -201,6 +232,8 @@ watch(
     <div v-loading="loading" class="agree-print-preview">
       <div class="mb-2 text-xs text-gray-500">
         模板：{{ templateCode }}
+        <span v-if="paperHint"> · {{ paperHint }}</span>
+        <span> · 灰色间隔为实际分页边界</span>
         <span v-if="dataOverride" class="text-amber-600">
           （当前使用粘贴的数据源 JSON）
         </span>
@@ -235,14 +268,25 @@ watch(
 .agree-print-preview__body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 0;
   align-items: center;
 }
 
 .agree-print-preview__body :deep(.hiprint-printPaper) {
+  flex: 0 0 auto;
+  outline: 1px solid #d7dce3;
   -webkit-print-color-adjust: exact;
   print-color-adjust: exact;
   background: #fff;
   box-shadow: 0 1px 6px rgb(0 0 0 / 12%);
+}
+
+/*
+ * hiprint 的多 panel 和表格自动续页都会生成真实纸张节点；只给相邻页加
+ * 预览间隔，不改变任何纸内坐标，因此与系统打印使用完全相同的分页结果。
+ */
+.agree-print-preview__body :deep(.hiprint-printPanel + .hiprint-printPanel),
+.agree-print-preview__body :deep(.hiprint-printPaper + .hiprint-printPaper) {
+  margin-top: 14px !important;
 }
 </style>

@@ -26,6 +26,8 @@ export interface AgreePrintColumnPreset {
   tableSummary?: 'sum';
   /** 同一列上下相同值合并 */
   agreeMergeSame?: boolean;
+  /** 此列为空时并入左边格子（只影响本行） */
+  agreeHMergeEmpty?: boolean;
   /** 值为 0 时格子显示空 */
   agreeHideZero?: boolean;
   /** 单元格展示格式，如 money0 / dateCn */
@@ -268,6 +270,7 @@ export function buildPresetTableColumns(tableField: string) {
     checked: true,
     ...(col.tableSummary ? { tableSummary: col.tableSummary } : {}),
     ...(col.agreeMergeSame ? { agreeMergeSame: true } : {}),
+    ...(col.agreeHMergeEmpty ? { agreeHMergeEmpty: true } : {}),
     ...(col.agreeHideZero ? { agreeHideZero: true } : {}),
     ...(col.agreeColFormat ? { agreeColFormat: col.agreeColFormat } : {}),
   }));
@@ -309,7 +312,7 @@ export const PRINT_EXPR_HELP = [
     lines: [
       '「规则」里配整块显隐；表格还可筛行',
       '快捷按钮只填公式，不切换样例。正式打印走真实协议',
-      '画布仍显示全部元素，用「快速预览」看显隐 / 过滤 / 回流',
+      '画布会同步显示计算、筛行、合并和整块显隐；快速预览用于核对最终分页',
     ],
   },
   {
@@ -336,8 +339,13 @@ export const PRINT_EXPR_HELP = [
     lines: [
       '点中表格 → 「规则」→ 「筛选打印行」：选列、比较符、值',
       '快捷项按当前表列生成（某列>0 / 不为空）',
-      '和「整块隐藏」不是一回事。画布仍显示全部样例行，请用「快速预览」核对',
-      '列上「合并」：相同值上下相邻合并（画布双击列可开关）',
+      '筛行决定保留哪些记录；列公式逐行计算单元格，两者分开配置',
+      '列公式支持 IF(条件, 真值, 假值) 和 条件 ? 真值 : 假值',
+      '科学/逻辑函数：ROUND、ABS、CEIL、FLOOR、POW、SQRT、MOD、CLAMP、IFS、AND、OR、NOT',
+      '列上「对齐」：左 / 中 / 右，画布格子与附件一预览同步；纵向合并格也会跟着靠边',
+      '列上「合并」：相同值上下相邻自动合并；表体可鼠标拖选，或点起点后 Shift 点终点，合并横向、纵向或矩形范围',
+      '列上「空并左」：该列为空时并入左边，作用于该列所有空行',
+      '表头合并：连续列创建分组；在大分组内部继续分组即可形成多层表头，叶子字段和公式会保留',
       '表尾行「结构合并」：固定挂在表底，相邻格可 colspan，与相同值合并无关',
       '「隐零」只把 0 显示成空',
       '列上「格式」只改打印显示，不改原始数字，合计仍可用',
