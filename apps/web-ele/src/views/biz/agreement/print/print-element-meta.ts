@@ -157,12 +157,20 @@ export interface LeafTableCell {
   agreeColExpr: string;
   /** 同一列上下相同值合并 */
   agreeMergeSame: boolean;
+  /** 纵向合并依据字段；为空时使用本列 field */
+  agreeMergeKey: string;
+  /** 纵向条件合并表达式，例如 category == 'a1' */
+  agreeMergeWhen: string;
   /** 此列为空时并入左边格子（只影响本行） */
   agreeHMergeEmpty: boolean;
   /** 值为 0 时格子显示空 */
   agreeHideZero: boolean;
   /** 单元格展示格式（money / dateCn 等），不改原始数字 */
   agreeColFormat: string;
+  agreeColor?: string;
+  agreeHeaderColor?: string;
+  agreeColorWhen?: string;
+  agreeConditionColor?: string;
 }
 
 /**
@@ -239,9 +247,15 @@ function cellToLeaf(
     tableSummary: cell?.tableSummary === 'sum',
     agreeColExpr: String(cell?.agreeColExpr || ''),
     agreeMergeSame: Boolean(cell?.agreeMergeSame),
+    agreeMergeKey: String(cell?.agreeMergeKey || ''),
+    agreeMergeWhen: String(cell?.agreeMergeWhen || ''),
     agreeHMergeEmpty: Boolean(cell?.agreeHMergeEmpty),
     agreeHideZero: Boolean(cell?.agreeHideZero),
     agreeColFormat: String(cell?.agreeColFormat || ''),
+    agreeColor: String(cell?.agreeColor || ''),
+    agreeHeaderColor: String(cell?.agreeHeaderColor || ''),
+    agreeColorWhen: String(cell?.agreeColorWhen || ''),
+    agreeConditionColor: String(cell?.agreeConditionColor || ''),
   };
 }
 
@@ -294,6 +308,7 @@ export function listLeafTableCells(columns: unknown): LeafTableCell[] {
 }
 
 export interface TableHeaderGroupRule {
+  agreeHeaderColor?: string;
   fromLeaf: number;
   title: string;
   toLeaf: number;
@@ -322,6 +337,9 @@ export function extractTableHeaderGroups(
         groups.push({
           fromLeaf: startCol,
           title: String(cell.title || '分组标题'),
+          ...(cell.agreeHeaderColor
+            ? { agreeHeaderColor: String(cell.agreeHeaderColor) }
+            : {}),
           toLeaf: startCol + colspan - 1,
         });
       }
@@ -349,6 +367,9 @@ export function buildTableHeaderColumns(
 ) {
   const normalized = groups
     .map((group) => ({
+      ...(group.agreeHeaderColor
+        ? { agreeHeaderColor: group.agreeHeaderColor }
+        : {}),
       fromLeaf: Math.max(0, Math.min(group.fromLeaf, group.toLeaf)),
       title: String(group.title || '').trim() || '分组标题',
       toLeaf: Math.min(
@@ -436,6 +457,9 @@ export function buildTableHeaderColumns(
         field: '',
         rowspan: 1,
         title: child.group.title,
+        ...(child.group.agreeHeaderColor
+          ? { agreeHeaderColor: child.group.agreeHeaderColor }
+          : {}),
         width,
       });
       appendContents(
@@ -518,10 +542,20 @@ function applyLeafFields(
   else delete cell.agreeColExpr;
   if (patch.agreeMergeSame) cell.agreeMergeSame = true;
   else delete cell.agreeMergeSame;
+  const mergeKey = String(patch.agreeMergeKey || '').trim();
+  if (mergeKey) cell.agreeMergeKey = mergeKey;
+  else delete cell.agreeMergeKey;
+  const mergeWhen = String(patch.agreeMergeWhen || '').trim();
+  if (mergeWhen) cell.agreeMergeWhen = mergeWhen;
+  else delete cell.agreeMergeWhen;
   if (patch.agreeHMergeEmpty) cell.agreeHMergeEmpty = true;
   else delete cell.agreeHMergeEmpty;
   if (patch.agreeHideZero) cell.agreeHideZero = true;
   else delete cell.agreeHideZero;
+  cell.agreeColor = patch.agreeColor || '';
+  cell.agreeHeaderColor = patch.agreeHeaderColor || '';
+  cell.agreeColorWhen = patch.agreeColorWhen || '';
+  cell.agreeConditionColor = patch.agreeConditionColor || '';
   const colFormat = String(patch.agreeColFormat || '').trim();
   if (colFormat) cell.agreeColFormat = colFormat;
   else delete cell.agreeColFormat;
@@ -591,15 +625,37 @@ export function patchLeafTableColumns(
   const removed = original.filter(
     (c) => !keep.has(`${c.rowIndex}:${c.cellIndex}`),
   );
-  removed.sort((a, b) =>
-    a.rowIndex === b.rowIndex
-      ? b.cellIndex - a.cellIndex
-      : b.rowIndex - a.rowIndex,
-  );
-  for (const item of removed) {
-    rows[item.rowIndex]?.splice(item.cellIndex, 1);
+  if (removed.length > 0) {
+    // 删除叶子列后同步收缩、平移分组，避免原 colspan 把相邻列纳入分组。
+    const keptIndexes = original.flatMap((cell, index) =>
+      keep.has(`${cell.rowIndex}:${cell.cellIndex}`) ? [index] : [],
+    );
+    const remaining = original
+      .filter((cell) => keep.has(`${cell.rowIndex}:${cell.cellIndex}`))
+      .map((cell) => rows[cell.rowIndex]?.[cell.cellIndex] || {});
+    remaining.push(
+      ...leaves
+        .filter((leaf) => leaf.rowIndex < 0)
+        .map((leaf) => newLeafCell(leaf)),
+    );
+    const groups = extractTableHeaderGroups(el.options.columns)
+      .map((group) => ({
+        ...group,
+        fromLeaf: keptIndexes.filter((index) => index < group.fromLeaf).length,
+        toLeaf: keptIndexes.filter((index) => index <= group.toLeaf).length - 1,
+      }))
+      .filter((group) => group.toLeaf > group.fromLeaf);
+    const distinctGroups = groups.filter(
+      (group, index) =>
+        groups.findIndex(
+          (candidate) =>
+            candidate.fromLeaf === group.fromLeaf &&
+            candidate.toLeaf === group.toLeaf,
+        ) === index,
+    );
+    el.options.columns = buildTableHeaderColumns(remaining, distinctGroups);
+    return next;
   }
-
   const lastRow = rows[rows.length - 1] || rows[0];
   if (!lastRow) {
     throw new Error('表格列为空，无法追加叶子列');
@@ -637,7 +693,17 @@ export function insertLeafTableColumn(
     leaves.length,
     Math.max(0, Math.floor(afterLeafIndex) + 1),
   );
-  leaves.splice(insertAt, 0, newLeafCell(patch));
+  const added = newLeafCell(patch);
+  const left = leaves[insertAt - 1];
+  const right = leaves[insertAt];
+  if (
+    left?.agreeHeaderMergeId &&
+    left.agreeHeaderMergeId === right?.agreeHeaderMergeId
+  ) {
+    added.agreeHeaderMergeId = left.agreeHeaderMergeId;
+    added.agreeHeaderMergeTitle = left.agreeHeaderMergeTitle;
+  }
+  leaves.splice(insertAt, 0, added);
   const groups = extractTableHeaderGroups(el.options.columns).map((group) => ({
     ...group,
     fromLeaf:
@@ -646,6 +712,77 @@ export function insertLeafTableColumn(
   }));
   el.options.columns = buildTableHeaderColumns(leaves, groups);
   return next;
+}
+
+/** 表格叶子列是否已包含序号列（field=index） */
+export function hasAgreeTableIndexColumn(columns: unknown) {
+  return listLeafTableCells(columns).some(
+    (leaf) => String(leaf.field || '').trim() === 'index',
+  );
+}
+
+/**
+ * 一键显示/隐藏表格自增序号列（插在最左侧或移除全部 index 列）
+ * @param template 模板 JSON
+ * @param ref 表格元素定位
+ * @param visible 是否显示序号列
+ */
+export function setAgreeTableIndexColumnVisible(
+  template: Record<string, any>,
+  ref: Pick<PrintElementRef, 'elementIndex' | 'panelIndex'>,
+  visible: boolean,
+): Record<string, any> {
+  const leaves = listLeafTableCells(
+    template?.panels?.[ref.panelIndex]?.printElements?.[ref.elementIndex]
+      ?.options?.columns,
+  );
+  const hasIndex = leaves.some(
+    (leaf) => String(leaf.field || '').trim() === 'index',
+  );
+
+  if (visible) {
+    if (hasIndex) return cloneTemplate(template);
+    if (leaves.length === 0) {
+      const next = cloneTemplate(template);
+      const el =
+        next?.panels?.[ref.panelIndex]?.printElements?.[ref.elementIndex];
+      if (!el?.options) throw new Error('当前元素没有表格列');
+      el.options.columns = [
+        [
+          newLeafCell({
+            align: 'center',
+            field: 'index',
+            title: '序号',
+            width: 42,
+          }),
+        ],
+      ];
+      return next;
+    }
+    return insertLeafTableColumn(template, ref, -1, {
+      align: 'center',
+      field: 'index',
+      title: '序号',
+      width: 42,
+    });
+  }
+
+  if (!hasIndex) return cloneTemplate(template);
+  const remaining = leaves
+    .filter((leaf) => String(leaf.field || '').trim() !== 'index')
+    .map((leaf) => ({
+      ...leaf,
+      // 保留原坐标，让 patchLeafTableColumns 按格子删改
+    }));
+  if (remaining.length === 0) {
+    const next = cloneTemplate(template);
+    const el =
+      next?.panels?.[ref.panelIndex]?.printElements?.[ref.elementIndex];
+    if (!el?.options) throw new Error('当前元素没有表格列');
+    el.options.columns = [[]];
+    return next;
+  }
+  return patchLeafTableColumns(template, ref, remaining);
 }
 
 /**

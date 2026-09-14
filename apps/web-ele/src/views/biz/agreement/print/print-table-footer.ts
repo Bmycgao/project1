@@ -3,10 +3,12 @@
  * 存 options.agreeFooters，打印前编译成 hiprint footerFormatter
  */
 import { normalizePrintAlign } from './print-element-meta';
+import { normalizeTableColor } from './print-table-color';
 
 /** 表尾一格 */
 export type AgreeFooterCell = {
   align?: 'center' | 'left' | 'right';
+  color?: string;
   /** 横向合并列数，>=1 */
   colspan: number;
   /** 从 printData 根级取值（如 amount）；空串表示不用 */
@@ -56,6 +58,7 @@ export function normalizeAgreeFooters(
   const target = Math.max(1, leafCount);
   return rows.map((row) => {
     const cells = (row.cells || []).map((c) => ({
+      color: normalizeTableColor(c.color),
       text: String(c.text ?? ''),
       field: String(c.field ?? '').trim(),
       colspan: Math.max(1, Number(c.colspan) || 1),
@@ -63,7 +66,7 @@ export function normalizeAgreeFooters(
     }));
     let total = cells.reduce((s, c) => s + c.colspan, 0);
     while (total < target) {
-      cells.push({ text: '', field: '', colspan: 1, align: 'left' });
+      cells.push({ color: '', text: '', field: '', colspan: 1, align: 'left' });
       total += 1;
     }
     while (total > target && cells.length > 0) {
@@ -145,6 +148,7 @@ export function splitFooterCell(
 export function createFooterFormatterSrc(footers: AgreeFooterRow[]) {
   const rows = footers.map((row) =>
     row.cells.map((c) => ({
+      color: normalizeTableColor(c.color),
       text: String(c.text ?? ''),
       field: String(c.field ?? '').trim(),
       colspan: Math.max(1, Number(c.colspan) || 1),
@@ -163,7 +167,7 @@ export function createFooterFormatterSrc(footers: AgreeFooterRow[]) {
         if (cell.field && printData && printData[cell.field] != null) {
           text = String(printData[cell.field]);
         }
-        html += '<td colspan="' + cell.colspan + '" align="' + cell.align + '" style="text-align:' + cell.align + ';padding:0 4pt;border:1px solid #000;">' + text + '</td>';
+        html += '<td colspan="' + cell.colspan + '" align="' + cell.align + '" style="text-align:' + cell.align + ';color:' + (cell.color || 'inherit') + ';padding:0 4pt;border:1px solid #000;">' + text + '</td>';
       }
       html += '</tr>';
     }

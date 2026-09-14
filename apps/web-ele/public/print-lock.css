@@ -161,9 +161,22 @@
   line-height: 9.75pt;
 }
 
-.hiprint-printElement-table thead {
-  background: #e8e8e8;
+.hiprint-printElement-table thead:not([style*='background']) {
+  /*
+   * hiprint 会在运行时再次注入自带的 #e8e8e8，加载顺序晚于本文件。
+   * 仅覆盖没有行内背景的表头，模板明确设置的 tableHeaderBackground 不受影响。
+   */
+  background: transparent !important;
   font-weight: 700;
+}
+
+@media print {
+  /* 让模板中明确选择的背景色尽可能与预览、PDF 保持一致。 */
+  .hiprint-printPaper,
+  .hiprint-printPaper * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
 }
 
 table.hiprint-printElement-tableTarget {

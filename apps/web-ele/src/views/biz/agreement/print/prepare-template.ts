@@ -13,6 +13,7 @@ import {
   applyAgreeBodyHMergesToPrintData,
   applyTablePrintRuntime,
 } from './print-table-runtime';
+import { preparePrintTextValues } from './print-text-value';
 import { normalizeTemplateWatermark } from './print-watermark';
 import { cloneTemplate } from './template-store';
 
@@ -220,5 +221,6 @@ export function preparePrintTemplate(
     }
   }
 
+  preparePrintTextValues(next, ctx);
   return { template: next, printData: enriched };
 }

@@ -5,6 +5,10 @@
 
 /** 支持的格式类型 */
 export type AgreePrintFormat =
+  | 'areaM2'
+  | 'areaM3'
+  | 'areaM20'
+  | 'areaM30'
   | 'date'
   | 'dateCn'
   | 'dateCnShort'
@@ -23,6 +27,8 @@ export type AgreePrintFormat =
   | 'money4'
   | 'money'
   | 'moneyCn'
+  | 'moneyDollar0'
+  | 'moneyDollar'
   | 'moneySymbol0'
   | 'moneySymbol'
   | 'number0'
@@ -70,7 +76,18 @@ export const AGREE_PRINT_FORMAT_GROUPS: ReadonlyArray<{
       { label: '千分位 4 位（12,345.6700）', value: 'money4' },
       { label: '人民币符号整数（¥12,346）', value: 'moneySymbol0' },
       { label: '人民币符号 2 位（¥12,345.67）', value: 'moneySymbol' },
+      { label: '美元符号整数（$12,346）', value: 'moneyDollar0' },
+      { label: '美元符号 2 位（$12,345.67）', value: 'moneyDollar' },
       { label: '人民币大写（壹万贰仟…）', value: 'moneyCn' },
+    ],
+  },
+  {
+    label: '面积',
+    options: [
+      { label: '平方米整数（86㎡）', value: 'areaM20' },
+      { label: '平方米 2 位（86.00㎡）', value: 'areaM2' },
+      { label: '立方米整数（12m³）', value: 'areaM30' },
+      { label: '立方米 2 位（12.50m³）', value: 'areaM3' },
     ],
   },
   {
@@ -204,6 +221,19 @@ function formatMoney(value: unknown, decimals = 2): string {
   });
 }
 
+/**
+ * 面积展示：数字格式 + 单位后缀（不改原始 number，合计仍可用）
+ * @param value 原始值
+ * @param decimals 小数位
+ * @param unit 单位，如 ㎡ / m³
+ */
+function formatArea(value: unknown, decimals: number, unit: string): string {
+  const num = Number(value);
+  if (!Number.isFinite(num))
+    return value === null || value === undefined ? '' : String(value);
+  return `${formatMoney(value, decimals)}${unit}`;
+}
+
 /** 数字金额转人民币大写，非数值由调用方原样保留。 */
 function formatChineseMoney(value: unknown): null | string {
   const num = Number(value);
@@ -267,6 +297,7 @@ export function formatPrintValue(
   format: AgreePrintFormat | undefined,
   ctx?: Record<string, unknown>,
 ): string {
+  if (value === null || value === undefined || value === '') return '';
   const f = String(format || '').trim();
   if (!f || f === 'text') {
     return value === null || value === undefined ? '' : String(value);
@@ -275,6 +306,18 @@ export function formatPrintValue(
   const parts = parseDateParts(value);
 
   switch (f) {
+    case 'areaM2': {
+      return formatArea(value, 2, '㎡');
+    }
+    case 'areaM3': {
+      return formatArea(value, 2, 'm³');
+    }
+    case 'areaM20': {
+      return formatArea(value, 0, '㎡');
+    }
+    case 'areaM30': {
+      return formatArea(value, 0, 'm³');
+    }
     case 'date': {
       if (parts?.y) return `${parts.y}-${parts.mo}-${parts.d}`;
       return String(value ?? '').slice(0, 10);
@@ -353,6 +396,12 @@ export function formatPrintValue(
     }
     case 'moneyCn': {
       return formatChineseMoney(value) ?? String(ctx?.amountCn ?? value ?? '');
+    }
+    case 'moneyDollar': {
+      return `$${formatMoney(value, 2)}`;
+    }
+    case 'moneyDollar0': {
+      return `$${formatMoney(value, 0)}`;
     }
     case 'moneySymbol': {
       return `¥${formatMoney(value, 2)}`;
@@ -520,6 +569,10 @@ export function createColumnFormatterSrc(format: string, hideZero: boolean) {
     if (fmt === 'number2') return money(value, 2);
     if (fmt === 'number3') return money(value, 3);
     if (fmt === 'number4') return money(value, 4);
+    if (fmt === 'areaM2') return money(value, 2) + '㎡';
+    if (fmt === 'areaM20') return money(value, 0) + '㎡';
+    if (fmt === 'areaM3') return money(value, 2) + 'm³';
+    if (fmt === 'areaM30') return money(value, 0) + 'm³';
     if (fmt === 'money') return money(value, 2);
     if (fmt === 'money0') return money(value, 0);
     if (fmt === 'money1') return money(value, 1);
@@ -527,6 +580,8 @@ export function createColumnFormatterSrc(format: string, hideZero: boolean) {
     if (fmt === 'money4') return money(value, 4);
     if (fmt === 'moneySymbol') return '¥' + money(value, 2);
     if (fmt === 'moneySymbol0') return '¥' + money(value, 0);
+    if (fmt === 'moneyDollar') return '$' + money(value, 2);
+    if (fmt === 'moneyDollar0') return '$' + money(value, 0);
     if (fmt === 'moneyCn') return chineseMoney(value) || value;
     if (fmt === 'percent' || fmt === 'percent0' || fmt === 'percent1') {
       var pn = Number(value);
@@ -549,8 +604,11 @@ export function tableSummaryDecimals(format: string): number | undefined {
   const f = String(format || '').trim();
   if (
     f === 'integer' ||
+    f === 'areaM20' ||
+    f === 'areaM30' ||
     f === 'money0' ||
     f === 'moneySymbol0' ||
+    f === 'moneyDollar0' ||
     f === 'number0' ||
     f === 'percent0' ||
     f === 'percentRaw'
@@ -558,8 +616,11 @@ export function tableSummaryDecimals(format: string): number | undefined {
     return 0;
   if (f === 'money1' || f === 'number1' || f === 'percent1') return 1;
   if (
+    f === 'areaM2' ||
+    f === 'areaM3' ||
     f === 'money' ||
     f === 'moneySymbol' ||
+    f === 'moneyDollar' ||
     f === 'number2' ||
     f === 'percent' ||
     f === 'percentRaw2'

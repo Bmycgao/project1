@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { insertBlankPanelAfter, splitPanelAtY } from './print-paper';
+import {
+  applyPaperToTemplate,
+  insertBlankPanelAfter,
+  mmToPt,
+  readTemplatePaperSpec,
+  splitPanelAtY,
+} from './print-paper';
 
 function templateWithElements() {
   return {
@@ -23,6 +29,31 @@ function templateWithElements() {
 }
 
 describe('print paper pages', () => {
+  it('keeps A3 and A4 as different physical page sizes for PDF/print', () => {
+    const source = templateWithElements();
+    const a4 = applyPaperToTemplate(source, {
+      orientation: 'portrait',
+      sizeId: 'A4',
+    }).template;
+    const a3 = applyPaperToTemplate(source, {
+      orientation: 'portrait',
+      sizeId: 'A3',
+    }).template;
+
+    expect(readTemplatePaperSpec(a4)).toMatchObject({
+      heightMm: 297,
+      sizeId: 'A4',
+      widthMm: 210,
+    });
+    expect(readTemplatePaperSpec(a3)).toMatchObject({
+      heightMm: 420,
+      sizeId: 'A3',
+      widthMm: 297,
+    });
+    expect(mmToPt(a4.panels[0]?.width || 0)).toBeCloseTo(595.28, 1);
+    expect(mmToPt(a3.panels[0]?.width || 0)).toBeCloseTo(841.89, 1);
+  });
+
   it('inserts a real blank panel without replacing the template root', () => {
     const source = templateWithElements();
     const result = insertBlankPanelAfter(source, 0);

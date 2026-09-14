@@ -29,6 +29,10 @@ import {
   AGREE_PRINT_TOOLBOX_DND,
   getAgreePrintHtml5Drag,
 } from '../print-element-meta';
+import {
+  normalizeTableColor,
+  resolveTableCellColor,
+} from '../print-table-color';
 import { cloneTemplate } from '../template-store';
 import CanvasCode from './canvas-code.vue';
 import {
@@ -177,23 +181,59 @@ function markSourceElementIndexes(template: Record<string, any>) {
 /** 根据已测得的表格真实高度，把其下方元素按 hiprint 的规则同步移动。 */
 function applyMeasuredTableFlow(page: RenderPage) {
   const tables = page.elements
-    .filter((el) => el.type === 'table')
-    .map((el) => ({
-      bottom: (Number(el.options.top) || 0) + (Number(el.options.height) || 0),
-      delta:
-        (tableActualHeightsPt.value[el.key] ??
-          (Number(el.options.height) || 0)) - (Number(el.options.height) || 0),
-      key: el.key,
-    }));
+    .map((el, elementIndex) => {
+      if (el.type !== 'table') return null;
+      const designHeight = Number(el.options.height) || 0;
+      const actualHeight = tableActualHeightsPt.value[el.key] ?? designHeight;
+      return {
+        actualBottom: (Number(el.options.top) || 0) + actualHeight,
+        designBottom: (Number(el.options.top) || 0) + designHeight,
+        designHeight,
+        /**
+         * 设计高度是表格的预留空间。实际内容更矮时保留这段空白，不能把
+         * 后续元素向上吸，否则拖动表格时会出现下面内容反向偏移。
+         */
+        delta: Math.max(0, actualHeight - designHeight),
+        elementIndex,
+        key: el.key,
+      };
+    })
+    .filter(
+      (
+        table,
+      ): table is {
+        actualBottom: number;
+        delta: number;
+        designBottom: number;
+        designHeight: number;
+        elementIndex: number;
+        key: string;
+      } => table !== null,
+    );
   if (tables.every((table) => Math.abs(table.delta) < 0.1)) return page;
   return {
     ...page,
-    elements: page.elements.map((el) => {
+    elements: page.elements.map((el, elementIndex) => {
       const top = Number(el.options.top) || 0;
       let shift = 0;
       for (const table of tables) {
-        if (table.key !== el.key && top >= table.bottom - 0.1) {
+        if (table.key !== el.key && top >= table.designBottom - 0.1) {
           shift += table.delta;
+        }
+        /**
+         * 表格被拖到原始底部之后，后续元素仍需保持在实际表格底部之下。
+         * 旧逻辑在这里会直接取消 delta，导致金额/签字等元素突然上移，
+         * 进而让拖动看起来像被卡住。仅对模板顺序中位于表格之后、且仍在
+         * 表格附近的元素应用连续的最小避让位移，避免误推页面上方内容。
+         */
+        if (
+          table.key !== el.key &&
+          elementIndex > table.elementIndex &&
+          top >=
+            (Number(page.elements[table.elementIndex]?.options.top) || 0) -
+              table.designHeight
+        ) {
+          shift = Math.max(shift, table.delta, table.actualBottom + 8 - top);
         }
       }
       if (Math.abs(shift) < 0.1) return el;
@@ -397,11 +437,17 @@ function textContent(o: Record<string, any>) {
 }
 
 /**
- * hiprint 只用最后一层表头生成 colgroup；跨层的叶子格则由其表头 width
- * 参与自动布局。这里保持相同结构，尤其避免多层表头的列宽与打印态不同。
+ * 按叶子列生成 colgroup。hiprint 默认只用最后一层表头，三层表头时
+ * 最后一行往往只有「数量 / 单价」，列宽会和表体对不齐。
  */
 function tableColGroup(preview: TablePreviewModel) {
-  return preview.headerRows.at(-1) || [];
+  if (
+    preview.headerRows.length > 1 ||
+    preview.headerRows.some((row) => row.some((cell) => cell.headerMergeId))
+  ) {
+    return preview.leafCols;
+  }
+  return preview.headerRows.at(-1) || preview.leafCols;
 }
 
 function tableStyle(o: Record<string, any>) {
@@ -422,11 +468,12 @@ function headerCellStyle(
   cell: Record<string, any>,
 ) {
   const style: Record<string, any> = {
+    color: normalizeTableColor(cell.agreeHeaderColor) || 'inherit',
     backgroundColor:
       cell.backgroundColor ||
       cell.background ||
       options.tableHeaderBackground ||
-      '#e8e8e8',
+      'transparent',
     border:
       options.tableHeaderCellBorder === 'noBorder'
         ? '0 solid transparent'
@@ -458,6 +505,7 @@ function cellStyle(
   options: Record<string, any>,
   cell: Record<string, any>,
   area: 'body' | 'footer' = 'body',
+  row: Record<string, unknown> = {},
 ) {
   const borderSetting =
     area === 'footer'
@@ -466,6 +514,17 @@ function cellStyle(
   return {
     border:
       borderSetting === 'noBorder' ? '0 solid transparent' : '1px solid #333',
+    color:
+      area === 'footer'
+        ? normalizeTableColor(cell.color) || 'inherit'
+        : resolveTableCellColor(
+            cell,
+            row,
+            (runtimePreview.value.printData || {}) as unknown as Record<
+              string,
+              unknown
+            >,
+          ) || 'inherit',
     height: `${Number(options.tableBodyRowHeight) || 18}pt`,
     textAlign: (cell.align || 'left') as any,
   };
@@ -750,12 +809,19 @@ function alignMovingElement(
     yTargets.push(y, y + h / 2, y + h);
   });
   const threshold = 6 / (scale.value || PT_TO_PX);
+  /**
+   * 表格高度来自真实 DOM 测量，底边会随数据行数变化；如果也拿动态底边
+   * 参与吸附，拖动表格接近下方元素时会反复被吸回同一条水平线。表格只
+   * 吸附顶部，仍可与其他元素保持起始线对齐，但不会被动态底边锁住。
+   */
+  const movingY =
+    el.type === 'table' ? [top] : [top, top + height / 2, top + height];
   const xHit = options.lockX
     ? null
     : nearestGuide([left, left + width / 2, left + width], xTargets, threshold);
   const yHit = options.lockY
     ? null
-    : nearestGuide([top, top + height / 2, top + height], yTargets, threshold);
+    : nearestGuide(movingY, yTargets, threshold);
   alignmentGuides.value = {
     panelIndex: el.panelIndex,
     ...(xHit ? { x: xHit.guide } : {}),
@@ -1113,6 +1179,8 @@ defineExpose({
                     cellStyle(
                       el.options,
                       el.tablePreview.leafCols[cell.colIndex] || {},
+                      'body',
+                      cell.rawRow,
                     )
                   "
                   @mousedown.stop.prevent="
@@ -1477,7 +1545,7 @@ defineExpose({
   padding: 0 4pt;
   overflow: hidden;
   vertical-align: middle;
-  color: #000;
+  color: inherit;
   word-break: break-all;
   overflow-wrap: break-word;
   white-space: normal;

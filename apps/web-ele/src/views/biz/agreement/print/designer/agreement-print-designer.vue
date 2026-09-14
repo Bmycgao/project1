@@ -55,6 +55,7 @@ import {
   setAgreePrintHtml5Drag,
 } from '../print-element-meta';
 import { validatePrintExpr } from '../print-expr';
+import { installHeaderMergeRuntime } from '../print-header-merge';
 import PrintInspector from '../print-inspector.vue';
 import {
   applyPrintPageSizeFromTemplate,
@@ -1069,7 +1070,10 @@ async function onPreview() {
       json,
       sampleData.value,
     );
-    const previewTpl = new PrintTemplate({ template: preparedTpl });
+    const previewTpl = new PrintTemplate({
+      template: cloneTemplate(preparedTpl),
+    });
+    installHeaderMergeRuntime(previewTpl, preparedTpl);
     previewOpen.value = true;
     await nextTick();
     const host = previewHost.value;
@@ -1774,7 +1778,16 @@ defineExpose({
   display: flex;
   flex-direction: column;
   min-height: 0;
+}
+
+.agree-designer__left {
+  overflow: hidden;
+  border-right: 1px solid rgb(0 0 0 / 8%);
+}
+
+.agree-designer__right {
   overflow: auto;
+  border-left: 1px solid rgb(0 0 0 / 8%);
 }
 
 .agree-designer__body.is-left-collapsed > .agree-designer__left,
@@ -1784,14 +1797,6 @@ defineExpose({
   overflow: hidden;
   pointer-events: none;
   border: 0;
-}
-
-.agree-designer__left {
-  border-right: 1px solid rgb(0 0 0 / 8%);
-}
-
-.agree-designer__right {
-  border-left: 1px solid rgb(0 0 0 / 8%);
 }
 
 .agree-designer__palette {
@@ -1862,8 +1867,11 @@ defineExpose({
 }
 
 .agree-designer__fields {
+  display: flex;
   flex: 1;
+  flex-direction: column;
   min-height: 0;
+  overflow: hidden;
 }
 
 .agree-designer__stage {

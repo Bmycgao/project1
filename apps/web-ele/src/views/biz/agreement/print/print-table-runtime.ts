@@ -13,7 +13,77 @@ import {
   toTableColumnRows,
 } from './print-element-meta';
 import { evalPrintExpr } from './print-expr';
+import { applyTableColorsRuntime } from './print-table-color';
 import { applyAgreeFootersRuntime } from './print-table-footer';
+
+export type AgreeColumnMergeMode = 'condition' | 'none' | 'same';
+
+export interface AgreeColumnMergeConfig {
+  mode: AgreeColumnMergeMode;
+  /** 用来判断同组的行字段；默认是当前显示列 field */
+  keyField: string;
+  /** 条件模式下允许合并的行表达式 */
+  when: string;
+}
+
+/** 从列配置解析纵向合并规则，并兼容旧模板的 agreeMergeSame。 */
+export function resolveAgreeColumnMergeConfig(
+  col: Record<string, any> | undefined,
+): AgreeColumnMergeConfig {
+  const field = String(col?.field || '').trim();
+  const keyField = String(col?.agreeMergeKey || '').trim() || field;
+  const when = String(col?.agreeMergeWhen || '').trim();
+  const mode: AgreeColumnMergeMode = when
+    ? 'condition'
+    : col?.agreeMergeSame || String(col?.agreeMergeKey || '').trim()
+      ? 'same'
+      : 'none';
+  return { keyField, mode, when };
+}
+
+/**
+ * 筛行后把可见行的 index 重排为 1..n，保证序号列连续自增。
+ * @param rows 最终可见行
+ */
+export function renumberAgreePrintRowIndexes(
+  rows: Record<string, unknown>[],
+): Record<string, unknown>[] {
+  return rows.map((row, index) => ({ ...row, index: index + 1 }));
+}
+
+/**
+ * 在筛选、计算完成后给行挂运行时合并元数据。
+ * hiprint 的 rowsColumnsMerge 只能拿到行数据，因此把条件结果和合并 key
+ * 一起放到行上，画布、快速预览和正式打印都使用同一份结果。
+ */
+export function applyAgreeColumnMergeMetaToRows(
+  rows: Record<string, unknown>[],
+  columns: unknown,
+  rootCtx: Record<string, unknown>,
+) {
+  const leaves = listLeafTableCells(columns);
+  const configs = leaves.map((col) => resolveAgreeColumnMergeConfig(col));
+  if (!configs.some((config) => config.mode !== 'none')) return rows;
+  return rows.map((row, index) => {
+    const meta = configs.map((config) => {
+      if (config.mode === 'none') return { allow: false, key: '' };
+      const allow =
+        config.mode !== 'condition' ||
+        Boolean(
+          evalPrintExpr(
+            config.when,
+            { ...rootCtx, ...row, row, index, i: index },
+            { silent: true },
+          ),
+        );
+      return {
+        allow,
+        key: config.keyField ? row[config.keyField] : '',
+      };
+    });
+    return { ...row, __agreeMergeMeta: meta };
+  });
+}
 
 /**
  * 格子是否视为空（空并左 / 隐零共用）
@@ -593,10 +663,18 @@ export function createSameValueMergeSrc(
   hMergeEmpty: boolean[],
   hideZero: boolean[],
   tableField: string,
+  mergeConfigs?: AgreeColumnMergeConfig[],
 ) {
+  const configs =
+    mergeConfigs ||
+    leafFields.map((field) => ({
+      mode: mergeFields.includes(field) ? ('same' as const) : ('none' as const),
+      keyField: field,
+      when: '',
+    }));
   return `function rowsColumnsMerge(data, col, colIndex, rowIndex, tableData, printData) {
     var fields = ${JSON.stringify(leafFields)};
-    var mergeFields = ${JSON.stringify(mergeFields)};
+    var mergeConfigs = ${JSON.stringify(configs)};
     var hMergeEmpty = ${JSON.stringify(hMergeEmpty)};
     var hideZero = ${JSON.stringify(hideZero)};
     var tableField = ${JSON.stringify(tableField)};
@@ -645,17 +723,30 @@ export function createSameValueMergeSrc(
       }
     }
     var h = hSpans[colIndex];
-    if (h === 0) return [0, 0];
+    // 横合被吃掉的格用 [1, 0]：hiprint 续表会把 rowspan<1 的隐藏格重新显示，
+    // 从而在「项目名称 / 计算方式」之间多出一列空格，上下页表头对不齐。
+    if (h === 0) return [1, 0];
     if (h > 1) return [1, h];
-    var field = (col && col.field) ? col.field : fields[colIndex];
-    if (!field || mergeFields.indexOf(field) < 0) return [1, 1];
+    var config = mergeConfigs[colIndex] || { mode: 'none', keyField: '', when: '' };
+    if (!config || config.mode === 'none') return [1, 1];
     if (!list || !list.length) return [1, 1];
-    var key = data && data[field] != null ? String(data[field]).trim() : '';
+    var currentMeta = row && row.__agreeMergeMeta && row.__agreeMergeMeta[colIndex];
+    if (config.mode === 'condition' && (!currentMeta || currentMeta.allow !== true)) return [1, 1];
+    var keyField = config.keyField || ((col && col.field) ? col.field : fields[colIndex]);
+    var keyValue = currentMeta && Object.prototype.hasOwnProperty.call(currentMeta, 'key')
+      ? currentMeta.key
+      : data && data[keyField];
+    var key = keyValue != null ? String(keyValue).trim() : '';
     if (!key) return [1, 1];
     var start = rowIndex;
     while (start > 0) {
       var prev = list[start - 1];
-      var prevKey = prev && prev[field] != null ? String(prev[field]).trim() : '';
+      var prevMeta = prev && prev.__agreeMergeMeta && prev.__agreeMergeMeta[colIndex];
+      if (config.mode === 'condition' && (!prevMeta || prevMeta.allow !== true)) break;
+      var prevValue = prevMeta && Object.prototype.hasOwnProperty.call(prevMeta, 'key')
+        ? prevMeta.key
+        : prev && prev[keyField];
+      var prevKey = prevValue != null ? String(prevValue).trim() : '';
       if (prevKey !== key) break;
       start -= 1;
     }
@@ -663,7 +754,12 @@ export function createSameValueMergeSrc(
     var span = 1;
     while (rowIndex + span < list.length) {
       var nextRow = list[rowIndex + span];
-      var nextKey = nextRow && nextRow[field] != null ? String(nextRow[field]).trim() : '';
+      var nextMeta = nextRow && nextRow.__agreeMergeMeta && nextRow.__agreeMergeMeta[colIndex];
+      if (config.mode === 'condition' && (!nextMeta || nextMeta.allow !== true)) break;
+      var nextValue = nextMeta && Object.prototype.hasOwnProperty.call(nextMeta, 'key')
+        ? nextMeta.key
+        : nextRow && nextRow[keyField];
+      var nextKey = nextValue != null ? String(nextValue).trim() : '';
       if (nextKey !== key) break;
       span += 1;
     }
@@ -752,6 +848,21 @@ export function applyTablePrintRuntime(el: { options?: Record<string, any> }) {
   ) {
     mergeFields = ['householdName'];
   }
+  const mergeConfigs = leaf.map((col) => {
+    const config = resolveAgreeColumnMergeConfig(col);
+    /** 房屋旧模板仍保留 householdName 的默认同值合并。 */
+    if (
+      config.mode === 'none' &&
+      mergeFields.includes(String(col.field || ''))
+    ) {
+      return {
+        keyField: String(col.field || ''),
+        mode: 'same' as const,
+        when: '',
+      };
+    }
+    return config;
+  });
   const needMerge = true;
   if (needMerge) {
     /** 必须是具名函数源码字符串：引擎会 eval，JSON 克隆也不会丢掉 */
@@ -761,9 +872,11 @@ export function applyTablePrintRuntime(el: { options?: Record<string, any> }) {
       hMergeEmpty,
       hideZero,
       tableField,
+      mergeConfigs,
     );
   }
   applyColumnAligns(opts.columns);
   applyColumnFormatters(opts.columns);
+  applyTableColorsRuntime(opts);
   applyAgreeFootersRuntime(opts, leaf.length);
 }

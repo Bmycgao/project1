@@ -205,7 +205,11 @@ function onPick(item: AgreePrintFieldItem) {
             :key="row.field"
             type="button"
             class="print-data-panel__row"
-            :class="{ 'is-current': row.field === selectedField }"
+            :class="{
+              'is-current': row.field === selectedField,
+              'is-long-text':
+                row.field === 'agreementName' || row.field === 'printMeta',
+            }"
             draggable="true"
             :title="`${row.text} (${row.field})${row.sample ? `；样例 ${row.sample}` : ''}；单击添加/改绑，拖到画布新建`"
             @dragstart="onDragStart($event, row)"
@@ -266,8 +270,9 @@ function onPick(item: AgreePrintFieldItem) {
 }
 
 .print-data-panel__fields {
-  max-height: 300px;
-  overflow: auto;
+  /* 统一由字段面板承担滚动，避免字段列表再套一层滚动条。 */
+  max-height: none;
+  overflow: visible;
   background: #fff;
   border: 1px solid #e5e7eb;
   border-radius: 6px;
@@ -275,9 +280,11 @@ function onPick(item: AgreePrintFieldItem) {
 
 .print-data-panel__row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) minmax(72px, 42%);
   gap: 4px;
+  align-items: center;
   width: 100%;
+  min-width: 0;
   padding: 6px 8px;
   text-align: left;
   cursor: grab;
@@ -307,7 +314,11 @@ function onPick(item: AgreePrintFieldItem) {
 }
 
 .print-data-panel__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: #111827;
+  white-space: nowrap;
 }
 
 .print-data-panel__grip {
@@ -315,13 +326,22 @@ function onPick(item: AgreePrintFieldItem) {
 }
 
 .print-data-panel__key {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 10px;
   color: #9ca3af;
+  white-space: nowrap;
 }
 
 .print-data-panel__val {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 10px;
   color: #9ca3af;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .print-data-panel__table-block {
@@ -349,8 +369,10 @@ function onPick(item: AgreePrintFieldItem) {
 }
 
 .print-data-panel__extra {
+  flex: 1;
+  min-height: 0;
   margin-top: 8px;
-  overflow: auto;
+  overflow: hidden auto;
 }
 
 .print-data-panel__collapse-title {

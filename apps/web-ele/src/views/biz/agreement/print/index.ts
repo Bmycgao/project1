@@ -19,6 +19,7 @@ export {
   buildToolboxPrintElement,
   duplicatePrintElement,
   getElementOptions,
+  hasAgreeTableIndexColumn,
   hasMultiRowTableHeader,
   insertLeafTableColumn,
   insertPrintElement,
@@ -32,6 +33,7 @@ export {
   printAlignCss,
   removePrintElement,
   sanitizePrintTemplate,
+  setAgreeTableIndexColumnVisible,
 } from './print-element-meta';
 export type { LeafTableCell, PrintElementRef } from './print-element-meta';
 export {
@@ -100,6 +102,7 @@ export {
   normalizeAgreeBodyCellExprs,
   normalizeAgreeBodyCellMerges,
   removeAgreeBodyCellMergeAt,
+  renumberAgreePrintRowIndexes,
   splitLeafHSpan,
   upsertAgreeBodyCellExpr,
   upsertAgreeBodyCellMerge,

@@ -13,7 +13,10 @@ export function useGridFormSchema() {
       component: 'Select',
       componentProps: {
         allowClear: true,
-        options: [{ label: '协议', value: 'agreement' }],
+        options: [
+          { label: '协议', value: 'agreement' },
+          { label: '发票', value: 'invoice' },
+        ],
       },
       fieldName: 'bizType',
       label: '业务类型',

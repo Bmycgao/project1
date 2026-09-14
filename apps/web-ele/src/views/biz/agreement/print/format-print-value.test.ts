@@ -8,6 +8,37 @@ import {
 } from './format-print-value';
 
 describe('print value formats', () => {
+  it('offers dollar formats with matching table summary precision', () => {
+    expect(formatPrintValue(12_345.678, 'moneyDollar')).toBe('$12,345.68');
+    expect(formatPrintValue(12_345.678, 'moneyDollar0')).toBe('$12,346');
+    expect(formatPrintValue(0, 'moneyDollar')).toBe('$0.00');
+    expect(formatPrintValue(-12.5, 'moneyDollar')).toBe('$-12.50');
+    expect(tableSummaryDecimals('moneyDollar')).toBe(2);
+    expect(tableSummaryDecimals('moneyDollar0')).toBe(0);
+  });
+
+  it.each(
+    AGREE_PRINT_FORMAT_GROUPS.flatMap((group) =>
+      group.options.map((option) => ({
+        format: option.value,
+        value: ['日期', '日期时间', '时间'].includes(group.label)
+          ? '2026-03-05 08:09:07'
+          : 12_345.678,
+      })),
+    ),
+  )('matches the actual print formatter for $format', ({ format, value }) => {
+    // Execute the generated function as hiprint does, instead of only checking its source.
+    // oxlint-disable-next-line eslint/no-new-func
+    const formatter = new Function(
+      `return (${createColumnFormatterSrc(format, false)})`,
+    )();
+    expect(formatter(value, {}, 0, {})).toBe(formatPrintValue(value, format));
+    for (const empty of [null, undefined, '']) {
+      expect(formatter(empty, {}, 0, {})).toBe('');
+      expect(formatPrintValue(empty, format)).toBe('');
+    }
+  });
+
   it('offers grouped, unique formats for the inspector', () => {
     const values = AGREE_PRINT_FORMAT_GROUPS.flatMap((group) =>
       group.options.map((option) => option.value),
@@ -16,6 +47,7 @@ describe('print value formats', () => {
     expect(AGREE_PRINT_FORMAT_GROUPS.map((group) => group.label)).toEqual([
       '数字',
       '金额',
+      '面积',
       '日期',
       '日期时间',
       '时间',
@@ -41,6 +73,16 @@ describe('print value formats', () => {
     expect(formatPrintValue(12_345.67, 'moneyCn')).toBe(
       '壹万贰仟叁佰肆拾伍元陆角柒分',
     );
+  });
+
+  it('formats area with square and cubic metre suffixes', () => {
+    expect(formatPrintValue(86, 'areaM20')).toBe('86㎡');
+    expect(formatPrintValue(86, 'areaM2')).toBe('86.00㎡');
+    expect(formatPrintValue(12.5, 'areaM3')).toBe('12.50m³');
+    expect(formatPrintValue(12.5, 'areaM30')).toBe('13m³');
+    expect(createColumnFormatterSrc('areaM2', false)).toContain('areaM2');
+    expect(tableSummaryDecimals('areaM2')).toBe(2);
+    expect(tableSummaryDecimals('areaM20')).toBe(0);
   });
 
   it('keeps table formatter and summary precision aligned', () => {

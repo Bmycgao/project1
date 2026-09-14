@@ -29,6 +29,7 @@ import {
   ElMessageBox,
   ElOption,
   ElOptionGroup,
+  ElPopover,
   ElSelect,
   ElSwitch,
   ElTabPane,
@@ -36,22 +37,24 @@ import {
   ElTag,
 } from 'element-plus';
 
+import { resolveTablePreview } from './designer/template-model';
 import {
   AGREE_PRINT_ALL_FIELDS,
+  AGREE_PRINT_DERIVED_FIELDS,
+  AGREE_PRINT_TABLE_FIELDS,
+  AGREE_PRINT_TEXT_FIELDS,
   buildPresetTableColumns,
   PRINT_EXPR_HELP,
   PRINT_EXPR_PRESETS,
   TABLE_COLUMN_PRESETS,
 } from './fields';
-import {
-  AGREE_PRINT_FORMAT_GROUPS,
-  formatPrintValue,
-} from './format-print-value';
+import { AGREE_PRINT_FORMAT_GROUPS } from './format-print-value';
 import {
   buildTableHeaderColumns,
   extractTableHeaderGroups,
   flattenTableHeaderColumns,
   groupTableHeaderColumns,
+  hasAgreeTableIndexColumn,
   hasMultiRowTableHeader,
   insertLeafTableColumn,
   listLeafTableCells,
@@ -60,11 +63,19 @@ import {
   patchLeafTableColumns,
   patchTableColumnFieldByIndex,
   patchTableColumns,
+  setAgreeTableIndexColumnVisible,
+  toTableColumnRows,
 } from './print-element-meta';
 import { evalPrintExpr, validatePrintExpr } from './print-expr';
 import PrintFieldPicker from './print-field-picker.vue';
 import { describePrintField } from './print-field-tree';
 import PrintFilterDialog from './print-filter-dialog.vue';
+import {
+  listHeaderMerges,
+  mergeTableHeaders,
+  projectTableHeaders,
+  splitTableHeader,
+} from './print-header-merge';
 import {
   resolvePrintTextSections,
   validatePrintTextTemplate,
@@ -76,12 +87,14 @@ import {
   listFilterColumns,
   previewFilterRowCount,
 } from './print-row-filter';
+import { resolveTableCellColor } from './print-table-color';
 import {
   createEmptyFooterRow,
   mergeFooterCells,
   normalizeAgreeFooters,
   splitFooterCell,
 } from './print-table-footer';
+import { resolvePrintTextValue } from './print-text-value';
 
 const props = defineProps<{
   /** 画布高亮的列下标 */
@@ -237,6 +250,13 @@ const columnPickIndex = ref(-1);
 const headerGroupStart = ref(1);
 const headerGroupEnd = ref(2);
 const headerGroupTitle = ref('分组标题');
+/**
+ * 检视器里刚切换的纵向合并模式。
+ * 「按条件」时若表达式尚未保存，仍靠草稿露出依据字段 / 条件输入框。
+ */
+const mergeModeDraftByCol = ref<Record<number, 'condition' | 'none' | 'same'>>(
+  {},
+);
 
 interface ColDraft {
   rowIndex: number;
@@ -248,9 +268,15 @@ interface ColDraft {
   tableSummary: boolean;
   agreeColExpr: string;
   agreeMergeSame: boolean;
+  agreeMergeKey: string;
+  agreeMergeWhen: string;
   agreeHMergeEmpty: boolean;
   agreeHideZero: boolean;
   agreeColFormat: string;
+  agreeColor?: string;
+  agreeHeaderColor?: string;
+  agreeColorWhen?: string;
+  agreeConditionColor?: string;
 }
 
 const bindField = ref('');
@@ -319,6 +345,366 @@ function setTextSectionCondition(index: number, rawCondition: unknown) {
   section.when = condition;
 }
 const columns = ref<ColDraft[]>([]);
+const editingColIndex = ref(0);
+const columnTab = ref('basic');
+const tableDefaultColor = computed(() =>
+  String(selected.value?.options.color || '#000000'),
+);
+const columnSearch = ref('');
+const conditionOpen = ref<Record<number, boolean>>({});
+const conditionAdvanced = ref<Record<number, boolean>>({});
+const simpleColorOperator = ref('<');
+const simpleColorValue = ref('0');
+const filteredColumns = computed(() =>
+  columns.value
+    .map((col, i) => ({ col, i }))
+    .filter(({ col }) =>
+      `${col.title} ${col.field}`
+        .toLowerCase()
+        .includes(columnSearch.value.trim().toLowerCase()),
+    ),
+);
+const selectedGroupPosition = ref<null | { cell: number; row: number }>(null);
+const selectedGroupHeader = computed(() => {
+  const pos = selectedGroupPosition.value;
+  return pos
+    ? toTableColumnRows(selected.value?.options.columns)[pos.row]?.[pos.cell]
+    : undefined;
+});
+const headerColorTargets = computed(() => {
+  if (selectedGroupPosition.value) return [selectedGroupPosition.value];
+  if (!headerSelectionActive.value || headerRangeError.value) return [];
+  return listLeafTableCells(selected.value?.options.columns)
+    .slice(headerRange.value.start, headerRange.value.end + 1)
+    .map((leaf) => ({ row: leaf.rowIndex, cell: leaf.cellIndex }));
+});
+const selectedHeaderColors = computed(() =>
+  headerColorTargets.value.map((pos) =>
+    String(
+      toTableColumnRows(selected.value?.options.columns)[pos.row]?.[pos.cell]
+        ?.agreeHeaderColor || '',
+    ),
+  ),
+);
+const selectedHeaderColor = computed(() => selectedHeaderColors.value[0] || '');
+const headerColorsMixed = computed(
+  () => new Set(selectedHeaderColors.value).size > 1,
+);
+const columnSamples = computed(() => {
+  const el = selected.value;
+  if (!el) return [];
+  const model = resolveTablePreview(el.options, props.sampleData, 3);
+  const col = model.leafCols[editingColIndex.value] || {};
+  return model.bodyRows
+    .map((row) => row.find((cell) => cell.colIndex === editingColIndex.value))
+    .filter((cell): cell is NonNullable<typeof cell> => !!cell && !cell.hidden)
+    .map((cell) => ({
+      text: cell.text,
+      color:
+        resolveTableCellColor(col, cell.rawRow, sampleCtx.value) ||
+        String(el.options.color || '#000000'),
+    }));
+});
+function colorDescription(color?: string) {
+  return color
+    ? `自定义 · ${color}`
+    : `继承整表 · ${selected.value?.options.color || '黑色'}`;
+}
+function selectGroupHeader(cell: Record<string, any>) {
+  clearHeaderSelection();
+  selectedGroupPosition.value = {
+    row: cell.editorRowIndex,
+    cell: cell.editorCellIndex,
+  };
+}
+function setSelectedHeaderColor(color: null | string) {
+  const el = selected.value;
+  if (!el || !props.templateJson) return;
+  const rows = toTableColumnRows(
+    JSON.parse(JSON.stringify(el.options.columns)),
+  );
+  for (const pos of headerColorTargets.value) {
+    const target = rows[pos.row]?.[pos.cell];
+    if (target) target.agreeHeaderColor = color || '';
+  }
+  emit('canvasPatch', patchTableColumns(props.templateJson, el, rows));
+}
+function parseSimpleColorRule(expression = '') {
+  if (expression === 'EMPTY(value)') return { operator: 'empty', value: '' };
+  const match = /^value\s*(<=|>=|==|!=|<|>)\s*(.+)$/.exec(expression);
+  if (!match) return null;
+  try {
+    const value = JSON.parse(match[2] || '');
+    if (typeof value !== 'string' && typeof value !== 'number') return null;
+    return { operator: match[1] || '==', value: String(value) };
+  } catch {
+    return null;
+  }
+}
+watch(
+  () => [
+    editingColIndex.value,
+    columns.value[editingColIndex.value]?.agreeColorWhen,
+  ],
+  () => {
+    const col = columns.value[editingColIndex.value];
+    const parsed = parseSimpleColorRule(col?.agreeColorWhen);
+    simpleColorOperator.value =
+      parsed?.operator || (col && isNumericDataCol(col) ? '<' : '==');
+    simpleColorValue.value = parsed?.value || '';
+  },
+);
+function useAdvancedColor(col: ColDraft, index: number) {
+  return (
+    conditionAdvanced.value[index] ||
+    (!!col.agreeColorWhen && !parseSimpleColorRule(col.agreeColorWhen))
+  );
+}
+function saveSimpleColorRule(col: ColDraft) {
+  if (simpleColorOperator.value === 'empty')
+    col.agreeColorWhen = 'EMPTY(value)';
+  else {
+    const value = isNumericDataCol(col)
+      ? Number(simpleColorValue.value)
+      : simpleColorValue.value;
+    if (
+      isNumericDataCol(col) &&
+      (!simpleColorValue.value.trim() || !Number.isFinite(value))
+    ) {
+      ElMessage.warning('请输入有效的比较数值');
+      return;
+    }
+    col.agreeColorWhen = `value ${simpleColorOperator.value} ${JSON.stringify(value)}`;
+  }
+  col.agreeConditionColor ||= '#dc2626';
+  onColumnFlagChange();
+}
+function openAdvancedColor(col: ColDraft, index: number) {
+  if (simpleColorOperator.value === 'empty' || simpleColorValue.value !== '')
+    saveSimpleColorRule(col);
+  conditionAdvanced.value[index] = true;
+}
+function saveAdvancedColorRule(col: ColDraft) {
+  if (col.agreeColorWhen?.trim()) col.agreeConditionColor ||= '#dc2626';
+  onColumnFlagChange();
+}
+function removeColorCondition(col: ColDraft, index: number) {
+  col.agreeColorWhen = '';
+  col.agreeConditionColor = '';
+  conditionOpen.value[index] = false;
+  conditionAdvanced.value[index] = false;
+  onColumnFlagChange();
+}
+
+const columnSections = ref<string[]>([]);
+const editingColumns = computed(() => {
+  const col = columns.value[editingColIndex.value];
+  return col ? [{ col, i: editingColIndex.value }] : [];
+});
+const editingExprCheck = computed(() => columnExprCheck(editingColIndex.value));
+const editorHeaderRows = computed(() =>
+  projectTableHeaders(selected.value?.options.columns),
+);
+const headerMergeStart = ref(1);
+const headerMergeEnd = ref(1);
+const headerMergeTitle = ref('');
+const headerSelectionActive = ref(false);
+const headerSelectionPending = ref(false);
+const headerMerges = computed(() =>
+  listHeaderMerges(selected.value?.options.columns),
+);
+const headerRange = computed(() => ({
+  start: Math.min(headerMergeStart.value, headerMergeEnd.value) - 1,
+  end: Math.max(headerMergeStart.value, headerMergeEnd.value) - 1,
+}));
+const selectedHeaderMerge = computed(() =>
+  headerSelectionActive.value
+    ? headerMerges.value.find(
+        (group) =>
+          group.fromLeaf === headerRange.value.start &&
+          group.toLeaf === headerRange.value.end,
+      )
+    : undefined,
+);
+const headerRangeError = computed(() => {
+  if (
+    !headerSelectionActive.value ||
+    headerRange.value.start === headerRange.value.end
+  )
+    return '';
+  try {
+    mergeTableHeaders(
+      selected.value?.options.columns,
+      headerRange.value.start,
+      headerRange.value.end,
+    );
+    return '';
+  } catch (error: any) {
+    return error?.message || '请选择同层、同一上级分组内的相邻表头';
+  }
+});
+const selectedHeaderColumns = computed(() =>
+  headerSelectionActive.value
+    ? columns.value
+        .slice(headerRange.value.start, headerRange.value.end + 1)
+        .map((col, index) => ({ col, index: headerRange.value.start + index }))
+    : [],
+);
+
+watch(selectedHeaderMerge, (group) => {
+  headerMergeTitle.value = group?.title || '';
+});
+watch(
+  () => props.selectedKey,
+  () => {
+    clearHeaderSelection();
+    columnSearch.value = '';
+    conditionOpen.value = {};
+    conditionAdvanced.value = {};
+  },
+);
+watch(tableEditorOpen, clearHeaderSelection);
+
+function clearHeaderSelection() {
+  selectedGroupPosition.value = null;
+  headerSelectionActive.value = false;
+  headerSelectionPending.value = false;
+  headerMergeTitle.value = '';
+}
+function headerIsSelected(start: number | undefined, end: number) {
+  return (
+    headerSelectionActive.value &&
+    start !== undefined &&
+    start >= headerRange.value.start &&
+    end <= headerRange.value.end
+  );
+}
+function selectExactHeaderRange() {
+  selectedGroupPosition.value = null;
+  headerSelectionActive.value = true;
+  headerSelectionPending.value = false;
+  headerMergeTitle.value = selectedHeaderMerge.value?.title || '';
+}
+
+function selectHeaderRange(start: number, end: number, event: MouseEvent) {
+  selectedGroupPosition.value = null;
+  if (
+    headerSelectionActive.value &&
+    headerSelectionPending.value &&
+    !event.shiftKey &&
+    start === headerRange.value.start &&
+    end === headerRange.value.end
+  ) {
+    clearHeaderSelection();
+    return;
+  }
+  if (
+    headerSelectionActive.value &&
+    (event.shiftKey || (headerSelectionPending.value && start === end))
+  ) {
+    const from = Math.min(headerRange.value.start, start);
+    const to = Math.max(headerRange.value.end, end);
+    if (from !== to) {
+      try {
+        mergeTableHeaders(selected.value?.options.columns, from, to);
+      } catch (error: any) {
+        ElMessage.warning(error?.message || '无法选择此范围');
+        return;
+      }
+    }
+    headerMergeStart.value = from + 1;
+    headerMergeEnd.value = to + 1;
+    headerSelectionPending.value = false;
+    headerMergeTitle.value = selectedHeaderMerge.value?.title || '';
+  } else {
+    headerMergeStart.value = start + 1;
+    headerMergeEnd.value = end + 1;
+    headerSelectionActive.value = true;
+    headerSelectionPending.value = start === end;
+    headerMergeTitle.value = selectedHeaderMerge.value?.title || '';
+  }
+}
+
+function applyHeaderMerge() {
+  const el = selected.value;
+  if (!el || !props.templateJson) return;
+  try {
+    const renaming = !!selectedHeaderMerge.value;
+    const nextColumns = mergeTableHeaders(
+      el.options.columns,
+      headerMergeStart.value - 1,
+      headerMergeEnd.value - 1,
+      headerMergeTitle.value,
+    );
+    emit('canvasPatch', patchTableColumns(props.templateJson, el, nextColumns));
+    headerSelectionPending.value = false;
+    ElMessage.success(
+      renaming ? '表头标题已更新' : '表头已合并，下面的数据列保持独立',
+    );
+  } catch (error: any) {
+    ElMessage.warning(error?.message || '表头合并失败');
+  }
+}
+
+function splitHeaderMerge(id: string) {
+  const el = selected.value;
+  if (!el || !props.templateJson) return;
+  emit(
+    'canvasPatch',
+    patchTableColumns(
+      props.templateJson,
+      el,
+      splitTableHeader(el.options.columns, id),
+    ),
+  );
+  clearHeaderSelection();
+  ElMessage.success('已恢复各列原来的表头');
+}
+
+function presetNegativeColor(col: ColDraft) {
+  col.agreeColorWhen = 'value < 0';
+  col.agreeConditionColor = '#dc2626';
+  onColumnFlagChange();
+}
+function columnRuleLabels(col: ColDraft, index: number) {
+  return [
+    col.agreeColExpr.trim() ? '公式' : '',
+    col.tableSummary ? '合计' : '',
+    col.agreeColFormat ? '格式' : '',
+    col.agreeColor ? '列颜色' : '',
+    col.agreeColorWhen && col.agreeConditionColor ? '条件颜色' : '',
+    col.agreeHideZero ? '隐藏零值' : '',
+    columnMergeMode(col, index) !== 'none' || col.agreeHMergeEmpty
+      ? '合并'
+      : '',
+  ].filter(Boolean);
+}
+
+function columnMergeSummary(col: ColDraft, index: number) {
+  const mode = columnMergeMode(col, index);
+  const modeLabels = {
+    condition: '按条件纵向合并',
+    none: '',
+    same: '相同值纵向合并',
+  };
+  return (
+    [modeLabels[mode], col.agreeHMergeEmpty ? '空单元格向左合并' : '']
+      .filter(Boolean)
+      .join(' · ') || '未启用'
+  );
+}
+
+watch(editingColIndex, () => {
+  columnSections.value = [];
+});
+watch(
+  () => props.highlightColIndex,
+  (index) => {
+    if (index !== undefined && index >= 0 && index < columns.value.length) {
+      editingColIndex.value = index;
+    }
+  },
+);
 /** 表尾行草稿 */
 const footerRows = ref<AgreeFooterRow[]>([]);
 /** 表尾编辑焦点 */
@@ -326,7 +712,12 @@ const footerFocusRow = ref(0);
 const footerFocusCell = ref(0);
 const rowFilter = ref('');
 const agreeVisibleWhen = ref('');
+/** 高级表达式输入框，用于在光标处插入字段 */
+const visibleExprInputRef = ref<null | {
+  textarea?: HTMLTextAreaElement;
+}>(null);
 const agreeFlowGroup = ref('');
+const agreeFlowFloat = ref<'left' | 'none' | 'right'>('left');
 const agreeFormat = ref('');
 /** hiprint 原生样式字段；新检视器只负责编辑，不改变预览/打印协议。 */
 const styleFontFamily = ref('');
@@ -416,16 +807,44 @@ const sampleCtx = computed(
 const visibleFields = AGREE_PRINT_ALL_FIELDS.filter(
   (item) => item.group !== 'table',
 );
+/** 高级表达式：协议主字段（点选插入） */
+const visibleExprTextFields = AGREE_PRINT_TEXT_FIELDS.filter(
+  (item) =>
+    !['amountCn', 'barcodeContent', 'printMeta', 'qrcodeContent'].includes(
+      item.field,
+    ),
+);
+/** 高级表达式：派生布尔/合计字段 */
+const visibleExprDerivedFields = AGREE_PRINT_DERIVED_FIELDS;
+/** 高级表达式：整表数组（配合 COUNT / SUM） */
+const visibleExprTableFields = AGREE_PRINT_TABLE_FIELDS;
+/** 常用运算符 / 函数片段 */
+const VISIBLE_EXPR_SNIPPETS = [
+  { label: '且 &&', value: ' && ' },
+  { label: '或 ||', value: ' || ' },
+  { label: '非 !', value: '!' },
+  { label: '等于 ==', value: ' == ' },
+  { label: '大于 >', value: ' > ' },
+  { label: 'EMPTY', value: 'EMPTY()' },
+  { label: 'COUNT', value: 'COUNT()' },
+  { label: 'SUM', value: 'SUM(, "")' },
+  { label: 'IN', value: 'IN(, "")' },
+] as const;
 const visibleOperatorNeedsValue = computed(
   () =>
     VISIBLE_OPERATORS.find((item) => item.value === visibleOperator.value)
       ?.needsValue === true,
 );
 const textFormatPreview = computed(() => {
-  if (!isTextLike.value || !agreeFormat.value || !bindField.value) return '';
-  const raw = sampleCtx.value[bindField.value];
-  if (raw === undefined || raw === null || raw === '') return '';
-  return formatPrintValue(raw, agreeFormat.value, sampleCtx.value);
+  if (!isTextLike.value || !agreeFormat.value) return '';
+  return resolvePrintTextValue(
+    {
+      ...selected.value?.options,
+      field: bindField.value,
+      agreeFormat: agreeFormat.value,
+    },
+    sampleCtx.value,
+  );
 });
 
 const currentTableField = computed(() =>
@@ -473,10 +892,31 @@ const filterSummary = computed(() =>
   describeFilterExpr(rowFilter.value, filterColumns.value),
 );
 
+/** 表格列字段属于逐行上下文，不能直接用于整表显隐。 */
+const visibleRowField = computed(() => {
+  if (!isTable.value || !agreeVisibleWhen.value.trim()) return '';
+  const code = agreeVisibleWhen.value.replaceAll(
+    /(['"])(?:\\.|(?!\1).)*\1/g,
+    '',
+  );
+  return (
+    columns.value.find((column) => {
+      const field = String(column.field || '').trim();
+      return field && new RegExp(`\\b${field}\\b`).test(code);
+    })?.field || ''
+  );
+});
+
 /** 条件显隐校验（样例数据下将打印 / 将隐藏） */
-const visibleCheck = computed(() =>
-  validatePrintExpr(agreeVisibleWhen.value, sampleCtx.value),
-);
+const visibleCheck = computed(() => {
+  if (visibleRowField.value) {
+    return {
+      message: `${visibleRowField.value} 是表体行字段；整表显隐不能直接使用它，请到“数据 → 编辑表格结构与计算”设置单元格公式。`,
+      ok: false,
+    };
+  }
+  return validatePrintExpr(agreeVisibleWhen.value, sampleCtx.value);
+});
 
 function readStyleNumber(value: unknown) {
   if (value === '' || value === null || value === undefined) return undefined;
@@ -763,6 +1203,20 @@ watch(
       ? 'simple'
       : 'advanced';
     agreeFlowGroup.value = String(el.options.agreeFlowGroup || '');
+    const groupFloat = agreeFlowGroup.value
+      ? elements.value.find(
+          (item) =>
+            item.panelIndex === el.panelIndex &&
+            String(item.options.agreeFlowGroup || '') ===
+              agreeFlowGroup.value &&
+            ['left', 'none', 'right'].includes(
+              String(item.options.agreeFlowFloat || ''),
+            ),
+        )?.options.agreeFlowFloat
+      : el.options.agreeFlowFloat;
+    const flowFloat = String(groupFloat || 'left');
+    agreeFlowFloat.value =
+      flowFloat === 'right' || flowFloat === 'none' ? flowFloat : 'left';
     agreeFormat.value = String(el.options.agreeFormat || '');
     styleFontFamily.value = String(el.options.fontFamily || '');
     styleFontSize.value = readStyleNumber(el.options.fontSize);
@@ -806,6 +1260,7 @@ watch(
     );
     styleTableFooterBorder.value = String(el.options.tableFooterBorder || '');
     syncingCols = true;
+    mergeModeDraftByCol.value = {};
     columns.value = listLeafTableCells(el.options.columns).map((c) => ({
       rowIndex: c.rowIndex,
       cellIndex: c.cellIndex,
@@ -816,11 +1271,29 @@ watch(
       tableSummary: c.tableSummary,
       agreeColExpr: c.agreeColExpr,
       agreeMergeSame: c.agreeMergeSame,
+      agreeMergeKey: c.agreeMergeKey,
+      agreeMergeWhen: c.agreeMergeWhen,
       agreeHMergeEmpty: c.agreeHMergeEmpty,
       agreeHideZero: c.agreeHideZero,
       agreeColFormat: c.agreeColFormat,
+      agreeColor: c.agreeColor,
+      agreeHeaderColor: c.agreeHeaderColor,
+      agreeColorWhen: c.agreeColorWhen,
+      agreeConditionColor: c.agreeConditionColor,
     }));
     const leafCount = columns.value.length;
+    headerMergeStart.value = Math.max(
+      1,
+      Math.min(headerMergeStart.value, leafCount),
+    );
+    headerMergeEnd.value = Math.max(
+      1,
+      Math.min(headerMergeEnd.value, leafCount),
+    );
+    editingColIndex.value = Math.max(
+      0,
+      Math.min(editingColIndex.value, leafCount - 1),
+    );
     headerGroupStart.value = Math.min(
       Math.max(1, headerGroupStart.value || 1),
       Math.max(1, leafCount),
@@ -851,6 +1324,8 @@ watch(
   () => props.selectedKey,
   () => {
     tableEditorOpen.value = false;
+    editingColIndex.value = 0;
+    columnSections.value = [];
     textSectionsOpen.value = false;
     if (selected.value) activeTab.value = 'data';
   },
@@ -908,7 +1383,7 @@ defineExpose({
    */
   focusColumn(colIndex: number) {
     activeTab.value = 'data';
-    emit('highlightCol', colIndex);
+    onColCardClick(colIndex);
     void nextTick(() => {
       document
         .querySelector(`.print-inspector__col[data-col-index="${colIndex}"]`)
@@ -1088,6 +1563,51 @@ async function applyTableSource(usePreset: boolean) {
 function persistColumns(opts?: { remount?: boolean; silent?: boolean }) {
   const el = selected.value;
   if (!el || !props.templateJson) return;
+  const source = (props.sampleData as unknown as Record<string, unknown>)[
+    currentTableField.value
+  ];
+  const firstRow =
+    Array.isArray(source) && source[0] && typeof source[0] === 'object'
+      ? (source[0] as Record<string, unknown>)
+      : {};
+  const mergeCheckContext = {
+    ...sampleCtx.value,
+    ...firstRow,
+    i: 0,
+    index: 0,
+    row: firstRow,
+  };
+  const invalidColor = columns.value.find(
+    (column) =>
+      column.agreeColorWhen?.trim() &&
+      !validatePrintExpr(column.agreeColorWhen, {
+        ...mergeCheckContext,
+        value: firstRow[column.field],
+      }).ok,
+  );
+  if (invalidColor) {
+    ElMessage.error('颜色条件无效，请检查字段、比较符或函数');
+    return;
+  }
+  const invalidMerge = columns.value.find(
+    (column) =>
+      column.agreeMergeWhen.trim() &&
+      !validatePrintExpr(column.agreeMergeWhen, mergeCheckContext).ok,
+  );
+  if (invalidMerge) {
+    ElMessage.error('纵向合并条件无效，请检查字段、比较符或函数');
+    return;
+  }
+  const unfinishedCondition = columns.value.find((column, index) => {
+    return (
+      columnMergeMode(column, index) === 'condition' &&
+      !column.agreeMergeWhen.trim()
+    );
+  });
+  if (unfinishedCondition) {
+    ElMessage.error("按条件合并请填写合并条件，例如 category == 'a1'");
+    return;
+  }
   const next = patchLeafTableColumns(props.templateJson, el, columns.value);
   const withFilter = patchElementOptions(next, el, {
     field: bindField.value.trim(),
@@ -1138,6 +1658,55 @@ function onColumnFlagChange() {
   persistColumns({ remount: false, silent: true });
 }
 
+/**
+ * 读列的纵向合并模式（草稿优先，便于「按条件」尚未填表达式时仍露出输入框）
+ * @param col 列草稿
+ * @param index 列下标
+ */
+function columnMergeMode(
+  col: ColDraft,
+  index: number,
+): 'condition' | 'none' | 'same' {
+  const draft = mergeModeDraftByCol.value[index];
+  if (draft) return draft;
+  if (col.agreeMergeWhen.trim()) return 'condition';
+  if (col.agreeMergeSame || col.agreeMergeKey.trim()) return 'same';
+  return 'none';
+}
+
+/**
+ * 切换纵向合并模式并写回列配置
+ * @param col 列草稿
+ * @param index 列下标
+ * @param value none | same | condition
+ */
+function setColumnMergeMode(col: ColDraft, index: number, value: string) {
+  const mode =
+    value === 'condition' || value === 'same' || value === 'none'
+      ? value
+      : 'none';
+  mergeModeDraftByCol.value = {
+    ...mergeModeDraftByCol.value,
+    [index]: mode,
+  };
+  if (mode === 'none') {
+    col.agreeMergeSame = false;
+    col.agreeMergeKey = '';
+    col.agreeMergeWhen = '';
+  } else if (mode === 'same') {
+    col.agreeMergeSame = true;
+    col.agreeMergeWhen = '';
+  } else {
+    // 条件合并：挂在列上，不要求每个单元格单独绑字段
+    col.agreeMergeSame = false;
+    if (!col.agreeMergeWhen.trim()) {
+      const field = col.field.trim() || 'category';
+      col.agreeMergeWhen = `${field} == 'a1'`;
+    }
+  }
+  onColumnFlagChange();
+}
+
 function onColumnExprChange(colIndex: number) {
   const check = columnExprCheck(colIndex);
   if (!check.ok) {
@@ -1164,6 +1733,17 @@ function createHeaderGroup() {
   try {
     const from = Math.min(headerGroupStart.value, headerGroupEnd.value);
     const to = Math.max(headerGroupStart.value, headerGroupEnd.value);
+    if (
+      headerMerges.value.some(
+        (group) =>
+          group.toLeaf >= from - 1 &&
+          group.fromLeaf <= to - 1 &&
+          (group.fromLeaf < from - 1 || group.toLeaf > to - 1),
+      )
+    ) {
+      ElMessage.warning('分组边界不能穿过已合并表头，请先拆分表头');
+      return;
+    }
     const grouped = groupTableHeaderColumns(
       el.options.columns,
       from - 1,
@@ -1221,6 +1801,27 @@ function persistRulesSilent() {
   persistRules({ silent: true });
 }
 
+/** 同行收拢方向是组级配置，一次同步到当前页的全部同组元素。 */
+function persistFlowFloat() {
+  const el = selected.value;
+  if (!el || !props.templateJson) return;
+  const group = agreeFlowGroup.value.trim();
+  const targets = group
+    ? elements.value.filter(
+        (item) =>
+          item.panelIndex === el.panelIndex &&
+          String(item.options.agreeFlowGroup || '').trim() === group,
+      )
+    : [el];
+  let next = props.templateJson;
+  for (const target of targets) {
+    next = patchElementOptions(next, target, {
+      agreeFlowFloat: agreeFlowFloat.value,
+    });
+  }
+  emit('canvasPatch', next, { remount: false });
+}
+
 /**
  * 填入显隐预设并立刻写回
  * @param value 表达式
@@ -1231,6 +1832,29 @@ function applyVisiblePreset(value: string) {
     ? 'simple'
     : 'advanced';
   persistRules({ silent: true });
+}
+
+/**
+ * 在高级表达式光标处插入字段或运算符片段
+ * @param token 插入文本，如 hasRewards、 &&
+ */
+function insertVisibleExprToken(token: string) {
+  const textarea = visibleExprInputRef.value?.textarea;
+  const current = agreeVisibleWhen.value || '';
+  if (!textarea) {
+    agreeVisibleWhen.value = `${current}${token}`;
+    persistRulesSilent();
+    return;
+  }
+  const start = textarea.selectionStart ?? current.length;
+  const end = textarea.selectionEnd ?? start;
+  agreeVisibleWhen.value = `${current.slice(0, start)}${token}${current.slice(end)}`;
+  void nextTick(() => {
+    textarea.focus();
+    const pos = start + token.length;
+    textarea.setSelectionRange(pos, pos);
+  });
+  persistRulesSilent();
 }
 
 /**
@@ -1272,13 +1896,18 @@ function addEmptyColumn(afterIndex = columns.value.length - 1) {
   const el = selected.value;
   if (!el || !props.templateJson) return;
   try {
-    const next = insertLeafTableColumn(props.templateJson, el, afterIndex, {
+    const newColumn = {
       align: 'left',
       field: '',
       title: '新列',
       width: 80,
-    });
+    } as const;
+    const next =
+      columns.value.length > 0
+        ? insertLeafTableColumn(props.templateJson, el, afterIndex, newColumn)
+        : patchTableColumns(props.templateJson, el, [[newColumn]]);
     emit('canvasPatch', next);
+    editingColIndex.value = afterIndex + 1;
     ElMessage.success('已在右侧新增一列，请设置表头、字段或公式');
   } catch (error: any) {
     ElMessage.error(error?.message || '新增列失败');
@@ -1286,8 +1915,46 @@ function addEmptyColumn(afterIndex = columns.value.length - 1) {
 }
 
 function removeColumn(index: number) {
+  if (columns.value.length <= 1) {
+    ElMessage.info('表格至少需要保留一列');
+    return;
+  }
   columns.value.splice(index, 1);
+  mergeModeDraftByCol.value = {};
+  editingColIndex.value = Math.max(
+    0,
+    Math.min(index, columns.value.length - 1),
+  );
   persistColumns({ remount: true, silent: true });
+}
+
+/** 当前表格是否已配置序号列 */
+const showIndexColumn = computed(() =>
+  hasAgreeTableIndexColumn(selected.value?.options?.columns),
+);
+
+/**
+ * 开关表格自增序号列（最左侧 field=index）
+ * @param visible 是否显示
+ */
+function onToggleIndexColumn(visible: boolean | number | string) {
+  const el = selected.value;
+  if (!el || !props.templateJson) return;
+  try {
+    const next = setAgreeTableIndexColumnVisible(
+      props.templateJson,
+      el,
+      Boolean(visible),
+    );
+    emit('canvasPatch', next);
+    ElMessage.success(
+      visible
+        ? '已显示自增序号列'
+        : '已隐藏序号列（数据仍保留 index，仅不打印）',
+    );
+  } catch (error: any) {
+    ElMessage.error(error?.message || '切换序号列失败');
+  }
 }
 
 /**
@@ -1383,6 +2050,7 @@ function onFooterCellBlur(_cell: AgreeFooterCell) {
  * @param colIndex 列下标
  */
 function onColCardClick(colIndex: number) {
+  editingColIndex.value = colIndex;
   emit('highlightCol', colIndex);
 }
 
@@ -1646,6 +2314,18 @@ function elementTypeLabel(el: PrintElementRef) {
               <span> · {{ isMultiRowHeader ? '多层表头' : '单层表头' }}</span>
               <span> · {{ footerRows.length }} 行表尾</span>
             </div>
+            <div class="print-inspector__index-toggle">
+              <span
+                title="打开后在表格最左侧增加序号列；打印时按筛行后的可见行从 1 自增"
+              >
+                显示序号
+              </span>
+              <ElSwitch
+                :model-value="showIndexColumn"
+                size="small"
+                @change="onToggleIndexColumn"
+              />
+            </div>
             <p>字段、列宽、公式、表头分组和表尾结构集中到宽弹窗中编辑。</p>
             <ElButton type="primary" plain @click="tableEditorOpen = true">
               编辑表格结构与计算
@@ -1654,8 +2334,10 @@ function elementTypeLabel(el: PrintElementRef) {
 
           <ElDialog
             v-model="tableEditorOpen"
+            body-class="print-inspector__table-dialog-body"
             title="表格结构、字段与计算"
-            width="min(1080px, 94vw)"
+            width="min(1180px, 94vw)"
+            top="5vh"
             append-to-body
             destroy-on-close
           >
@@ -1667,10 +2349,20 @@ function elementTypeLabel(el: PrintElementRef) {
             />
 
             <div class="print-inspector__col-head">
-              <span>列映射</span>
-              <ElButton size="small" text @click="addEmptyColumn()">
-                加列
-              </ElButton>
+              <span>列配置</span>
+              <div class="print-inspector__col-head-actions">
+                <span class="print-inspector__index-toggle">
+                  显示序号
+                  <ElSwitch
+                    :model-value="showIndexColumn"
+                    size="small"
+                    @change="onToggleIndexColumn"
+                  />
+                </span>
+                <ElButton size="small" text @click="addEmptyColumn()">
+                  添加数据列
+                </ElButton>
+              </div>
             </div>
             <p v-if="isMultiRowHeader" class="print-inspector__hint mb-2">
               多层表头：继续选择已有分组内部的连续列，可再建立下一层；交叉重叠范围会被阻止。
@@ -1742,205 +2434,769 @@ function elementTypeLabel(el: PrintElementRef) {
                 列）
               </ElTag>
             </div>
-            <div class="print-inspector__columns-grid">
+            <section
+              v-if="columns.length"
+              class="print-inspector__structure-preview"
+              aria-label="表头结构预览"
+              @click.self="clearHeaderSelection"
+              @keydown.esc.stop="clearHeaderSelection"
+            >
+              <div class="print-inspector__section-heading">
+                <strong>表头结构预览</strong>
+                <span>依次点击起点和终点选择范围；点击已合并表头可改标题或拆分</span>
+              </div>
               <div
-                v-for="(col, i) in columns"
-                :key="i"
-                class="print-inspector__col"
-                :class="{ 'is-col-highlight': highlightColIndex === i }"
-                :data-col-index="i"
-                @click="onColCardClick(i)"
+                class="print-inspector__header-scroll"
+                @click.self="clearHeaderSelection"
               >
-                <div class="print-inspector__col-id">
-                  <ElInput
-                    v-model="col.title"
-                    size="small"
-                    placeholder="表头"
-                    @blur="onColumnMetaChange"
-                  />
-                  <div class="print-inspector__col-field">
-                    <ElInput
-                      v-model="col.field"
-                      size="small"
-                      placeholder="field"
-                      @blur="onColumnMetaChange"
-                    />
-                    <ElButton
-                      size="small"
-                      @click="openFieldPicker('column', i)"
+                <table>
+                  <thead>
+                    <tr
+                      v-for="(row, rowIndex) in editorHeaderRows"
+                      :key="rowIndex"
                     >
-                      选
-                    </ElButton>
-                  </div>
+                      <th
+                        v-for="(cell, cellIndex) in row"
+                        :key="cellIndex"
+                        :colspan="cell.colspan"
+                        :rowspan="cell.rowspan"
+                        :class="{
+                          'is-selected': headerIsSelected(
+                            cell.editorLeafIndex,
+                            cell.editorLeafEnd,
+                          ),
+                        }"
+                      >
+                        <button
+                          v-if="cell.editorLeafIndex !== undefined"
+                          type="button"
+                          :aria-pressed="
+                            headerIsSelected(
+                              cell.editorLeafIndex,
+                              cell.editorLeafEnd,
+                            )
+                          "
+                          @click="
+                            selectHeaderRange(
+                              cell.editorLeafIndex,
+                              cell.editorLeafEnd,
+                              $event,
+                            )
+                          "
+                        >
+                          <small>第 {{ cell.editorLeafIndex + 1
+                            }}<template
+                              v-if="cell.editorLeafEnd > cell.editorLeafIndex"
+                              >–{{ cell.editorLeafEnd + 1 }}</template>
+                            列</small>
+                          {{ cell.title || cell.field || '未命名列' }}
+                        </button>
+                        <button
+                          v-else
+                          type="button"
+                          :aria-pressed="
+                            selectedGroupPosition?.row ===
+                              cell.editorRowIndex &&
+                            selectedGroupPosition?.cell === cell.editorCellIndex
+                          "
+                          @click="selectGroupHeader(cell)"
+                        >
+                          {{ cell.title }}
+                        </button>
+                      </th>
+                    </tr>
+                  </thead>
+                </table>
+              </div>
+              <div
+                v-if="headerSelectionActive || selectedGroupHeader"
+                class="print-inspector__header-actions"
+                aria-label="所选表头操作"
+              >
+                <div class="print-inspector__section-heading">
+                  <strong v-if="selectedGroupHeader" aria-live="polite">已选择分组：{{ selectedGroupHeader.title }}</strong>
+                  <strong v-else aria-live="polite">已选择第 {{ headerRange.start + 1
+                    }}<template v-if="headerRange.end > headerRange.start">–{{ headerRange.end + 1 }}</template>
+                    列</strong>
+                  <ElButton size="small" text @click="clearHeaderSelection">
+                    清空选择
+                  </ElButton>
+                </div>
+                <div class="print-inspector__header-tools">
+                  <span>表头文字颜色</span>
+                  <ElColorPicker
+                    :model-value="selectedHeaderColor || tableDefaultColor"
+                    aria-label="所选表头文字颜色"
+                    size="small"
+                    :disabled="!headerColorTargets.length"
+                    @change="setSelectedHeaderColor"
+                  />
+                  <span>{{
+                    headerColorsMixed
+                      ? '多种颜色'
+                      : colorDescription(selectedHeaderColor)
+                  }}</span>
                   <ElButton
+                    v-if="selectedHeaderColors.some(Boolean)"
                     size="small"
                     text
-                    type="danger"
-                    @click="removeColumn(i)"
+                    @click="setSelectedHeaderColor(null)"
                   >
-                    删
-                  </ElButton>
-                  <ElButton size="small" text @click.stop="addEmptyColumn(i)">
-                    右加列
+                    恢复继承
                   </ElButton>
                 </div>
-                <div class="print-inspector__col-ops">
-                  <span class="print-inspector__col-label">宽</span>
-                  <ElInputNumber
-                    v-model="col.width"
-                    class="print-inspector__col-width"
-                    size="small"
-                    :min="24"
-                    :max="400"
-                    :step="1"
-                    :precision="0"
-                    controls-position="right"
-                    @change="onColumnMetaChange"
-                  />
-                  <span class="print-inspector__col-label">对齐</span>
-                  <ElSelect
-                    v-model="col.align"
-                    class="print-inspector__col-align"
-                    size="small"
-                    @change="onColumnMetaChange"
-                  >
-                    <ElOption
-                      v-for="p in ALIGN_OPTIONS"
-                      :key="p.value"
-                      :label="p.label"
-                      :value="p.value"
-                    />
-                  </ElSelect>
-                  <template v-if="showColFormat(col)">
-                    <span class="print-inspector__col-label">格式</span>
-                    <ElSelect
-                      v-model="col.agreeColFormat"
-                      class="print-inspector__col-format"
-                      size="small"
-                      clearable
-                      filterable
-                      placeholder="原值"
-                      @change="onColumnFlagChange"
-                    >
-                      <ElOptionGroup
-                        v-for="group in AGREE_PRINT_FORMAT_GROUPS"
-                        :key="group.label"
-                        :label="group.label"
-                      >
-                        <ElOption
-                          v-for="p in group.options"
-                          :key="p.value"
-                          :label="p.label"
-                          :value="p.value"
-                        />
-                      </ElOptionGroup>
-                    </ElSelect>
-                  </template>
-                  <template v-if="isNumericDataCol(col)">
-                    <span class="print-inspector__col-label">合计</span>
-                    <ElSwitch
-                      v-model="col.tableSummary"
-                      size="small"
-                      @change="onColumnFlagChange"
-                    />
-                    <span class="print-inspector__col-label">隐零</span>
-                    <ElSwitch
-                      v-model="col.agreeHideZero"
-                      size="small"
-                      @change="onColumnFlagChange"
-                    />
-                  </template>
-                  <span class="print-inspector__col-label">合并</span>
-                  <ElSwitch
-                    v-model="col.agreeMergeSame"
-                    size="small"
-                    @change="onColumnFlagChange"
-                  />
-                  <span
-                    v-if="i > 0"
-                    class="print-inspector__col-label"
-                    title="此列为空时并入左边（该列所有空行）；点某一行格子可单独合并覆盖"
-                  >
-                    空并左
-                  </span>
-                  <ElSwitch
-                    v-if="i > 0"
-                    v-model="col.agreeHMergeEmpty"
-                    size="small"
-                    @change="onColumnFlagChange"
-                  />
-                </div>
-                <div class="print-inspector__formula" @click.stop>
-                  <span class="print-inspector__col-label">单元格公式（逐行）</span>
+                <p
+                  v-if="!selectedGroupHeader && headerRangeError"
+                  class="print-inspector__selection-error"
+                  role="alert"
+                >
+                  {{ headerRangeError }}
+                </p>
+                <div
+                  v-else-if="
+                    !selectedGroupHeader && headerRange.end > headerRange.start
+                  "
+                  class="print-inspector__header-tools"
+                >
+                  <label for="selected-header-title">{{
+                    selectedHeaderMerge ? '表头标题' : '合并后的标题'
+                  }}</label>
                   <ElInput
-                    v-model="col.agreeColExpr"
+                    id="selected-header-title"
+                    v-model="headerMergeTitle"
+                    aria-label="合并后的表头标题"
+                    class="print-inspector__header-title"
                     size="small"
-                    clearable
-                    placeholder="如 quantity * unitPrice；空则显示字段原值"
-                    @blur="onColumnExprChange(i)"
+                    placeholder="留空沿用左侧表头标题"
+                    @keydown.enter="applyHeaderMerge"
                   />
-                  <div class="flex flex-wrap gap-1">
-                    <ElButton
-                      size="small"
-                      text
-                      @click="
-                        applyColumnExprPreset(
-                          i,
-                          `ROUND(${col.field || 'amount'}, 2)`,
-                        )
-                      "
-                    >
-                      四舍五入
-                    </ElButton>
-                    <ElButton
-                      size="small"
-                      text
-                      @click="
-                        applyColumnExprPreset(
-                          i,
-                          `IF(${col.field || 'amount'} > 0, ${col.field || 'amount'}, 0)`,
-                        )
-                      "
-                    >
-                      IF 条件
-                    </ElButton>
-                    <ElButton
-                      size="small"
-                      text
-                      @click="
-                        applyColumnExprPreset(
-                          i,
-                          `${col.field || 'amount'} > 0 ? ${col.field || 'amount'} : 0`,
-                        )
-                      "
-                    >
-                      三元条件
-                    </ElButton>
-                    <ElButton
-                      size="small"
-                      text
-                      @click="
-                        applyColumnExprPreset(
-                          i,
-                          `SQRT(POW(NUMBER(${col.field || 'amount'}), 2))`,
-                        )
-                      "
-                    >
-                      科学函数
-                    </ElButton>
-                  </div>
-                  <ElAlert
-                    v-if="col.agreeColExpr"
-                    :closable="false"
-                    :type="columnExprCheck(i).ok ? 'success' : 'error'"
-                    :title="
-                      columnExprCheck(i).ok
-                        ? `首行样例结果：${columnExprCheck(i).preview}`
-                        : columnExprCheck(i).message
-                    "
-                  />
+                  <ElButton
+                    type="primary"
+                    size="small"
+                    @click="applyHeaderMerge"
+                  >
+                    {{ selectedHeaderMerge ? '保存标题' : '合并表头' }}
+                  </ElButton>
+                  <ElButton
+                    v-if="selectedHeaderMerge"
+                    size="small"
+                    @click="splitHeaderMerge(selectedHeaderMerge.id)"
+                  >
+                    拆分表头
+                  </ElButton>
+                </div>
+                <p
+                  v-else-if="!selectedGroupHeader"
+                  class="print-inspector__hint"
+                >
+                  再点击一个同层表头，选定结束位置。
+                </p>
+                <div
+                  v-if="!selectedGroupHeader"
+                  class="print-inspector__covered-columns"
+                >
+                  <span>对应数据列（独立设置）：</span>
+                  <ElButton
+                    v-for="item in selectedHeaderColumns"
+                    :key="item.index"
+                    size="small"
+                    text
+                    type="primary"
+                    @click="onColCardClick(item.index)"
+                  >
+                    第 {{ item.index + 1 }} 列 ·
+                    {{ item.col.title || '未命名列' }}
+                  </ElButton>
                 </div>
               </div>
+              <p v-else class="print-inspector__hint">
+                请选择要调整的表头。按 Esc 或点击空白处可清空选择，Shift
+                点击也可扩展选区。
+              </p>
+              <details class="print-inspector__exact-range">
+                <summary>精确选择范围</summary>
+                <div class="print-inspector__header-tools mt-2">
+                  <ElSelect
+                    v-model="headerMergeStart"
+                    aria-label="合并表头起始列"
+                    class="print-inspector__header-leaf-select"
+                    size="small"
+                    @change="selectExactHeaderRange"
+                  >
+                    <ElOption
+                      v-for="option in headerLeafOptions"
+                      :key="option.value"
+                      :label="option.label"
+                      :value="option.value"
+                    />
+                  </ElSelect>
+                  <span>至</span>
+                  <ElSelect
+                    v-model="headerMergeEnd"
+                    aria-label="合并表头结束列"
+                    class="print-inspector__header-leaf-select"
+                    size="small"
+                    @change="selectExactHeaderRange"
+                  >
+                    <ElOption
+                      v-for="option in headerLeafOptions"
+                      :key="option.value"
+                      :label="option.label"
+                      :value="option.value"
+                    />
+                  </ElSelect>
+                </div>
+              </details>
+              <p class="print-inspector__hint">
+                仅合并表头，下面的数据列保持独立。各列字段、公式和格式分别设置，完成后请保存模板。
+              </p>
+            </section>
+
+            <div
+              v-if="columns.length"
+              class="print-inspector__column-workspace"
+            >
+              <nav
+                class="print-inspector__column-list"
+                aria-label="选择要编辑的数据列"
+              >
+                <div class="print-inspector__section-heading">
+                  <strong>数据列</strong>
+                  <span>{{ columns.length }} 列</span>
+                </div>
+                <ElInput
+                  v-if="columns.length > 6"
+                  v-model="columnSearch"
+                  aria-label="搜索数据列"
+                  placeholder="搜索列名或字段"
+                  clearable
+                  size="small"
+                  class="mb-2"
+                />
+                <p v-if="!filteredColumns.length" class="print-inspector__hint">
+                  没有匹配的数据列
+                </p>
+                <button
+                  v-for="{ col, i } in filteredColumns"
+                  :key="i"
+                  type="button"
+                  class="print-inspector__column-item"
+                  :class="{ 'is-selected': editingColIndex === i }"
+                  :aria-pressed="editingColIndex === i"
+                  @click="onColCardClick(i)"
+                >
+                  <span class="print-inspector__column-number">{{
+                    i + 1
+                  }}</span>
+                  <span class="print-inspector__column-info">
+                    <strong>{{ col.title || '未命名列' }}</strong>
+                    <small>{{ col.field || '未绑定字段' }}</small>
+                    <span
+                      v-if="columnRuleLabels(col, i).length"
+                      class="print-inspector__column-badges"
+                    >
+                      <span
+                        v-for="label in columnRuleLabels(col, i)"
+                        :key="label"
+                        >{{ label }}</span>
+                    </span>
+                  </span>
+                </button>
+              </nav>
+
+              <div
+                v-for="{ col, i } in editingColumns"
+                :key="i"
+                class="print-inspector__col"
+                :data-col-index="i"
+              >
+                <div class="print-inspector__column-heading">
+                  <div>
+                    <span class="print-inspector__hint">正在编辑 · 第 {{ i + 1 }} 列</span>
+                    <h3>{{ col.title || '未命名列' }}</h3>
+                  </div>
+                  <div class="print-inspector__column-actions">
+                    <ElButton size="small" plain @click="addEmptyColumn(i)">
+                      在此列后插入
+                    </ElButton>
+                    <ElButton
+                      size="small"
+                      text
+                      type="danger"
+                      @click="removeColumn(i)"
+                    >
+                      删除此列
+                    </ElButton>
+                  </div>
+                </div>
+
+                <ElTabs
+                  v-model="columnTab"
+                  class="print-inspector__column-tabs"
+                >
+                  <ElTabPane label="基础" name="basic">
+                    <section class="print-inspector__column-section">
+                      <h4>基础信息</h4>
+                      <div class="print-inspector__column-form">
+                        <ElFormItem label="列标题">
+                          <ElInput
+                            v-model="col.title"
+                            aria-label="列标题"
+                            placeholder="例如：金额"
+                            @blur="onColumnMetaChange"
+                          />
+                        </ElFormItem>
+                        <ElFormItem label="绑定字段">
+                          <div class="print-inspector__col-field">
+                            <ElInput
+                              v-model="col.field"
+                              aria-label="绑定字段"
+                              placeholder="例如：amount"
+                              @blur="onColumnMetaChange"
+                            />
+                            <ElButton @click="openFieldPicker('column', i)">
+                              选择字段
+                            </ElButton>
+                          </div>
+                        </ElFormItem>
+                        <ElFormItem label="列宽">
+                          <ElInputNumber
+                            v-model="col.width"
+                            aria-label="列宽"
+                            :min="24"
+                            :max="400"
+                            :step="1"
+                            :precision="0"
+                            controls-position="right"
+                            @change="onColumnMetaChange"
+                          />
+                        </ElFormItem>
+                        <ElFormItem label="水平对齐">
+                          <ElSelect
+                            v-model="col.align"
+                            aria-label="水平对齐"
+                            @change="onColumnMetaChange"
+                          >
+                            <ElOption
+                              v-for="p in ALIGN_OPTIONS"
+                              :key="p.value"
+                              :label="p.label"
+                              :value="p.value"
+                            />
+                          </ElSelect>
+                        </ElFormItem>
+                      </div>
+                    </section>
+                  </ElTabPane>
+                  <ElTabPane label="样式" name="style">
+                    <section
+                      v-if="showColFormat(col) || isNumericDataCol(col)"
+                      class="print-inspector__column-section"
+                    >
+                      <h4>显示格式</h4>
+                      <ElFormItem
+                        v-if="showColFormat(col)"
+                        label="单元格显示格式"
+                      >
+                        <ElSelect
+                          v-model="col.agreeColFormat"
+                          aria-label="单元格显示格式"
+                          clearable
+                          filterable
+                          placeholder="原值"
+                          @change="onColumnFlagChange"
+                        >
+                          <ElOptionGroup
+                            v-for="group in AGREE_PRINT_FORMAT_GROUPS"
+                            :key="group.label"
+                            :label="group.label"
+                          >
+                            <ElOption
+                              v-for="p in group.options"
+                              :key="p.value"
+                              :label="p.label"
+                              :value="p.value"
+                            />
+                          </ElOptionGroup>
+                        </ElSelect>
+                      </ElFormItem>
+                    </section>
+
+                    <section class="print-inspector__column-section">
+                      <ElFormItem label="本列正文颜色">
+                        <ElColorPicker
+                          :model-value="col.agreeColor || tableDefaultColor"
+                          aria-label="本列正文颜色"
+                          @change="
+                            (color) => {
+                              col.agreeColor = color || '';
+                              onColumnFlagChange();
+                            }
+                          "
+                        />
+                        <span class="print-inspector__hint">{{
+                          colorDescription(col.agreeColor)
+                        }}</span>
+                        <ElButton
+                          v-if="col.agreeColor"
+                          size="small"
+                          text
+                          @click="
+                            col.agreeColor = '';
+                            onColumnFlagChange();
+                          "
+                        >
+                          恢复继承
+                        </ElButton>
+                      </ElFormItem>
+                      <div
+                        class="print-inspector__style-samples"
+                        aria-label="本列显示样例"
+                      >
+                        <span>样例</span>
+                        <span
+                          v-for="(sample, sampleIndex) in columnSamples"
+                          :key="sampleIndex"
+                          :style="{ color: sample.color }"
+                          >{{ sample.text || '（空值）' }}</span>
+                        <span v-if="!columnSamples.length">暂无样例数据</span>
+                      </div>
+                      <p class="print-inspector__hint">
+                        正文颜色不影响表头；命中条件时，样例优先显示条件颜色。
+                      </p>
+                    </section>
+                  </ElTabPane>
+                  <ElTabPane label="规则" name="rules">
+                    <section class="print-inspector__column-section">
+                      <div class="print-inspector__section-heading">
+                        <strong>条件颜色</strong>
+                        <ElButton
+                          v-if="
+                            !conditionOpen[i] &&
+                            !col.agreeColorWhen &&
+                            !col.agreeConditionColor
+                          "
+                          size="small"
+                          @click="conditionOpen[i] = true"
+                        >
+                          添加条件颜色
+                        </ElButton>
+                        <ElButton
+                          v-else
+                          size="small"
+                          text
+                          @click="removeColorCondition(col, i)"
+                        >
+                          移除条件
+                        </ElButton>
+                      </div>
+                      <p
+                        v-if="
+                          !conditionOpen[i] &&
+                          !col.agreeColorWhen &&
+                          !col.agreeConditionColor
+                        "
+                        class="print-inspector__hint"
+                      >
+                        未设置，正文沿用列颜色或整表颜色。
+                      </p>
+                      <template v-else>
+                        <ElButton
+                          v-if="isNumericDataCol(col)"
+                          size="small"
+                          class="mb-2"
+                          @click="
+                            conditionAdvanced[i] = false;
+                            presetNegativeColor(col);
+                          "
+                        >
+                          负数标红
+                        </ElButton>
+                        <div
+                          v-if="!useAdvancedColor(col, i)"
+                          class="print-inspector__condition-form"
+                        >
+                          <span>本列{{
+                              isNumericDataCol(col) ? '数值' : '内容'
+                            }}</span>
+                          <ElSelect
+                            v-model="simpleColorOperator"
+                            aria-label="颜色比较方式"
+                            @change="
+                              simpleColorOperator === 'empty' ||
+                              simpleColorValue !== ''
+                                ? saveSimpleColorRule(col)
+                                : undefined
+                            "
+                          >
+                            <ElOption label="等于" value="==" /><ElOption
+                              label="不等于"
+                              value="!="
+                            />
+                            <template v-if="isNumericDataCol(col)">
+                              <ElOption label="小于" value="<" /><ElOption
+                                label="小于等于"
+                                value="<="
+                              /><ElOption label="大于" value=">" /><ElOption
+                                label="大于等于"
+                                value=">="
+                              />
+                            </template>
+                            <ElOption label="为空" value="empty" />
+                          </ElSelect>
+                          <ElInput
+                            v-if="simpleColorOperator !== 'empty'"
+                            v-model="simpleColorValue"
+                            aria-label="颜色比较值"
+                            :placeholder="
+                              isNumericDataCol(col) ? '输入数值' : '输入文本'
+                            "
+                            @blur="saveSimpleColorRule(col)"
+                            @keydown.enter="saveSimpleColorRule(col)"
+                          />
+                        </div>
+                        <ElInput
+                          v-else
+                          v-model="col.agreeColorWhen"
+                          aria-label="文字颜色条件"
+                          placeholder="例如 amount < 0 或 status == '异常'"
+                          @blur="saveAdvancedColorRule(col)"
+                          @keydown.enter="saveAdvancedColorRule(col)"
+                        />
+                        <div class="print-inspector__header-tools mt-2">
+                          <span>满足条件后显示</span>
+                          <ElColorPicker
+                            :model-value="col.agreeConditionColor || '#dc2626'"
+                            aria-label="条件文字颜色"
+                            @change="
+                              (color) => {
+                                col.agreeConditionColor = color || '';
+                                onColumnFlagChange();
+                              }
+                            "
+                          />
+                          <span>{{
+                            col.agreeConditionColor || '红色（保存条件后生效）'
+                          }}</span>
+                          <ElButton
+                            v-if="!useAdvancedColor(col, i)"
+                            size="small"
+                            text
+                            @mousedown.prevent
+                            @click="openAdvancedColor(col, i)"
+                          >
+                            高级表达式
+                          </ElButton>
+                          <ElButton
+                            v-else-if="
+                              !col.agreeColorWhen ||
+                              parseSimpleColorRule(col.agreeColorWhen)
+                            "
+                            size="small"
+                            text
+                            @click="conditionAdvanced[i] = false"
+                          >
+                            简单条件
+                          </ElButton>
+                        </div>
+                        <p class="print-inspector__hint">
+                          命中后覆盖正文颜色，未命中时恢复继承。{{
+                            useAdvancedColor(col, i)
+                              ? 'value 为本列计算后的值，其他字段名引用当前行数据。'
+                              : ''
+                          }}
+                        </p>
+                      </template>
+                    </section>
+                    <div
+                      v-if="isNumericDataCol(col)"
+                      class="print-inspector__column-switches"
+                    >
+                      <div>
+                        <span>整列合计</span><ElSwitch
+                          v-model="col.tableSummary"
+                          aria-label="整列合计"
+                          @change="onColumnFlagChange"
+                        />
+                      </div>
+                      <div>
+                        <span>隐藏零值</span><ElSwitch
+                          v-model="col.agreeHideZero"
+                          aria-label="隐藏零值"
+                          @change="onColumnFlagChange"
+                        />
+                      </div>
+                    </div>
+                    <ElCollapse
+                      v-model="columnSections"
+                      class="print-inspector__column-advanced"
+                    >
+                      <ElCollapseItem name="formula">
+                        <template #title>
+                          <div class="print-inspector__advanced-title">
+                            <strong>本列计算公式（逐行）</strong>
+                            <span :title="col.agreeColExpr">{{
+                              col.agreeColExpr || '未设置 · 显示字段原值'
+                            }}</span>
+                          </div>
+                        </template>
+                        <div class="print-inspector__formula">
+                          <p class="print-inspector__hint">
+                            使用当前行数据计算，结果显示在「{{
+                              col.title || '当前列'
+                            }}」列的每一行；留空显示绑定字段原值。整列求和请开启“整列合计”。
+                          </p>
+                          <ElInput
+                            v-model="col.agreeColExpr"
+                            aria-label="本列计算公式（逐行）"
+                            type="textarea"
+                            :autosize="{ minRows: 2, maxRows: 5 }"
+                            placeholder="例如：quantity * unitPrice"
+                            @blur="onColumnExprChange(i)"
+                          />
+                          <span class="print-inspector__hint">公式示例（点击替换当前公式）</span>
+                          <div class="flex flex-wrap gap-1">
+                            <ElButton
+                              size="small"
+                              text
+                              @click="
+                                applyColumnExprPreset(
+                                  i,
+                                  `ROUND(${col.field || 'amount'}, 2)`,
+                                )
+                              "
+                            >
+                              四舍五入
+                            </ElButton>
+                            <ElButton
+                              size="small"
+                              text
+                              @click="
+                                applyColumnExprPreset(
+                                  i,
+                                  `IF(${col.field || 'amount'} > 0, ${col.field || 'amount'}, 0)`,
+                                )
+                              "
+                            >
+                              IF 条件
+                            </ElButton>
+                            <ElButton
+                              size="small"
+                              text
+                              @click="
+                                applyColumnExprPreset(
+                                  i,
+                                  `${col.field || 'amount'} > 0 ? ${col.field || 'amount'} : 0`,
+                                )
+                              "
+                            >
+                              三元条件
+                            </ElButton>
+                            <ElButton
+                              size="small"
+                              text
+                              @click="
+                                applyColumnExprPreset(
+                                  i,
+                                  `SQRT(POW(NUMBER(${col.field || 'amount'}), 2))`,
+                                )
+                              "
+                            >
+                              科学函数
+                            </ElButton>
+                          </div>
+                          <ElAlert
+                            v-if="col.agreeColExpr"
+                            :closable="false"
+                            :type="editingExprCheck.ok ? 'success' : 'error'"
+                            :title="
+                              editingExprCheck.ok
+                                ? `首行样例计算结果：${editingExprCheck.preview}`
+                                : editingExprCheck.message
+                            "
+                          />
+                        </div>
+                      </ElCollapseItem>
+                      <ElCollapseItem name="merge">
+                        <template #title>
+                          <div class="print-inspector__advanced-title">
+                            <strong>单元格合并规则</strong>
+                            <span>{{ columnMergeSummary(col, i) }}</span>
+                          </div>
+                        </template>
+                        <div class="print-inspector__merge-settings">
+                          <ElFormItem label="纵向合并">
+                            <ElSelect
+                              :model-value="columnMergeMode(col, i)"
+                              aria-label="纵向合并"
+                              @change="
+                                (value: string) =>
+                                  setColumnMergeMode(col, i, value)
+                              "
+                            >
+                              <ElOption label="不合并" value="none" />
+                              <ElOption label="相同值合并" value="same" />
+                              <ElOption label="按条件合并" value="condition" />
+                            </ElSelect>
+                          </ElFormItem>
+                          <ElFormItem
+                            v-if="columnMergeMode(col, i) !== 'none'"
+                            label="合并依据字段"
+                          >
+                            <ElInput
+                              v-model="col.agreeMergeKey"
+                              aria-label="合并依据字段"
+                              placeholder="留空使用本列绑定字段"
+                              @blur="onColumnFlagChange"
+                            />
+                            <p class="print-inspector__hint">
+                              例如按 householdId
+                              合并，避免姓名相同的不同家庭被合并。
+                            </p>
+                          </ElFormItem>
+                          <ElFormItem
+                            v-if="columnMergeMode(col, i) === 'condition'"
+                            label="合并条件"
+                          >
+                            <ElInput
+                              v-model="col.agreeMergeWhen"
+                              aria-label="合并条件"
+                              type="textarea"
+                              :autosize="{ minRows: 2, maxRows: 4 }"
+                              placeholder="例如：calcType == '定额'"
+                              @blur="onColumnFlagChange"
+                            />
+                            <p class="print-inspector__hint">
+                              只合并满足条件的连续行，不满足的行保持独立。
+                            </p>
+                          </ElFormItem>
+                          <div
+                            v-if="i > 0"
+                            class="print-inspector__column-switches"
+                          >
+                            <div>
+                              <span>空单元格向左合并</span><ElSwitch
+                                v-model="col.agreeHMergeEmpty"
+                                aria-label="空单元格向左合并"
+                                @change="onColumnFlagChange"
+                              />
+                            </div>
+                          </div>
+                          <p v-if="i > 0" class="print-inspector__hint">
+                            本列单元格为空时并入左侧单元格，适用于本列所有空行。
+                          </p>
+                        </div>
+                      </ElCollapseItem>
+                    </ElCollapse>
+                  </ElTabPane>
+                </ElTabs>
+              </div>
+            </div>
+            <div v-else class="print-inspector__columns-empty">
+              <p>还没有数据列，添加第一列开始配置。</p>
+              <ElButton type="primary" @click="addEmptyColumn()">
+                添加数据列
+              </ElButton>
             </div>
 
             <div class="print-inspector__footer mt-3">
@@ -1987,6 +3243,12 @@ function elementTypeLabel(el: PrintElementRef) {
                     placeholder="文案"
                     @blur="onFooterCellBlur(cell)"
                   />
+                  <ElColorPicker
+                    v-model="cell.color"
+                    :aria-label="`表尾第 ${ri + 1} 行第 ${ci + 1} 格文字颜色`"
+                    size="small"
+                    @change="onFooterCellBlur(cell)"
+                  />
                   <ElInput
                     v-model="cell.field"
                     size="small"
@@ -2026,7 +3288,10 @@ function elementTypeLabel(el: PrintElementRef) {
               </p>
             </div>
             <template #footer>
-              <ElButton @click="tableEditorOpen = false">完成</ElButton>
+              <span class="print-inspector__hint">设置即时应用到当前设计，完成后请保存模板。</span>
+              <ElButton type="primary" @click="tableEditorOpen = false">
+                完成
+              </ElButton>
             </template>
           </ElDialog>
         </ElForm>
@@ -2105,7 +3370,7 @@ function elementTypeLabel(el: PrintElementRef) {
             </ElFormItem>
           </ElForm>
           <div class="print-inspector__color-row">
-            <span>文字颜色</span>
+            <span>{{ isTable ? '整表默认文字颜色' : '文字颜色' }}</span>
             <ElColorPicker
               v-model="styleColor"
               show-alpha
@@ -2123,6 +3388,9 @@ function elementTypeLabel(el: PrintElementRef) {
               清除
             </ElButton>
           </div>
+          <p v-if="isTable" class="print-inspector__hint">
+            作用于整张表格，不会只修改画布中选中的单元格。
+          </p>
           <div class="print-inspector__color-row">
             <span>元素背景</span>
             <ElColorPicker
@@ -2444,9 +3712,39 @@ function elementTypeLabel(el: PrintElementRef) {
           </ElCollapseItem>
         </ElCollapse>
 
-        <p class="print-inspector__hint mb-2">
-          显隐控制<strong>整个元素是否打印</strong>，修改后会同步到画布和快速预览。
-        </p>
+        <div class="print-inspector__hint mb-2 flex items-center gap-1">
+          <span>
+            {{
+              isTable ? '控制整张表格的显示或隐藏' : '控制当前元素的显示或隐藏'
+            }}
+          </span>
+          <ElPopover
+            v-if="isTable"
+            trigger="click"
+            placement="top"
+            title="整表显隐说明"
+            :width="280"
+          >
+            <template #reference>
+              <ElButton size="small" text circle aria-label="查看整表显隐说明">
+                ?
+              </ElButton>
+            </template>
+            <p>支持主表字段、派生字段和整表统计结果。</p>
+            <p class="mt-2">
+              单元格计算请前往「数据 → 编辑表格结构与计算」设置。
+            </p>
+            <ElButton
+              class="mt-2"
+              size="small"
+              type="primary"
+              link
+              @click="tableEditorOpen = true"
+            >
+              设置单元格计算
+            </ElButton>
+          </ElPopover>
+        </div>
         <ElForm label-position="top" size="small">
           <ElFormItem label="条件显隐">
             <div class="print-inspector__visible-mode">
@@ -2514,6 +3812,7 @@ function elementTypeLabel(el: PrintElementRef) {
             </template>
             <template v-else>
               <ElInput
+                ref="visibleExprInputRef"
                 v-model="agreeVisibleWhen"
                 type="textarea"
                 :rows="3"
@@ -2521,7 +3820,77 @@ function elementTypeLabel(el: PrintElementRef) {
                 @blur="persistRulesSilent"
               />
               <div class="print-inspector__advanced-caption">
-                适合 AND / OR、多条件组合及已有模板表达式；失焦后自动应用。
+                显隐用<strong>协议级</strong>字段（不是表体某一行）。行条件请用「筛行」。点下方标签可插入，失焦后自动应用。
+              </div>
+              <div class="print-inspector__expr-insert">
+                <div class="print-inspector__expr-insert-row">
+                  <span class="print-inspector__expr-insert-label">主字段</span>
+                  <ElButton
+                    v-for="item in visibleExprTextFields"
+                    :key="`text-${item.field}`"
+                    size="small"
+                    text
+                    :title="item.field"
+                    @mousedown.prevent
+                    @click="insertVisibleExprToken(item.field)"
+                  >
+                    {{ item.text }}
+                  </ElButton>
+                </div>
+                <div class="print-inspector__expr-insert-row">
+                  <span class="print-inspector__expr-insert-label">派生</span>
+                  <ElButton
+                    v-for="item in visibleExprDerivedFields"
+                    :key="`derived-${item.field}`"
+                    size="small"
+                    text
+                    :title="item.field"
+                    @mousedown.prevent
+                    @click="insertVisibleExprToken(item.field)"
+                  >
+                    {{ item.text }}
+                  </ElButton>
+                </div>
+                <div class="print-inspector__expr-insert-row">
+                  <span class="print-inspector__expr-insert-label">整表</span>
+                  <ElButton
+                    v-for="item in visibleExprTableFields"
+                    :key="`table-${item.field}`"
+                    size="small"
+                    text
+                    :title="`配合 COUNT(${item.field}) / SUM(${item.field}, &quot;amount&quot;)`"
+                    @mousedown.prevent
+                    @click="insertVisibleExprToken(item.field)"
+                  >
+                    {{ item.text }}
+                  </ElButton>
+                </div>
+                <div class="print-inspector__expr-insert-row">
+                  <span class="print-inspector__expr-insert-label">运算</span>
+                  <ElButton
+                    v-for="item in VISIBLE_EXPR_SNIPPETS"
+                    :key="`snip-${item.label}`"
+                    size="small"
+                    text
+                    @mousedown.prevent
+                    @click="insertVisibleExprToken(item.value)"
+                  >
+                    {{ item.label }}
+                  </ElButton>
+                </div>
+                <div class="print-inspector__expr-insert-row">
+                  <span class="print-inspector__expr-insert-label">预设</span>
+                  <ElButton
+                    v-for="p in PRINT_EXPR_PRESETS.visibleWhen"
+                    :key="`adv-${p.value}`"
+                    size="small"
+                    text
+                    @mousedown.prevent
+                    @click="applyVisiblePreset(p.value)"
+                  >
+                    {{ p.label }}
+                  </ElButton>
+                </div>
               </div>
             </template>
             <ElAlert
@@ -2543,6 +3912,19 @@ function elementTypeLabel(el: PrintElementRef) {
               placeholder="页眉 header；房屋 houses；奖励 rewards"
               @blur="persistRulesSilent"
             />
+            <ElSelect
+              v-model="agreeFlowFloat"
+              class="mt-1 w-full"
+              placeholder="同行隐藏后的排列"
+              @change="persistFlowFloat"
+            >
+              <ElOption label="同行向左收拢（默认）" value="left" />
+              <ElOption label="同行向右收拢" value="right" />
+              <ElOption label="保持原横向位置" value="none" />
+            </ElSelect>
+            <div class="print-inspector__advanced-caption">
+              同一回流组设置一次即可；隐藏同行字段后，剩余字段按原顺序补齐空位。
+            </div>
           </ElFormItem>
           <ElFormItem v-if="isTextLike" label="文本格式">
             <ElSelect
@@ -2572,6 +3954,10 @@ function elementTypeLabel(el: PrintElementRef) {
             >
               当前样例：{{ textFormatPreview }}
             </div>
+            <p class="print-inspector__advanced-caption">
+              格式只改变显示，不修改原始数值。数字与无符号金额的小数格式效果相同；金额还可选择
+              ¥、$ 或人民币大写，货币符号不进行汇率换算。
+            </p>
           </ElFormItem>
         </ElForm>
 
@@ -2718,6 +4104,22 @@ function elementTypeLabel(el: PrintElementRef) {
   border-radius: 6px;
 }
 
+.print-inspector__index-toggle {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  margin: 4px 0;
+  font-size: 12px;
+  font-weight: 400;
+  color: #475569;
+}
+
+.print-inspector__col-head-actions {
+  display: inline-flex;
+  gap: 10px;
+  align-items: center;
+}
+
 .print-inspector__table-summary p {
   margin: 5px 0 9px;
   font-size: 11px;
@@ -2799,63 +4201,367 @@ function elementTypeLabel(el: PrintElementRef) {
   }
 }
 
-.print-inspector__col {
+.print-inspector__structure-preview {
+  padding: 12px;
+  margin: 12px 0;
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+}
+
+.print-inspector__covered-columns {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-  padding-bottom: 8px;
-  border: 1px solid #e2e8f0;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.print-inspector__header-actions {
+  padding: 12px;
+  margin-top: 12px;
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-color-primary-light-7);
   border-radius: 6px;
 }
 
-.print-inspector__columns-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-  gap: 10px;
+.print-inspector__selection-error {
+  font-size: 12px;
+  color: var(--el-color-danger);
 }
 
-.print-inspector__col-id {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto;
-  gap: 4px;
-  align-items: center;
+.print-inspector__exact-range {
+  margin-top: 12px;
+  font-size: 12px;
 }
 
-.print-inspector__col-ops {
+.print-inspector__exact-range summary {
+  color: var(--el-text-color-secondary);
+  cursor: pointer;
+}
+
+.print-inspector__section-heading {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 6px;
+  gap: 6px 12px;
   align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.print-inspector__section-heading span {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.print-inspector__header-scroll {
+  overflow-x: auto;
+}
+
+.print-inspector__header-scroll table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--el-bg-color);
+}
+
+.print-inspector__header-scroll th {
+  min-width: 96px;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid var(--el-border-color);
+}
+
+.print-inspector__header-scroll th > span {
+  display: block;
+  padding: 8px 12px;
+}
+
+.print-inspector__header-scroll button {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 48px;
+  padding: 6px 10px;
+  color: inherit;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+}
+
+.print-inspector__style-samples,
+.print-inspector__condition-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 0;
+}
+
+.print-inspector__header-scroll small {
+  font-size: 11px;
+  font-weight: 400;
+  opacity: 0.7;
+}
+
+.print-inspector__header-scroll .is-selected,
+.print-inspector__header-scroll button[aria-pressed='true'] {
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  box-shadow: inset 0 -2px var(--el-color-primary);
+}
+
+.print-inspector__column-workspace {
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.print-inspector__column-list {
+  position: sticky;
+  top: 12px;
+  max-height: 65vh;
+  padding: 12px;
+  overflow-y: auto;
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+}
+
+.print-inspector__column-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  width: 100%;
+  padding: 7px 10px;
+  margin-top: 4px;
+  text-align: left;
+  cursor: pointer;
+  background: var(--el-bg-color);
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+.print-inspector__column-item:hover,
+.print-inspector__header-scroll button:hover {
+  background: var(--el-color-primary-light-9);
+}
+
+.print-inspector__column-item.is-selected {
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  border-color: var(--el-color-primary-light-5);
+}
+
+.print-inspector__column-item:focus-visible,
+.print-inspector__header-scroll button:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: -2px;
+}
+
+.print-inspector__column-number {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  font-size: 12px;
+  line-height: 24px;
+  text-align: center;
+  background: var(--el-fill-color);
+  border-radius: 5px;
+}
+
+.print-inspector__column-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.print-inspector__column-info strong {
+  font-size: 13px;
+}
+
+.print-inspector__column-info small {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+
+.print-inspector__column-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 3px;
+}
+
+.print-inspector__column-badges > span {
+  padding: 1px 5px;
+  font-size: 10px;
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  border: 1px solid var(--el-color-primary-light-8);
+  border-radius: 3px;
+}
+
+.print-inspector__col {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+}
+
+.print-inspector__column-heading {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.print-inspector__column-heading h3 {
+  margin: 4px 0 0;
+  font-size: 18px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.print-inspector__column-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.print-inspector__column-actions :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+
+:global(.print-inspector__table-dialog-body) {
+  max-height: calc(90vh - 140px);
+  overflow-y: auto;
+}
+
+.print-inspector__column-tabs {
+  margin-top: 12px;
+}
+
+.print-inspector__condition-form :deep(.el-select) {
+  width: 140px;
+}
+
+.print-inspector__condition-form :deep(.el-input) {
+  max-width: 220px;
+}
+
+.print-inspector__column-section {
+  padding: 10px 0;
+}
+
+.print-inspector__column-section h4 {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.print-inspector__column-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: 0 16px;
+}
+
+.print-inspector__column-form :deep(.el-form-item) {
+  min-width: 0;
+}
+
+.print-inspector__column-form .print-inspector__col-field,
+.print-inspector__column-form :deep(.el-input-number) {
+  width: 100%;
+}
+
+.print-inspector__column-switches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+}
+
+.print-inspector__column-switches > div {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  font-size: 13px;
+}
+
+.print-inspector__column-advanced :deep(.el-collapse-item__header) {
+  height: auto;
+  min-height: 64px;
+  padding: 8px 0;
+  line-height: 1.5;
+}
+
+.print-inspector__advanced-title {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding-right: 12px;
+  text-align: left;
+}
+
+.print-inspector__advanced-title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
 }
 
 .print-inspector__formula {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 6px;
-  background: #f8fafc;
-  border-radius: 4px;
+  gap: 10px;
+  padding: 12px;
+  background: var(--el-fill-color-light);
+  border-radius: 6px;
+}
+
+.print-inspector__merge-settings {
+  padding: 8px 0;
+}
+
+.print-inspector__columns-empty {
+  padding: 32px;
+  text-align: center;
+  background: var(--el-fill-color-light);
+  border-radius: 8px;
+}
+
+@media (max-width: 760px) {
+  .print-inspector__column-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .print-inspector__column-list {
+    position: static;
+    max-height: 200px;
+  }
+
+  .print-inspector__column-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .print-inspector__col-label {
   flex-shrink: 0;
   font-size: 11px;
   color: #6b7280;
-}
-
-.print-inspector__col-width {
-  flex-shrink: 0;
-  width: 88px;
-}
-
-.print-inspector__col-width :deep(.el-input-number) {
-  width: 88px;
-}
-
-.print-inspector__col-format {
-  flex: 1;
-  min-width: 104px;
 }
 
 .print-inspector__col-align {
@@ -2924,6 +4630,38 @@ function elementTypeLabel(el: PrintElementRef) {
   color: #64748b;
 }
 
+.print-inspector__expr-insert {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  margin-top: 8px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+}
+
+.print-inspector__expr-insert-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 4px;
+  align-items: center;
+}
+
+.print-inspector__expr-insert-label {
+  flex-shrink: 0;
+  width: 36px;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.print-inspector__expr-insert-row :deep(.el-button) {
+  height: auto;
+  padding: 2px 4px;
+  margin: 0;
+  font-size: 11px;
+}
+
 .print-inspector__format-preview {
   padding: 5px 7px;
   color: #1d4ed8;
@@ -2946,13 +4684,6 @@ function elementTypeLabel(el: PrintElementRef) {
 .print-inspector__help-block ul {
   padding-left: 16px;
   margin: 0;
-}
-
-.print-inspector__col.is-col-highlight {
-  padding: 6px;
-  background: #eff6ff;
-  border: 1px solid #93c5fd;
-  border-radius: 4px;
 }
 
 .print-inspector__footer-cell {

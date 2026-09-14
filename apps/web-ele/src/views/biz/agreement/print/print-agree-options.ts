@@ -1,3 +1,4 @@
+import { listLeafTableCells, toTableColumnRows } from './print-element-meta';
 /**
  * hiprint getJson 只会序列化内置 options，agree* 业务字段需要从上一份 JSON 合并回去
  * 筛行/显隐常在内存里改、不重挂画布，必须以 memory 为准，不能只靠模糊匹配
@@ -14,6 +15,7 @@ export const AGREE_PRINT_CUSTOM_KEYS = [
   'agreeTextSections',
   'agreeFormat',
   'agreeFlowGroup',
+  'agreeFlowFloat',
   /** 表尾行结构（colspan），打印前编译成 footerFormatter */
   'agreeFooters',
   /** 表体按行横合（保存后打印/附件一预览套到真实行） */
@@ -132,7 +134,8 @@ function bestMemoryMatch(
 }
 
 /**
- * 复制 agree* 以及列上的 agreeColExpr / agreeMergeSame / agreeHMergeEmpty / agreeHideZero / agreeColFormat
+ * 复制 agree* 以及列上的 agreeColExpr / agreeMergeSame / agreeMergeKey /
+ * agreeMergeWhen / agreeHMergeEmpty / agreeHideZero / agreeColFormat
  * 内存为空则从画布删掉，避免 getJson 里的旧筛行在「清除筛选」后复活
  * @param target 画布元素
  * @param source 内存元素
@@ -170,11 +173,41 @@ function copyCustomOptions(target: PrintEl, source: PrintEl) {
 }
 
 /**
- * 按 field 把列上的 agreeColExpr / agreeMergeSame / agreeHMergeEmpty / agreeHideZero / agreeColFormat 写回（getJson 会丢掉）
+ * 按 field 把列上的 agreeColExpr / agreeMergeSame / agreeMergeKey /
+ * agreeMergeWhen / agreeHMergeEmpty / agreeHideZero / agreeColFormat 写回（getJson 会丢掉）
  * @param targetCols hiprint 二维 columns
  * @param sourceCols 内存 columns
  */
 function mergeColumnAgreeMeta(targetCols: unknown, sourceCols: unknown) {
+  const sourceRows = toTableColumnRows(sourceCols);
+  const targetRows = toTableColumnRows(targetCols);
+  sourceRows.forEach((row, ri) =>
+    row.forEach((cell, ci) => {
+      const target = targetRows[ri]?.[ci];
+      if (target) target.agreeHeaderColor = cell.agreeHeaderColor || '';
+    }),
+  );
+  const sourceLeaves = listLeafTableCells(sourceCols);
+  const targetLeaves = listLeafTableCells(targetCols);
+  if (sourceLeaves.length === targetLeaves.length) {
+    targetLeaves.forEach((leaf, index) => {
+      const sourceLeaf = sourceLeaves[index];
+      const target = targetRows[leaf.rowIndex]?.[leaf.cellIndex];
+      const source =
+        sourceLeaf && sourceRows[sourceLeaf.rowIndex]?.[sourceLeaf.cellIndex];
+      if (!source || !target) return;
+      target.agreeColor = source.agreeColor || '';
+      target.agreeHeaderColor = source.agreeHeaderColor || '';
+      target.agreeColorWhen = source.agreeColorWhen || '';
+      target.agreeConditionColor = source.agreeConditionColor || '';
+      if (source.agreeHeaderMergeId)
+        target.agreeHeaderMergeId = source.agreeHeaderMergeId;
+      else delete target.agreeHeaderMergeId;
+      if (source.agreeHeaderMergeTitle)
+        target.agreeHeaderMergeTitle = source.agreeHeaderMergeTitle;
+      else delete target.agreeHeaderMergeTitle;
+    });
+  }
   const metaByField = new Map<
     string,
     {
@@ -183,6 +216,8 @@ function mergeColumnAgreeMeta(targetCols: unknown, sourceCols: unknown) {
       hideZero: boolean;
       hMergeEmpty: boolean;
       merge: boolean;
+      mergeKey: string;
+      mergeWhen: string;
     }
   >();
   walkColumns(sourceCols, (col) => {
@@ -191,6 +226,8 @@ function mergeColumnAgreeMeta(targetCols: unknown, sourceCols: unknown) {
     metaByField.set(field, {
       expr: String(col.agreeColExpr || '').trim(),
       merge: Boolean(col.agreeMergeSame),
+      mergeKey: String(col.agreeMergeKey || '').trim(),
+      mergeWhen: String(col.agreeMergeWhen || '').trim(),
       hMergeEmpty: Boolean(col.agreeHMergeEmpty),
       hideZero: Boolean(col.agreeHideZero),
       format: String(col.agreeColFormat || '').trim(),
@@ -205,6 +242,10 @@ function mergeColumnAgreeMeta(targetCols: unknown, sourceCols: unknown) {
     else delete col.agreeColExpr;
     if (meta.merge) col.agreeMergeSame = true;
     else delete col.agreeMergeSame;
+    if (meta.mergeKey) col.agreeMergeKey = meta.mergeKey;
+    else delete col.agreeMergeKey;
+    if (meta.mergeWhen) col.agreeMergeWhen = meta.mergeWhen;
+    else delete col.agreeMergeWhen;
     if (meta.hMergeEmpty) col.agreeHMergeEmpty = true;
     else delete col.agreeHMergeEmpty;
     if (meta.hideZero) col.agreeHideZero = true;

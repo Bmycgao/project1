@@ -26,6 +26,10 @@ export interface AgreePrintColumnPreset {
   tableSummary?: 'sum';
   /** 同一列上下相同值合并 */
   agreeMergeSame?: boolean;
+  /** 纵向合并依据字段；为空时使用本列 field */
+  agreeMergeKey?: string;
+  /** 纵向条件合并表达式，例如 category == 'a1' */
+  agreeMergeWhen?: string;
   /** 此列为空时并入左边格子（只影响本行） */
   agreeHMergeEmpty?: boolean;
   /** 值为 0 时格子显示空 */
@@ -167,6 +171,7 @@ export const TABLE_COLUMN_PRESETS: Record<string, AgreePrintColumnPreset[]> = {
       width: 60,
       align: 'right',
       tableSummary: 'sum',
+      agreeColFormat: 'areaM2',
     },
     {
       title: '征收面积',
@@ -174,6 +179,7 @@ export const TABLE_COLUMN_PRESETS: Record<string, AgreePrintColumnPreset[]> = {
       width: 60,
       align: 'right',
       tableSummary: 'sum',
+      agreeColFormat: 'areaM2',
     },
     {
       title: '评估价值',
@@ -329,6 +335,7 @@ export const PRINT_EXPR_HELP = [
     title: '回流组',
     lines: [
       '页眉键值填 header：同一行少一个则剩下的拉通栏，整行都藏才上移',
+      '同行隐藏后默认向左收拢；可在规则里改为向右收拢或保持原横向位置',
       '协议名称是通栏，不会去占征收人那个半格',
       '房屋 houses / 补偿 compensation / 奖励 rewards：小标题和表必须同组，整段藏掉下方才顶上来',
       '二维码、大标题不要进组',
@@ -343,7 +350,11 @@ export const PRINT_EXPR_HELP = [
       '列公式支持 IF(条件, 真值, 假值) 和 条件 ? 真值 : 假值',
       '科学/逻辑函数：ROUND、ABS、CEIL、FLOOR、POW、SQRT、MOD、CLAMP、IFS、AND、OR、NOT',
       '列上「对齐」：左 / 中 / 右，画布格子与附件一预览同步；纵向合并格也会跟着靠边',
-      '列上「合并」：相同值上下相邻自动合并；表体可鼠标拖选，或点起点后 Shift 点终点，合并横向、纵向或矩形范围',
+      '列上「纵向合并」：不合并 / 相同值 / 按条件；合并挂在叶子列上，不是每个单元格单独绑字段',
+      '相同值：可填「合并依据」（如 householdId），默认用本列 field；显示字段与依据字段可不同',
+      "按条件：如 category == 'a1'，只合并满足条件的连续行；也可另填合并依据",
+      '「显示序号」：表格开关，最左侧增加/移除序号列；筛行后按可见行从 1 连续自增',
+      '表体可鼠标拖选，或点起点后 Shift 点终点，做横向、纵向或矩形手动合并',
       '列上「空并左」：该列为空时并入左边，作用于该列所有空行',
       '表头合并：连续列创建分组；在大分组内部继续分组即可形成多层表头，叶子字段和公式会保留',
       '表尾行「结构合并」：固定挂在表底，相邻格可 colspan，与相同值合并无关',
@@ -354,9 +365,9 @@ export const PRINT_EXPR_HELP = [
   {
     title: '文本格式',
     lines: [
-      '对绑定 field 的原值做格式化（金额、日期时间等）',
+      '对绑定 field 的原值做格式化（金额、面积、日期时间等）',
       '表格列请在「数据」里选「格式」，合计仍按数字加总',
-      '可选：money / money0 / moneyCn / date / dateCn / datetime / datetimeCn / time / percent / integer',
+      '可选：money / areaM2 / areaM3 / date / percent / integer 等（见格式下拉分组）',
     ],
   },
   {

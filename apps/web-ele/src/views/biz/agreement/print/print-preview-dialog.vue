@@ -16,6 +16,7 @@ import { buildAgreePrintData } from './build-print-data';
 import { ensureHiprint } from './ensure-hiprint';
 import { preparePrintTemplate } from './prepare-template';
 import PrintDataJsonDialog from './print-data-json-dialog.vue';
+import { installHeaderMergeRuntime } from './print-header-merge';
 import {
   applyPrintPageSizeFromTemplate,
   fitPrintPreviewHost,
@@ -28,7 +29,7 @@ import {
 } from './print-paper';
 import { maskAgreePrintData, mergePrintFieldRules } from './print-sensitive';
 import { buildDesignerSamplePrintData } from './sample-print-data';
-import { loadPrintTemplateByCode } from './template-store';
+import { cloneTemplate, loadPrintTemplateByCode } from './template-store';
 
 const props = withDefaults(
   defineProps<{
@@ -57,6 +58,7 @@ const emit = defineEmits<{
 const accessStore = useAccessStore();
 
 const loading = ref(false);
+const pdfExporting = ref(false);
 const previewRef = ref<HTMLElement | null>(null);
 const printData = ref<AgreePrintData | null>(null);
 /** 粘贴的数据源，优先于当前协议详情 */
@@ -105,9 +107,12 @@ async function createTemplate(data: AgreePrintData) {
     raw,
     masked,
   );
-  const inst = new PrintTemplate({ template: prepared });
+  // hiprint 初始化时会原地整理表格结构。先保留一份未编译的模板，
+  // PDF 导出再基于它创建实例，避免多层表头被二次处理后 rowspan 错位。
+  lastPrepared = cloneTemplate(prepared);
+  const inst = new PrintTemplate({ template: cloneTemplate(prepared) });
+  installHeaderMergeRuntime(inst, prepared);
   applyPrintPageSizeFromTemplate(prepared);
-  lastPrepared = prepared;
   paperHint.value = describePrintPaper(readTemplatePaperSpec(prepared));
   dialogWidth.value = previewDialogWidthCss(
     Number(prepared?.panels?.[0]?.width) || 210,
@@ -190,6 +195,107 @@ async function onPrint() {
 }
 
 /**
+ * 把 hiprint 的 jQuery Deferred 转成原生 Promise，并自行下载 Blob。
+ * 使用 isDownload:false 才能可靠获知导出完成或失败。
+ */
+function createPdfBlob(inst: any, data: AgreePrintData, filename: string) {
+  return new Promise<Blob>((resolve, reject) => {
+    try {
+      const task = inst.toPdf(data, filename, {
+        // hiprint 默认的 canvas DOM 解析会把 thead 的 rowspan 当成普通单元格，
+        // 造成 PDF 中「序号 / 备注」被拆到第二行。ForeignObject 交给浏览器
+        // 自身排版后再栅格化，与 getHtml 预览的表格布局保持一致。
+        foreignObjectRendering: true,
+        isDownload: false,
+        scale: 2,
+        type: 'blob',
+        useCORS: true,
+      });
+      if (!task || typeof task.then !== 'function') {
+        reject(new TypeError('当前打印引擎不支持 PDF 导出'));
+        return;
+      }
+      task.then(
+        (blob: unknown) => {
+          if (blob instanceof Blob) resolve(blob);
+          else reject(new TypeError('打印引擎未返回有效 PDF 文件'));
+        },
+        (error: unknown) => reject(error),
+      );
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+function downloadPdfBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.style.display = 'none';
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** 去掉 Windows 非法文件名字符和控制字符，避免导出 PDF 失败。 */
+function safePdfFilename(data: AgreePrintData, template: Record<string, any>) {
+  const spec = readTemplatePaperSpec(template);
+  const prefix = [
+    ...String(data.agreementNo || props.templateCode || '协议附件').trim(),
+  ]
+    .map((ch) => {
+      const code = ch.codePointAt(0) ?? 0;
+      return code < 32 || String.raw`<>:"/\|?*`.includes(ch) ? '-' : ch;
+    })
+    .join('')
+    .slice(0, 80);
+  const size = spec.sizeId === 'custom' ? '自定义' : spec.sizeId;
+  return `${prefix || '协议附件'}-${size}-${spec.widthMm}x${spec.heightMm}mm.pdf`;
+}
+
+/** 导出与当前预览完全相同的数据和模板，并强制按实际毫米宽高创建 PDF。 */
+async function onExportPdf() {
+  const data = dataOverride.value || printData.value || resolvePrintData();
+  if (!data) {
+    ElMessage.warning('暂无协议数据，可点「使用数据 JSON」粘贴');
+    return;
+  }
+  pdfExporting.value = true;
+  try {
+    if (!templateInst || !lastPrepared) {
+      templateInst = await createTemplate(data);
+    }
+    if (!lastPrepared) throw new Error('打印模板尚未准备完成');
+
+    const exactPaperTemplate = cloneTemplate(lastPrepared);
+    for (const panel of exactPaperTemplate.panels || []) {
+      /** 遗留 paperType 会让 jsPDF 忽略自定义 width/height，必须以毫米尺寸为准。 */
+      delete panel.paperType;
+    }
+    const { PrintTemplate } = await ensureHiprint();
+    const pdfTemplate = new PrintTemplate({
+      template: cloneTemplate(exactPaperTemplate),
+    });
+    installHeaderMergeRuntime(pdfTemplate, exactPaperTemplate);
+    const renderData = (templateInst as any).__agreePrintData || data;
+    const filename = safePdfFilename(data, exactPaperTemplate);
+    const blob = await createPdfBlob(pdfTemplate, renderData, filename);
+    downloadPdfBlob(blob, filename);
+    ElMessage.success(
+      `已导出 ${describePrintPaper(readTemplatePaperSpec(exactPaperTemplate))} PDF`,
+    );
+  } catch (error: any) {
+    console.error(error);
+    ElMessage.error(error?.message || 'PDF 导出失败');
+  } finally {
+    pdfExporting.value = false;
+  }
+}
+
+/**
  * 用粘贴 JSON 覆盖当前协议数据并重渲染
  * @param data 解析后的 printData
  */
@@ -234,6 +340,7 @@ watch(
         模板：{{ templateCode }}
         <span v-if="paperHint"> · {{ paperHint }}</span>
         <span> · 灰色间隔为实际分页边界</span>
+        <span> · 导出文件名会标注纸型及毫米尺寸</span>
         <span v-if="dataOverride" class="text-amber-600">
           （当前使用粘贴的数据源 JSON）
         </span>
@@ -243,6 +350,13 @@ watch(
     <template #footer>
       <ElButton @click="dataJsonOpen = true">使用数据 JSON</ElButton>
       <ElButton @click="close">关闭</ElButton>
+      <ElButton
+        :loading="pdfExporting"
+        :disabled="loading"
+        @click="onExportPdf"
+      >
+        导出 PDF
+      </ElButton>
       <ElButton type="primary" :loading="loading" @click="onPrint">
         打印
       </ElButton>

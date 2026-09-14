@@ -1,6 +1,6 @@
 /**
  * 打印流式分组：隐藏后按「设计行」回流，并把组下方整体上移
- * - 同一行少一个半格：剩下的拉成通栏（被征收人 / 征收人互为搭档）
+ * - 同一行少一个半格：剩下的按向左/向右策略收拢；只剩一个时可拉成通栏
  * - 通栏字段（协议名称）永远自己一行，不钻进半格
  * - 整行都被藏掉才塌缩；业务块（标题+表）同组才能消灭大洞
  * hiprint 是绝对定位，必须在 preparePrintTemplate 里改 top
@@ -48,6 +48,8 @@ type PrintEl = {
   options?: Record<string, any>;
 };
 
+type FlowFloatMode = 'left' | 'none' | 'right';
+
 /**
  * 读流式组名，空则不参与压缩
  * @param el 纸面元素
@@ -77,6 +79,23 @@ function elBottom(el: PrintEl) {
 }
 
 /**
+ * 同行隐藏后的横向收拢方式。
+ * - left（默认）：从原行左边开始依次补齐空位
+ * - right：从原行右边开始依次补齐空位
+ * - none：只做纵向回流，不改同行的横坐标
+ *
+ * 这个选项放在组内任一元素上即可，读取原始快照时会优先使用已配置值，
+ * 因此用户不需要逐个元素重复设置。
+ */
+function getFlowFloatMode(elements: PrintEl[]): FlowFloatMode {
+  for (const el of elements) {
+    const mode = String(el?.options?.agreeFlowFloat || '').trim();
+    if (mode === 'left' || mode === 'right' || mode === 'none') return mode;
+  }
+  return 'left';
+}
+
+/**
  * 该行设计上的左右跨度
  * @param row 同一设计行的元素
  */
@@ -84,6 +103,22 @@ function rowSpanBox(row: PrintEl[]) {
   const left = Math.min(...row.map((el) => elLeft(el)));
   const right = Math.max(...row.map((el) => elLeft(el) + elWidth(el)));
   return { left, right, width: Math.max(0, right - left) };
+}
+
+/** 计算原设计行中相邻元素的典型横向间距。 */
+function inferRowGap(row: PrintEl[]) {
+  const sorted = [...row].toSorted((a, b) => elLeft(a) - elLeft(b));
+  const gaps: number[] = [];
+  for (let i = 1; i < sorted.length; i += 1) {
+    const previous = sorted[i - 1];
+    const current = sorted[i];
+    if (!previous || !current) continue;
+    const gap = elLeft(current) - (elLeft(previous) + elWidth(previous));
+    if (gap >= 0 && gap < 120) gaps.push(gap);
+  }
+  if (gaps.length === 0) return 0;
+  gaps.sort((a, b) => a - b);
+  return gaps[Math.floor(gaps.length / 2)] || 0;
 }
 
 /**
@@ -214,7 +249,11 @@ export function snapshotFlowGroups(elements: PrintEl[]): PrintFlowGroupSnap[] {
  * @param visible 该行还在的元素
  * @param origRow 过滤前该行全部元素
  */
-function stretchLonePeer(visible: PrintEl[], origRow: PrintEl[]) {
+function stretchLonePeer(
+  visible: PrintEl[],
+  origRow: PrintEl[],
+  mode: FlowFloatMode = 'left',
+) {
   if (visible.length !== 1 || origRow.length < 2) return;
   const el = visible[0];
   if (!el?.options) return;
@@ -222,8 +261,47 @@ function stretchLonePeer(visible: PrintEl[], origRow: PrintEl[]) {
   if (box.width < 40) return;
   if (origRow.some((item) => isSpanEl(item, box.width))) return;
   if (isSpanEl(el, box.width)) return;
+  if (mode === 'none') return;
+  if (mode === 'right') {
+    el.options.left = box.right - elWidth(el);
+    return;
+  }
   el.options.left = box.left;
   el.options.width = box.width;
+}
+
+/**
+ * 同一设计行少了一个或多个字段时，把剩余字段横向收拢，避免截图中出现中间留白。
+ * 只处理普通半格元素；通栏标题等 span 元素仍保持原位置，避免撞列。
+ */
+function compactRowHorizontally(
+  visible: PrintEl[],
+  origRow: PrintEl[],
+  mode: FlowFloatMode,
+) {
+  if (mode === 'none' || visible.length >= origRow.length) return;
+  const box = rowSpanBox(origRow);
+  if (
+    box.width < 40 ||
+    origRow.some((item) => isSpanEl(item, box.width)) ||
+    visible.some((item) => isSpanEl(item, box.width))
+  ) {
+    return;
+  }
+  if (visible.length === 1) {
+    stretchLonePeer(visible, origRow, mode);
+    return;
+  }
+
+  const gap = inferRowGap(origRow);
+  const totalWidth = visible.reduce((sum, el) => sum + elWidth(el), 0);
+  const totalGap = gap * Math.max(0, visible.length - 1);
+  let cursor = mode === 'right' ? box.right - totalWidth - totalGap : box.left;
+  for (const el of visible) {
+    if (!el.options) continue;
+    el.options.left = cursor;
+    cursor += elWidth(el) + gap;
+  }
 }
 
 /**
@@ -238,13 +316,14 @@ function packOrigRows(
   remaining: PrintEl[],
   startTop: number,
   gap: number,
+  floatMode: FlowFloatMode,
 ) {
   const live = new Set(remaining);
   let cursor = startTop;
   for (const origRow of origRows) {
     const visible = origRow.filter((el) => live.has(el));
     if (visible.length === 0) continue;
-    stretchLonePeer(visible, origRow);
+    compactRowHorizontally(visible, origRow, floatMode);
     const rowH = Math.max(...visible.map((el) => elHeight(el)));
     for (const el of visible) {
       if (!el.options) continue;
@@ -304,8 +383,35 @@ export function compactPanelFlow(
     const members = remaining.filter(
       (el) => getFlowGroupName(el) === snap.name,
     );
+    const originalMembers = snap.origRows.flat();
+    const allMembersVisible = members.length === originalMembers.length;
+    const hasManualLargeGap = snap.origRows.some((row, rowIndex) => {
+      if (rowIndex === 0) return false;
+      const previous = snap.origRows[rowIndex - 1];
+      if (!previous?.length || !row?.length) return false;
+      const previousBottom = Math.max(...previous.map((el) => elBottom(el)));
+      const currentTop = Math.min(...row.map((el) => elTop(el)));
+      return currentTop - previousBottom > 40;
+    });
+
+    /**
+     * 设计器允许用户手动拉开同组标题与表格的距离。所有成员都可见时，
+     * 这里不能把较大的间距当成“空洞”重新压紧，否则拖动表格会在下一帧
+     * 被 preparePrintTemplate 拉回标题下方。只有组内发生显隐变化时，才
+     * 使用原设计行重新排版；如果只是受前面隐藏组影响，则整体平移并保留
+     * 组内相对位置。
+     */
+    if (allMembersVisible && hasManualLargeGap) {
+      if (Math.abs(yShift) >= 0.5) {
+        members.forEach((el) => {
+          if (el.options) el.options.top = elTop(el) + yShift;
+        });
+      }
+      continue;
+    }
     const startTop = snap.origTop + yShift;
-    packOrigRows(snap.origRows, members, startTop, snap.gap);
+    const floatMode = getFlowFloatMode(snap.origRows.flat());
+    packOrigRows(snap.origRows, members, startTop, snap.gap, floatMode);
     resolveFlowOverlaps(members);
 
     const newBottom =

@@ -12,14 +12,19 @@ import type { AgreePrintData } from '../types';
 import { formatPrintValue, tableSummaryDecimals } from '../format-print-value';
 import { listLeafTableCells } from '../print-element-meta';
 import { evalPrintExpr, filterPrintRows } from '../print-expr';
+import { projectTableHeaders } from '../print-header-merge';
 import { mmToPt } from '../print-paper';
 import { normalizeAgreeFooters } from '../print-table-footer';
 import {
   applyAgreeBodyCellExprsToRows,
   applyAgreeBodyCellMergesToRows,
   applyAgreeBodyHMergesToRows,
+  applyAgreeColumnMergeMetaToRows,
   computeRowHColSpans,
+  renumberAgreePrintRowIndexes,
+  resolveAgreeColumnMergeConfig,
 } from '../print-table-runtime';
+import { resolvePrintTextValue } from '../print-text-value';
 import { cloneTemplate } from '../template-store';
 
 /** hiprint 点(pt) 转屏幕像素(px)，96dpi 下 1pt = 4/3 px */
@@ -291,20 +296,8 @@ export function resolveTextPreview(
   options: Record<string, any>,
   sample: AgreePrintData | null | undefined,
 ): string {
-  const field = String(options?.field || '');
   const ctx = (sample || {}) as Record<string, unknown>;
-  let value: unknown;
-  if (String(options?.agreeValueExpr || '').trim()) {
-    value = evalPrintExpr(String(options.agreeValueExpr), ctx, {
-      silent: true,
-    });
-  } else if (field && Object.prototype.hasOwnProperty.call(ctx, field)) {
-    value = ctx[field];
-  } else {
-    value = options?.testData;
-  }
-  if (value !== null && typeof value === 'object') return '';
-  return formatPrintValue(value, String(options?.agreeFormat || ''), ctx);
+  return resolvePrintTextValue(options || {}, ctx);
 }
 
 /** 设计态表体单元格，语义与正式 hiprint 运行时一致 */
@@ -322,6 +315,7 @@ export interface TablePreviewCell {
 
 /** 设计态表尾单元格 */
 export interface TablePreviewFooterCell {
+  color?: string;
   align: string;
   cellIndex: number;
   colspan: number;
@@ -358,30 +352,43 @@ export function tablePreviewRowLimit(options: Record<string, any>) {
 
 function computePreviewRowSpans(
   rows: Record<string, unknown>[],
-  fields: string[],
-  mergeSame: boolean[],
+  mergeConfigs: ReturnType<typeof resolveAgreeColumnMergeConfig>[],
   horizontalSpans: number[][],
 ) {
-  const spans = rows.map(() => fields.map(() => 1));
-  for (let ci = 0; ci < fields.length; ci += 1) {
-    if (!mergeSame[ci]) continue;
+  const spans = rows.map(() => mergeConfigs.map(() => 1));
+  for (let ci = 0; ci < mergeConfigs.length; ci += 1) {
+    const config = mergeConfigs[ci];
+    if (!config || config.mode === 'none') continue;
     let ri = 0;
     while (ri < rows.length) {
       if ((horizontalSpans[ri]?.[ci] ?? 1) !== 1) {
         ri += 1;
         continue;
       }
-      const key = String(rows[ri]?.[fields[ci] || ''] ?? '').trim();
-      if (!key) {
+      const currentMeta = (
+        rows[ri]?.__agreeMergeMeta as
+          | undefined
+          | { allow?: boolean; key?: unknown }[]
+      )?.[ci];
+      const key = String(
+        currentMeta?.key ?? rows[ri]?.[config.keyField] ?? '',
+      ).trim();
+      if (!key || (config.mode === 'condition' && !currentMeta?.allow)) {
         ri += 1;
         continue;
       }
       let end = ri + 1;
-      while (
-        end < rows.length &&
-        (horizontalSpans[end]?.[ci] ?? 1) === 1 &&
-        String(rows[end]?.[fields[ci] || ''] ?? '').trim() === key
-      ) {
+      while (end < rows.length && (horizontalSpans[end]?.[ci] ?? 1) === 1) {
+        const nextMeta = (
+          rows[end]?.__agreeMergeMeta as
+            | undefined
+            | { allow?: boolean; key?: unknown }[]
+        )?.[ci];
+        if (config.mode === 'condition' && !nextMeta?.allow) break;
+        const nextKey = String(
+          nextMeta?.key ?? rows[end]?.[config.keyField] ?? '',
+        ).trim();
+        if (nextKey !== key) break;
         end += 1;
       }
       const startSpans = spans[ri];
@@ -413,11 +420,10 @@ export function resolveTablePreview(
     ? options.columns
     : [];
   // 表头：逐行渲染原始单元格，隐藏 checked===false 的叶子列
-  const headerRows = columns.map((row) =>
-    (row || []).filter((c) => c && c.checked !== false),
-  );
+  const headerRows = projectTableHeaders(columns);
   const leaves = listLeafTableCells(columns);
   const leafCols = leaves.map((c) => ({
+    ...c,
     field: c.field,
     title: c.title,
     width: Number(c.width) || 80,
@@ -460,6 +466,7 @@ export function resolveTablePreview(
       rootCtx,
       { silent: true },
     );
+    computedRows = renumberAgreePrintRowIndexes(computedRows);
   }
   computedRows = applyAgreeBodyHMergesToRows(
     computedRows,
@@ -470,6 +477,11 @@ export function resolveTablePreview(
     computedRows,
     options?.agreeBodyCellMerges,
     leaves.length,
+  );
+  computedRows = applyAgreeColumnMergeMetaToRows(
+    computedRows,
+    options?.columns,
+    rootCtx,
   );
   const filteredRowCount = computedRows.length;
   const rows = computedRows.slice(0, maxRows);
@@ -494,8 +506,7 @@ export function resolveTablePreview(
   );
   const verticalSpans = computePreviewRowSpans(
     rows,
-    fields,
-    leaves.map((col) => col.agreeMergeSame),
+    leaves.map((col) => resolveAgreeColumnMergeConfig(col)),
     verticalGuardSpans,
   );
   const bodyRows = rows.map((row, rowIndex) =>
@@ -577,6 +588,7 @@ export function resolveTablePreview(
     leaves.length,
   ).map((row, rowIndex) =>
     row.cells.map((cell, cellIndex) => ({
+      color: cell.color,
       align: cell.align || 'left',
       cellIndex,
       colspan: cell.colspan,
