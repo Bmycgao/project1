@@ -1,0 +1,391 @@
+/**
+ * 协议打印可绑定字段源（数据源面板可拖到纸面）
+ */
+import { AGREE_PRINT_FORMAT_PRESETS } from './format-print-value';
+
+export interface AgreePrintFieldItem {
+  /** 数据 JSON 的 key */
+  field: string;
+  /** 展示名 */
+  text: string;
+  /** 设计态测试值 */
+  testData?: string;
+  /** hiprint 文本类型：普通 / 二维码 / 条形码 */
+  textType?: 'barcode' | 'qrcode' | 'text';
+  /** 字典分组 */
+  group?: 'derived' | 'table' | 'text';
+}
+
+/** 表格列预设（绑定数据源后可一键套用） */
+export interface AgreePrintColumnPreset {
+  title: string;
+  field: string;
+  width: number;
+  align?: 'center' | 'left' | 'right';
+  /** 是否默认开列合计 */
+  tableSummary?: 'sum';
+  /** 同一列上下相同值合并 */
+  agreeMergeSame?: boolean;
+  /** 纵向合并依据字段；为空时使用本列 field */
+  agreeMergeKey?: string;
+  /** 纵向条件合并表达式，例如 category == 'a1' */
+  agreeMergeWhen?: string;
+  /** 此列为空时并入左边格子（只影响本行） */
+  agreeHMergeEmpty?: boolean;
+  /** 值为 0 时格子显示空 */
+  agreeHideZero?: boolean;
+  /** 单元格展示格式，如 money0 / dateCn */
+  agreeColFormat?: string;
+}
+
+/** 主表文本字段（协议详情扁平值） */
+export const AGREE_PRINT_TEXT_FIELDS: AgreePrintFieldItem[] = [
+  {
+    field: 'agreementNo',
+    text: '协议编号',
+    testData: 'XY-2026-001',
+    group: 'text',
+  },
+  {
+    field: 'agreementName',
+    text: '协议名称',
+    testData: '某某项目征收补偿协议',
+    group: 'text',
+  },
+  { field: 'compensatee', text: '被征收人', testData: '张三', group: 'text' },
+  { field: 'acquirer', text: '征收人', testData: '某区征收办', group: 'text' },
+  {
+    field: 'department',
+    text: '所属部门',
+    testData: '征收事务中心',
+    group: 'text',
+  },
+  {
+    field: 'signDate',
+    text: '签约日期',
+    testData: '2026-03-01',
+    group: 'text',
+  },
+  { field: 'statusValue', text: '状态', testData: '已签约', group: 'text' },
+  { field: 'amount', text: '协议金额', testData: '760000', group: 'text' },
+  {
+    field: 'amountCn',
+    text: '金额大写',
+    testData: '柒拾陆万元整',
+    group: 'text',
+  },
+  { field: 'remark', text: '备注', testData: '', group: 'text' },
+  {
+    field: 'qrcodeContent',
+    text: '二维码内容',
+    testData: 'AGREE:XY-2026-001',
+    textType: 'qrcode',
+    group: 'text',
+  },
+  {
+    field: 'barcodeContent',
+    text: '条形码内容',
+    testData: 'XY-2026-001',
+    textType: 'barcode',
+    group: 'text',
+  },
+  {
+    field: 'printMeta',
+    text: '打印元信息',
+    testData: '协议|XY-2026-001|张三',
+    group: 'text',
+  },
+];
+
+/** 表格数据源（整表绑定的数组 key） */
+export const AGREE_PRINT_TABLE_FIELDS: AgreePrintFieldItem[] = [
+  { field: 'houses', text: '房屋明细', group: 'table' },
+  { field: 'compensationItems', text: '补偿安置', group: 'table' },
+  { field: 'rewardItems', text: '奖励补贴', group: 'table' },
+];
+
+/** 由业务数据派生、供条件/公式使用 */
+export const AGREE_PRINT_DERIVED_FIELDS: AgreePrintFieldItem[] = [
+  {
+    field: 'compensationTotal',
+    text: '补偿合计',
+    testData: '500000',
+    group: 'derived',
+  },
+  {
+    field: 'rewardTotal',
+    text: '奖励合计',
+    testData: '260000',
+    group: 'derived',
+  },
+  { field: 'houseCount', text: '房屋套数', testData: '2', group: 'derived' },
+  {
+    field: 'totalBuildArea',
+    text: '建筑面积合计',
+    testData: '131',
+    group: 'derived',
+  },
+  {
+    field: 'totalEvalValue',
+    text: '评估价值合计',
+    testData: '760000',
+    group: 'derived',
+  },
+];
+
+/** 各表推荐列（套用后写入表格 columns） */
+export const TABLE_COLUMN_PRESETS: Record<string, AgreePrintColumnPreset[]> = {
+  houses: [
+    {
+      title: '户名',
+      field: 'householdName',
+      width: 70,
+      align: 'center',
+      agreeMergeSame: true,
+    },
+    { title: '序号', field: 'index', width: 36, align: 'center' },
+    { title: '房屋地址', field: 'address', width: 120, align: 'center' },
+    { title: '产权证号', field: 'certNo', width: 80, align: 'center' },
+    {
+      title: '房屋类型',
+      field: 'houseType',
+      width: 64,
+      align: 'center',
+      agreeMergeSame: true,
+    },
+    {
+      title: '建筑面积',
+      field: 'buildArea',
+      width: 60,
+      align: 'center',
+      tableSummary: 'sum',
+      agreeColFormat: 'areaM2',
+    },
+    {
+      title: '征收面积',
+      field: 'expropriatedArea',
+      width: 60,
+      align: 'center',
+      tableSummary: 'sum',
+      agreeColFormat: 'areaM2',
+    },
+    {
+      title: '评估价值',
+      field: 'evalValue',
+      width: 60,
+      align: 'center',
+      tableSummary: 'sum',
+      agreeColFormat: 'money0',
+    },
+  ],
+  compensationItems: [
+    { title: '序号', field: 'index', width: 42, align: 'center' },
+    { title: '补偿项目', field: 'name', width: 160, align: 'center' },
+    { title: '计算方式', field: 'calcType', width: 80, align: 'center' },
+    { title: '数量', field: 'quantity', width: 56, align: 'center' },
+    {
+      title: '单价',
+      field: 'unitPrice',
+      width: 64,
+      align: 'center',
+      agreeColFormat: 'money',
+    },
+    {
+      title: '金额',
+      field: 'amount',
+      width: 72,
+      align: 'center',
+      tableSummary: 'sum',
+      agreeColFormat: 'money',
+    },
+    { title: '说明', field: 'remark', width: 76, align: 'center' },
+  ],
+  rewardItems: [
+    { title: '序号', field: 'index', width: 42, align: 'center' },
+    { title: '奖励项目', field: 'name', width: 180, align: 'center' },
+    {
+      title: '金额',
+      field: 'amount',
+      width: 120,
+      align: 'center',
+      tableSummary: 'sum',
+      agreeColFormat: 'money',
+    },
+    { title: '说明', field: 'remark', width: 208, align: 'center' },
+  ],
+};
+
+/** hiprint 原生字段下拉 + 检视器全集（去重 field） */
+export const AGREE_PRINT_ALL_FIELDS: AgreePrintFieldItem[] = [
+  ...AGREE_PRINT_TEXT_FIELDS,
+  ...AGREE_PRINT_DERIVED_FIELDS,
+  ...AGREE_PRINT_TABLE_FIELDS,
+];
+
+/** @deprecated 码图已改为通用组件，保留导出以免旧引用报错 */
+export const AGREE_PRINT_CODE_FIELDS: AgreePrintFieldItem[] = [
+  {
+    field: 'qrcodeContent',
+    text: '二维码内容',
+    testData: 'AGREE:XY-2026-001',
+    textType: 'qrcode',
+  },
+  {
+    field: 'barcodeContent',
+    text: '条形码内容',
+    testData: 'XY-2026-001',
+    textType: 'barcode',
+  },
+];
+
+/**
+ * 字段下拉展示：中文名 + 英文 key
+ * @param item 字段项
+ */
+export function formatPrintFieldLabel(
+  item: Pick<AgreePrintFieldItem, 'field' | 'text'>,
+) {
+  return `${item.text} (${item.field})`;
+}
+
+/**
+ * 把列预设转成 hiprint columns 一行
+ * @param tableField 表格数据源 key
+ */
+export function buildPresetTableColumns(tableField: string) {
+  const presets = TABLE_COLUMN_PRESETS[tableField] || [];
+  return presets.map((col) => ({
+    title: col.title,
+    field: col.field,
+    width: col.width,
+    align: col.align || 'center',
+    colspan: 1,
+    rowspan: 1,
+    checked: true,
+    ...(col.tableSummary ? { tableSummary: col.tableSummary } : {}),
+    ...(col.agreeMergeSame ? { agreeMergeSame: true } : {}),
+    ...(col.agreeHMergeEmpty ? { agreeHMergeEmpty: true } : {}),
+    ...(col.agreeHideZero ? { agreeHideZero: true } : {}),
+    ...(col.agreeColFormat ? { agreeColFormat: col.agreeColFormat } : {}),
+  }));
+}
+
+/** 常用显隐：只预填字段和比较方式，门槛由模板按项目填写 */
+export type PrintVisibleFillOperator =
+  | 'contains'
+  | 'eq'
+  | 'falsy'
+  | 'gt'
+  | 'gte'
+  | 'lt'
+  | 'lte'
+  | 'neq'
+  | 'notEmpty'
+  | 'truthy';
+
+export interface PrintVisibleFillPreset {
+  field: string;
+  label: string;
+  operator: PrintVisibleFillOperator;
+  /** 需要比较值时留空，点芯片不直接写回模板 */
+  value?: string;
+}
+
+/** 条件显隐预填项：不出现「有奖励 / 高额」这类已下定义的业务结论 */
+export const PRINT_VISIBLE_FILL_PRESETS: PrintVisibleFillPreset[] = [
+  { label: '奖励合计大于…', field: 'rewardTotal', operator: 'gt' },
+  { label: '协议金额大于…', field: 'amount', operator: 'gt' },
+  { label: '房屋套数大于等于…', field: 'houseCount', operator: 'gte' },
+  { label: '协议状态等于…', field: 'statusValue', operator: 'eq' },
+  { label: '被征收人不为空', field: 'compensatee', operator: 'notEmpty' },
+];
+
+/** 表达式语法示例（帮助面板 / 插入模板，不作为业务快捷结论） */
+export const PRINT_EXPR_PRESETS = {
+  rowFilter: [
+    { label: '隐藏数值为 0 的行', value: 'amount > 0' },
+    { label: '隐藏名称为空的行', value: '!EMPTY(name)' },
+  ],
+  valueExpr: [
+    { label: '金额千分位', value: 'FORMAT_MONEY(amount)' },
+    { label: '补偿+奖励', value: 'compensationTotal + rewardTotal' },
+    { label: '奖励合计兜底 0', value: 'IF(rewardTotal > 0, rewardTotal, 0)' },
+    { label: '房屋建面合计', value: 'SUM(houses, "buildArea")' },
+    { label: '拼接元信息', value: 'CONCAT(agreementNo, " | ", compensatee)' },
+  ],
+  format: [...AGREE_PRINT_FORMAT_PRESETS],
+} as const;
+
+/**
+ * 打印表达式说明（设计器帮助面板）
+ */
+export const PRINT_EXPR_HELP = [
+  {
+    title: '怎么用',
+    lines: [
+      '「规则」里配整块显隐；表格还可筛行',
+      '快捷项只预填字段和判断方式，比较值按本项目填写。正式打印走真实协议',
+      '画布会同步显示计算、筛行、合并和整块显隐；快速预览用于核对最终分页',
+    ],
+  },
+  {
+    title: '条件显隐',
+    lines: [
+      '常用：选字段 + 判断方式 + 本项目比较值，再点应用',
+      '有无奖励、是否高额不要写死，请用 rewardTotal > 阈值 或 COUNT(rewardItems) > 0',
+      '状态文案按本项目流程写，例如 statusValue == "已签约"',
+      '组合：rewardTotal > 0 && amount > 300000',
+      '页眉字段填回流组 header：同一行少一个则通栏，整行都藏才上移',
+    ],
+  },
+  {
+    title: '回流组',
+    lines: [
+      '文档流同行少一块则向左收拢、宽度不变；整行都藏才上移',
+      '旧坐标画布：同行隐藏后默认同组向左收拢；可改为向右或保持原位',
+      '协议名称是通栏，不会去占征收人那个半格',
+      '房屋 houses / 补偿 compensation / 奖励 rewards：小标题和表必须同组，整段藏掉下方才顶上来',
+      '二维码、大标题不要进组',
+    ],
+  },
+  {
+    title: '表格筛行',
+    lines: [
+      '点列头右侧 ▾ 勾选本列要打印的值，可升序/降序；多列或表达式用更多条件',
+      '快捷项只预填「金额为 0 不印 / 名称为空不印」，阈值可改',
+      '筛行决定保留哪些记录；列公式逐行计算单元格，两者分开配置',
+      '列公式支持 IF(条件, 真值, 假值) 和 条件 ? 真值 : 假值',
+      '科学/逻辑函数：ROUND、ABS、CEIL、FLOOR、POW、SQRT、MOD、CLAMP、IFS、AND、OR、NOT',
+      '列上「对齐」：左 / 中 / 右，画布格子与附件一预览同步；纵向合并格也会跟着靠边',
+      '列上「纵向合并」：不合并 / 相同值 / 按条件；合并挂在叶子列上，不是每个单元格单独绑字段',
+      '相同值：可填「合并依据」（如 householdId），默认用本列 field；显示字段与依据字段可不同',
+      "按条件：如 category == 'a1'，只合并满足条件的连续行；也可另填合并依据",
+      '「显示序号」：表格开关，最左侧增加/移除序号列；筛行后按可见行从 1 连续自增',
+      '表体可鼠标拖选，或点起点后 Shift 点终点，做横向、纵向或矩形手动合并',
+      '点表头会打开「编辑明细表」，在弹窗里点选合并/拆分表头；画布 ▾ 仍筛列',
+      '列上「空并左」：该列为空时并入左边，作用于该列所有空行',
+      '表头合并：连续列创建分组；在大分组内部继续点选即可形成多层表头，叶子字段和公式会保留',
+      '表尾行「结构合并」：固定挂在表底，相邻格可 colspan，与相同值合并无关',
+      '「隐零」只把 0 显示成空',
+      '列上「格式」只改打印显示，不改原始数字，合计仍可用',
+    ],
+  },
+  {
+    title: '文本格式',
+    lines: [
+      '对绑定 field 的原值做格式化（金额、面积、日期时间等）',
+      '表格列请在「数据」里选「格式」，合计仍按数字加总',
+      '可选：money / areaM2 / areaM3 / date / percent / integer 等（见格式下拉分组）',
+    ],
+  },
+  {
+    title: '敏感数据',
+    lines: [
+      '模板只存字段名，不存真实姓名/证号；设计器「张三」是假样例',
+      '二维码/条码只编码协议编号，不拼被征收人',
+      '正式打印按 Agree:Field:* 对无权限字段打码 ***，不要靠删列当权限',
+      '某列永远不印：不绑该列或用条件显隐；与权限打码是两件事',
+      '粘贴数据源 JSON 时不要贴生产库真实隐私',
+    ],
+  },
+];

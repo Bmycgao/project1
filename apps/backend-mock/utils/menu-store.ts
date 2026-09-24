@@ -1,3 +1,4 @@
+import { WORKFLOW_AUTH } from '../../shared/workflow-runtime';
 /**
  * 菜单树内存操作：增删改直接改 MOCK_MENU_LIST，侧栏与管理页同源
  * 变更后写入 menu.json，重启可恢复（与 rbac / page-schema 同一套落盘）
@@ -76,9 +77,189 @@ export function ensureMenuStoreHydrated() {
 
   // 落盘菜单可能早于新增种子：补齐打印模板菜单
   ensureSystemPrintTemplateMenuSeed();
+  ensureSystemWorkflowMenuSeed();
+  ensureWorkflowRuntimeMenuSeed();
   ensureAgreePreviewButtonSeed();
   hideLegacyPrintDesignMenu();
   fixPrintDesignMenuComponent();
+}
+
+function ensureWorkflowRuntimeMenuSeed() {
+  const seeds = [
+    {
+      id: 9100,
+      pid: 0,
+      path: '/workflow',
+      name: 'WorkflowTasks',
+      authCode: WORKFLOW_AUTH.use,
+      status: 1,
+      type: 'menu',
+      meta: {
+        icon: 'mdi:clipboard-check-outline',
+        title: '流程办理',
+        order: 80,
+      },
+      component: '/workflow/index',
+      children: [],
+    },
+    {
+      id: 9101,
+      pid: 0,
+      path: '/workflow/instances/:id',
+      name: 'WorkflowInstance',
+      authCode: WORKFLOW_AUTH.use,
+      status: 1,
+      type: 'menu',
+      meta: {
+        hideInMenu: true,
+        activePath: '/workflow',
+        title: '流程办理详情',
+      },
+      component: '/workflow/detail',
+    },
+  ];
+  let changed = false;
+  for (const seed of seeds) {
+    if (!MOCK_MENU_LIST.some((m) => m.name === seed.name)) {
+      MOCK_MENU_LIST.push(seed);
+      changed = true;
+    }
+  }
+  const tasks = MOCK_MENU_LIST.find((m) => m.name === 'WorkflowTasks');
+  if (
+    ensureMenuButtons(tasks, [
+      {
+        id: 91_001,
+        name: 'WorkflowStart',
+        authCode: WORKFLOW_AUTH.start,
+        title: '发起流程',
+      },
+    ])
+  )
+    changed = true;
+  if (changed) persistMenuStore();
+}
+
+/** 在父菜单下补齐按钮权限（按 name 去重，兼容旧落盘） */
+function ensureMenuButtons(
+  parent: any,
+  buttons: Array<{ authCode: string; id: number; name: string; title: string }>,
+) {
+  if (!parent) return false;
+  parent.children ||= [];
+  let changed = false;
+  for (const button of buttons) {
+    if (parent.children.some((c: any) => c.name === button.name)) continue;
+    parent.children.push({
+      id: button.id,
+      pid: parent.id,
+      name: button.name,
+      status: 1,
+      type: 'button',
+      authCode: button.authCode,
+      meta: { title: button.title },
+    });
+    changed = true;
+  }
+  return changed;
+}
+
+/** 补齐已有落盘菜单中的流程设计入口，保留用户修改过的菜单配置。 */
+function ensureSystemWorkflowMenuSeed() {
+  const system = MOCK_MENU_LIST.find((m) => String(m.id) === '2');
+  if (!system?.children) return;
+  const seeds = [
+    {
+      id: 209,
+      pid: 2,
+      path: 'workflow',
+      name: 'SystemWorkflow',
+      authCode: WORKFLOW_AUTH.manage,
+      status: 1,
+      type: 'menu',
+      meta: { icon: 'mdi:vector-polyline', title: '流程设计' },
+      component: '/system/workflow/list',
+      children: [],
+    },
+    {
+      id: 2091,
+      pid: 2,
+      path: 'workflow/edit/:id',
+      name: 'SystemWorkflowEdit',
+      authCode: WORKFLOW_AUTH.manage,
+      status: 1,
+      type: 'menu',
+      meta: {
+        hideInMenu: true,
+        activePath: '/system/workflow',
+        title: '流程设计器',
+      },
+      component: '/system/workflow/edit',
+    },
+    {
+      id: 2092,
+      pid: 2,
+      path: 'workflow/monitor',
+      name: 'SystemWorkflowMonitor',
+      authCode: WORKFLOW_AUTH.monitor,
+      status: 1,
+      type: 'menu',
+      meta: { icon: 'mdi:monitor-dashboard', title: '流程监控' },
+      component: '/system/workflow/monitor',
+    },
+  ];
+  let changed = false;
+  for (const seed of seeds) {
+    if (!system.children.some((m: any) => m.name === seed.name)) {
+      system.children.push(seed);
+      changed = true;
+    }
+  }
+  const listMenu = system.children.find(
+    (m: any) => m.name === 'SystemWorkflow',
+  );
+  if (
+    ensureMenuButtons(listMenu, [
+      {
+        id: 20_901,
+        name: 'SystemWorkflowCreate',
+        authCode: WORKFLOW_AUTH.create,
+        title: '新建流程',
+      },
+      {
+        id: 20_902,
+        name: 'SystemWorkflowCopy',
+        authCode: WORKFLOW_AUTH.copy,
+        title: '复制流程',
+      },
+      {
+        id: 20_903,
+        name: 'SystemWorkflowPublish',
+        authCode: WORKFLOW_AUTH.publish,
+        title: '发布流程',
+      },
+      {
+        id: 20_904,
+        name: 'SystemWorkflowVersion',
+        authCode: WORKFLOW_AUTH.version,
+        title: '新建版本',
+      },
+      {
+        id: 20_905,
+        name: 'SystemWorkflowDisable',
+        authCode: WORKFLOW_AUTH.disable,
+        title: '停用流程',
+      },
+      {
+        id: 20_906,
+        name: 'SystemWorkflowDelete',
+        authCode: WORKFLOW_AUTH.delete,
+        title: '删除草稿',
+      },
+    ])
+  )
+    changed = true;
+  if (changed) persistMenuStore();
 }
 
 /**

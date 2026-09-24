@@ -16,9 +16,9 @@ import {
   updatePrintTemplate,
 } from '#/api';
 
-import { agreePrintTemplate } from '../../biz/agreement/print/agreement-template';
+import { cloneJson as cloneTemplate } from '../../biz/agreement/clone';
 import DesignerPanel from '../../biz/agreement/print/designer/agreement-print-designer.vue';
-import { cloneTemplate } from '../../biz/agreement/print/template-store';
+import { agreePrintTemplate } from '../../biz/agreement/print/template/agreement-template';
 
 const route = useRoute();
 const router = useRouter();
@@ -156,14 +156,16 @@ onMounted(() => {
     v-loading="loading"
   >
     <div
-      class="mb-2 flex shrink-0 flex-wrap items-end gap-2 rounded-lg border border-gray-200/80 bg-white px-3 py-2"
+      class="bg-background text-foreground mb-2 flex shrink-0 flex-wrap items-end gap-2 rounded-lg border border-border px-3 py-2"
     >
       <div class="min-w-[180px] flex-1">
-        <div class="mb-1 text-xs text-gray-500">模板名称</div>
+        <div class="text-muted-foreground mb-1 text-xs">模板名称</div>
         <ElInput v-model="name" placeholder="如：附件一" />
       </div>
       <div class="min-w-[180px] flex-1">
-        <div class="mb-1 text-xs text-gray-500">模板编码 templateCode</div>
+        <div class="text-muted-foreground mb-1 text-xs">
+          模板编码 templateCode
+        </div>
         <ElInput
           v-model="templateCode"
           placeholder="如：PrintFujian1"
@@ -171,20 +173,20 @@ onMounted(() => {
         />
       </div>
       <div class="w-[140px]">
-        <div class="mb-1 text-xs text-gray-500">业务类型</div>
+        <div class="text-muted-foreground mb-1 text-xs">业务类型</div>
         <ElSelect v-model="bizType" class="w-full">
           <ElOption label="协议" value="agreement" />
         </ElSelect>
       </div>
       <div class="w-[120px]">
-        <div class="mb-1 text-xs text-gray-500">状态</div>
+        <div class="text-muted-foreground mb-1 text-xs">状态</div>
         <ElSelect v-model="status" class="w-full">
           <ElOption label="启用" :value="1" />
           <ElOption label="停用" :value="0" />
         </ElSelect>
       </div>
       <div class="min-w-[200px] flex-[2]">
-        <div class="mb-1 text-xs text-gray-500">备注</div>
+        <div class="text-muted-foreground mb-1 text-xs">备注</div>
         <ElInput v-model="remark" placeholder="用途说明" />
       </div>
       <div class="flex gap-2 pb-0.5">
@@ -205,7 +207,7 @@ onMounted(() => {
     />
     <div
       v-else
-      class="flex min-h-0 flex-1 items-center justify-center rounded-lg border border-dashed border-gray-300 bg-gray-50 text-sm text-gray-500"
+      class="text-muted-foreground flex min-h-0 flex-1 items-center justify-center rounded-lg border border-dashed border-border bg-background text-sm"
     >
       请先填写模板名称与编码，点击「创建并设计」后再进入设计器
     </div>

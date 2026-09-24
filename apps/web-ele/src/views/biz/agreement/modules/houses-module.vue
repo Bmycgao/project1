@@ -1,12 +1,12 @@
 <script lang="ts" setup>
 import type { Ref } from 'vue';
 
-import type { FcRuleMap } from '../fc/types';
 import type {
   ModuleInnerConfig,
   ModuleInnerFieldItem,
   ModuleInnerSection,
-} from '../module-inner-config';
+} from '../config/module-inner-config';
+import type { FcRuleMap } from '../fc/types';
 /**
  * 房屋信息：浏览态只读表；有权限时「新增/编辑」走右侧抽屉，避免表内横滚直改
  */
@@ -24,17 +24,17 @@ import {
   ElTableColumn,
 } from 'element-plus';
 
+import { useAgreeFieldAccess } from '../access/use-field-access';
 import { cloneJson } from '../clone';
 import ModuleFormControl from '../components/module-form-control.vue';
 import SectionCard from '../components/section-card.vue';
-import { buildSectionFromFcTable } from '../fc/rule-to-inner';
-import { isFcRule } from '../fc/types';
 import {
   normalizeHousesModuleInner,
   resolveEnabledFields,
   resolveEnabledSections,
-} from '../module-inner-config';
-import { useAgreeFieldAccess } from '../use-field-access';
+} from '../config/module-inner-config';
+import { buildSectionFromFcTable } from '../fc/rule-to-inner';
+import { isFcRule } from '../fc/types';
 
 const props = defineProps<{
   /** 是否允许新增/编辑/删除（由详情壳按场景权限传入） */

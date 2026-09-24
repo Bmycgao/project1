@@ -49,9 +49,9 @@ export interface AgreePrintData {
   compensationTotal: number;
   /** 奖励合计 */
   rewardTotal: number;
-  /** 是否有奖励（条件展示用） */
+  /** 兼容旧模板：rewardItems.length > 0；新模板请写 COUNT(rewardItems) > 0 */
   hasRewards: boolean;
-  /** 是否高额协议（表达式示例：amount > 500000） */
+  /** 兼容旧模板：amount > 500000；高额门槛请在模板里按项目填写 */
   isHighAmount: boolean;
   /** 二维码扫描内容 */
   qrcodeContent: string;

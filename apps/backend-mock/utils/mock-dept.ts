@@ -10,6 +10,8 @@ export const MOCK_DEPT_TREE = [
     status: 1,
     createTime: '2022/01/15 09:00:00',
     remark: '集团总部',
+    /** 流程「部门负责人」解析到的用户 ID（与 userStore.id 一致） */
+    leaderUserId: '1',
     children: [
       {
         id: 'D1002',
@@ -18,6 +20,7 @@ export const MOCK_DEPT_TREE = [
         status: 1,
         createTime: '2022/03/01 10:00:00',
         remark: '产品研发与技术支持',
+        leaderUserId: '3',
         children: [
           {
             id: 'D1003',
@@ -119,10 +122,7 @@ export const MOCK_DEPT_IDS = [
  * @param tree 部门树
  * @param id 部门 ID
  */
-export function findDeptNode(
-  tree: any[],
-  id: string,
-): any | null {
+export function findDeptNode(tree: any[], id: string): any | null {
   for (const node of tree) {
     if (String(node.id) === String(id)) {
       return node;
@@ -152,4 +152,36 @@ export function collectDeptAndDescendantIds(tree: any[], id: string): string[] {
   };
   walk(node);
   return ids;
+}
+
+/**
+ * 解析部门负责人用户 ID：本部门未配则沿父级上溯
+ * @param deptId 部门 ID
+ */
+export function findDeptLeaderUserId(deptId: string): string | undefined {
+  const seen = new Set<string>();
+  let current = findDeptNode(MOCK_DEPT_TREE, String(deptId));
+  while (current && !seen.has(String(current.id))) {
+    seen.add(String(current.id));
+    if (current.status === 0) return undefined;
+    if (current.leaderUserId) return String(current.leaderUserId);
+    if (current.pid === 0 || current.pid === undefined || current.pid === null)
+      break;
+    current = findDeptNode(MOCK_DEPT_TREE, String(current.pid));
+  }
+  return undefined;
+}
+
+/**
+ * 一批部门对应的负责人用户 ID（去重）
+ * @param deptIds 设计器勾选的部门
+ */
+export function leaderUserIdsOf(deptIds: string[]): string[] {
+  return [
+    ...new Set(
+      deptIds
+        .map((id) => findDeptLeaderUserId(String(id)))
+        .filter((id): id is string => !!id),
+    ),
+  ];
 }

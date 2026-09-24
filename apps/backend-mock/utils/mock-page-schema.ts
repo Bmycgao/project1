@@ -76,8 +76,10 @@ export interface PageSchema {
     label: string;
     type?: string;
   }[];
-  /** 场景允许的状态值（数据范围；未知 scene 时按此过滤） */
+  /** 场景允许的状态值。空数组表示不过滤 */
   statusIn?: string[];
+  /** 仅读接口：列是否来自表头模板 */
+  columnsInherited?: boolean;
   /** 字段显隐/可编辑规则（列模板上配置，scene 合并时继承） */
   fieldRules?: {
     displayFormat?: {
@@ -1829,12 +1831,14 @@ export function findPageSchema(id: string) {
     );
     if (tpl) {
       // 场景已保存过列 → 用场景自己的；否则继承列模板
-      const columns = node.columns?.length
-        ? structuredClone(node.columns)
-        : structuredClone(tpl.columns || []);
+      const columnsInherited = !node.columns?.length;
+      const columns = columnsInherited
+        ? structuredClone(tpl.columns || [])
+        : structuredClone(node.columns);
       return {
         ...node,
         columns,
+        columnsInherited,
         fieldRules: node.fieldRules?.length
           ? node.fieldRules
           : structuredClone(tpl.fieldRules || []),

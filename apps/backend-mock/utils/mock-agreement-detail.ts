@@ -191,6 +191,7 @@ export function createDefaultAgreementDetail(
     },
     extraForms: {},
     extraTables: {},
+    flowFields: {},
   };
 }
 
@@ -230,6 +231,9 @@ export function getOrCreateAgreementDetail(
     if (!node.extraTables || typeof node.extraTables !== 'object') {
       node.extraTables = {};
     }
+    if (!node.flowFields || typeof node.flowFields !== 'object') {
+      node.flowFields = {};
+    }
   } else {
     node = createDefaultAgreementDetail(key, extra);
     detailCache.set(key, node);
@@ -265,6 +269,7 @@ export function saveAgreementDetailAll(payload: Partial<AgreementDetail>) {
     population: payload.population ?? current.population,
     extraForms: payload.extraForms ?? current.extraForms ?? {},
     extraTables: payload.extraTables ?? current.extraTables ?? {},
+    flowFields: payload.flowFields ?? current.flowFields ?? {},
   };
   detailCache.set(agreementNo, next);
   // 详情保存时同步列表展示字段

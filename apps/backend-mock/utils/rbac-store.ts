@@ -1,6 +1,7 @@
 /* oxlint-disable import/no-mutable-exports unicorn/no-lonely-if */
 import type { UserInfo } from './mock-data';
 
+import { WORKFLOW_AUTH } from '../../shared/workflow-runtime';
 import { ensureMenuStoreHydrated } from './menu-store';
 /**
  * RBAC 内存存储：角色权限 + 用户绑角色
@@ -156,16 +157,36 @@ const VIEWER_MODULE_PERM_IDS = collectIdsByAuthCodes([
   'Agree:Module:population',
 ]);
 
+/** 流程办理菜单本体（不含发起按钮） */
+const WORKFLOW_RUNTIME_IDS = [
+  findMenuIdByName('WorkflowTasks'),
+  findMenuIdByName('WorkflowInstance'),
+].filter((id): id is number | string => id != null);
+/** 发起流程按钮 */
+const WORKFLOW_START_IDS = collectIdsByAuthCodes([WORKFLOW_AUTH.start]);
+/** 流程设计菜单及列表按钮 */
+const WORKFLOW_DESIGN_IDS = collectIdsByMenuNames([
+  'SystemWorkflow',
+  'SystemWorkflowEdit',
+]);
+/** 流程监控菜单（管理员查看全部实例） */
+const WORKFLOW_MONITOR_IDS = [findMenuIdByName('SystemWorkflowMonitor')].filter(
+  (id): id is number | string => id != null,
+);
+
 const ENTRY_PERM_IDS = [
   ...DASHBOARD_IDS,
   ...(E_AGREE_CATALOG_ID ? [E_AGREE_CATALOG_ID] : []),
   ...collectIdsByMenuNames(['EAgreeEntry', 'BizAgreementDetail']),
+  ...WORKFLOW_RUNTIME_IDS,
+  ...WORKFLOW_START_IDS,
 ];
 
 const LAWYER_PERM_IDS = [
   ...DASHBOARD_IDS,
   ...(E_AGREE_CATALOG_ID ? [E_AGREE_CATALOG_ID] : []),
   ...collectIdsByMenuNames(['EAgreeLawyerAudit', 'BizAgreementDetail']),
+  ...WORKFLOW_RUNTIME_IDS,
 ];
 
 const VIEWER_PERM_IDS = [
@@ -394,6 +415,35 @@ function hydrateRbacFromDisk() {
 
 hydrateRbacFromDisk();
 
+// Grant the new mock task center once to existing demo roles. Instance access still
+// requires being the initiator/candidate/previous participant; administrators can inspect.
+if (
+  !readPersistJson<{ done: boolean }>('workflow-runtime-menu-migration.json')
+    ?.done
+) {
+  const runtimeIds = collectIdsByMenuNames([
+    'WorkflowTasks',
+    'WorkflowInstance',
+  ]);
+  for (const role of roleStore) {
+    role.permissions = [...new Set([...role.permissions, ...runtimeIds])];
+  }
+  persistRbacStore();
+  writePersistJson('workflow-runtime-menu-migration.json', { done: true });
+}
+
+// One-time grant for the new configuration page, including installations with saved roles.
+// Subsequent administrator revocations are respected.
+if (!readPersistJson<{ done: boolean }>('workflow-menu-migration.json')?.done) {
+  for (const id of collectIdsByMenuNames([
+    'SystemWorkflow',
+    'SystemWorkflowEdit',
+  ])) {
+    grantNewMenuToDefaultRoles(id);
+  }
+  writePersistJson('workflow-menu-migration.json', { done: true });
+}
+
 /**
  * 给演示角色补上新增的「详情区域」按钮 ID（兼容已落盘的旧 rbac.json）
  * 只追加缺失项，不覆盖角色已取消的其它权限
@@ -482,6 +532,53 @@ function ensureAgreePreviewActionPermissions() {
 }
 
 ensureAgreePreviewActionPermissions();
+
+/**
+ * 给演示角色补上流程菜单/按钮 ID（兼容旧 rbac.json）
+ */
+function ensureWorkflowActionPermissions() {
+  ensureMenuStoreHydrated();
+  let changed = false;
+
+  function merge(roleId: string, extraIds: Array<number | string>) {
+    const role = roleStore.find((r) => r.id === roleId);
+    if (!role) return;
+    const set = new Set(role.permissions.map(String));
+    for (const id of extraIds) {
+      if (!set.has(String(id))) {
+        role.permissions.push(id);
+        changed = true;
+      }
+    }
+  }
+
+  const designAndRuntime = [
+    ...WORKFLOW_DESIGN_IDS,
+    ...WORKFLOW_RUNTIME_IDS,
+    ...WORKFLOW_START_IDS,
+    ...WORKFLOW_MONITOR_IDS,
+  ];
+  merge('R_SUPER', designAndRuntime);
+  merge('R_ADMIN', designAndRuntime);
+  merge('R_ENTRY', [...WORKFLOW_RUNTIME_IDS, ...WORKFLOW_START_IDS]);
+  merge('R_LAWYER', WORKFLOW_RUNTIME_IDS);
+
+  /** 办理菜单下的发起按钮不应随「流程办理」一并授权给律师/查询/普通用户 */
+  const startDeny = new Set(WORKFLOW_START_IDS.map(String));
+  for (const roleId of ['R_LAWYER', 'R_VIEWER', 'R_USER']) {
+    const role = roleStore.find((r) => r.id === roleId);
+    if (!role) continue;
+    const next = role.permissions.filter((p) => !startDeny.has(String(p)));
+    if (next.length !== role.permissions.length) {
+      role.permissions = next;
+      changed = true;
+    }
+  }
+
+  if (changed) persistRbacStore();
+}
+
+ensureWorkflowActionPermissions();
 
 /**
  * 按用户名查找可登录用户

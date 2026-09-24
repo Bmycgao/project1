@@ -103,13 +103,19 @@ const SCENE_STATUS_MAP: Record<string, string[] | undefined> = {
  * 解析场景允许的状态：页面配置优先
  * @param scene 场景码
  */
-function resolveStatusAllow(scene: string): string[] | undefined {
-  const fromSchema = pageSchemaStore.find(
-    (item) =>
-      item.schemaKind === 'scene' && String(item.scene) === String(scene),
+function resolveStatusAllow(
+  scene: string,
+  schemaId?: string,
+): string[] | undefined {
+  const enabled = pageSchemaStore.filter(
+    (item) => item.schemaKind === 'scene' && item.status !== 0,
   );
-  if (fromSchema?.statusIn?.length) {
-    return fromSchema.statusIn;
+  const fromSchema =
+    enabled.find((item) => schemaId && String(item.id) === String(schemaId)) ||
+    enabled.find((item) => String(item.scene) === String(scene));
+  // 配了空数组 = 不过滤；未配该字段才退回内置场景
+  if (fromSchema && Array.isArray(fromSchema.statusIn)) {
+    return fromSchema.statusIn.length > 0 ? fromSchema.statusIn : undefined;
   }
   if (Object.prototype.hasOwnProperty.call(SCENE_STATUS_MAP, scene)) {
     return SCENE_STATUS_MAP[scene];
@@ -125,12 +131,14 @@ function resolveStatusAllow(scene: string): string[] | undefined {
  * @param options.statusValue 额外状态筛选
  */
 export function queryAgreeListByScene(options: {
-  scene: string;
   keyword?: string;
+  scene: string;
+  /** 菜单挂的页面配置，优先用它的状态范围 */
+  schemaId?: string;
   statusValue?: string;
 }) {
-  const { scene, keyword, statusValue } = options;
-  const allow = resolveStatusAllow(scene);
+  const { scene, keyword, statusValue, schemaId } = options;
+  const allow = resolveStatusAllow(scene, schemaId);
 
   let list = [...AGREE_ALL_ROWS];
 
@@ -198,16 +206,22 @@ export function removeAgreeListRows(agreementNos: string[]) {
   return removed;
 }
 
+/** 避免同一毫秒内多次建行撞号 */
+let newAgreeSeq = 0;
+
 /**
  * 新建草稿协议行
  * @param input 可选字段
  */
-export function createAgreeListRow(input: {
-  compensatee?: string;
-  houseAddress?: string;
-} = {}) {
+export function createAgreeListRow(
+  input: {
+    compensatee?: string;
+    houseAddress?: string;
+  } = {},
+) {
   const seq = String(AGREE_ALL_ROWS.length + 1).padStart(3, '0');
-  const agreementNo = `LL-NEW-${Date.now().toString().slice(-6)}`;
+  newAgreeSeq += 1;
+  const agreementNo = `LL-NEW-${Date.now()}-${seq}-${newAgreeSeq}`;
   const row: AgreeListRow = {
     id: `A-NEW-${seq}`,
     agreementNo,

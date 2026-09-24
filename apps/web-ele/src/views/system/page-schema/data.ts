@@ -2,6 +2,7 @@ import type { VbenFormSchema } from '#/adapter/form';
 import type { OnActionClickFn, VxeTableGridColumns } from '#/adapter/vxe-table';
 import type { PageSchemaApi } from '#/api';
 
+import { getPageSchemaList } from '#/api';
 import { $t } from '#/locales';
 
 /** 配置用途：展示给操作员看的中文名 */
@@ -40,6 +41,42 @@ export function formatSceneLabel(scene?: string) {
  */
 export function formatSchemaKindLabel(kind?: string) {
   return SCHEMA_KIND_LABEL[String(kind || 'entity')] || kind || '普通列表';
+}
+
+/** 业务场景下拉（可再手输新场景码） */
+export const SCENE_SELECT_OPTIONS = Object.entries(SCENE_LABEL).map(
+  ([value, label]) => ({
+    label: `${label}（${value}）`,
+    value,
+  }),
+);
+
+/** 协议列表可选字段（场景列编辑用） */
+export const AGREE_LIST_FIELD_OPTIONS: {
+  cellType?: PageSchemaApi.ColumnType;
+  field: string;
+  title: string;
+}[] = [
+  { field: 'agreementNo', title: '协议编号' },
+  { field: 'compensatee', title: '被补偿人' },
+  { field: 'houseAddress', title: '房屋地址' },
+  { field: 'statusValue', title: '状态值', cellType: 'tag' },
+  { field: 'signType', title: '签约类型' },
+  { field: 'isSigned', title: '是否签约', cellType: 'tag' },
+  { field: 'batchGroup', title: '批次分组' },
+];
+
+/**
+ * 共用表头下拉：显示名称，值为配置编号
+ */
+export async function fetchTemplatePageSchemas() {
+  const list = await getPageSchemaList();
+  return (list || [])
+    .filter((item) => item.schemaKind === 'template')
+    .map((item) => ({
+      ...item,
+      optionLabel: `${item.title}（${item.id}）`,
+    }));
 }
 
 /** 页面配置 - 基础信息表单（文案面向操作员） */
@@ -82,33 +119,42 @@ export function useFormSchema(): VbenFormSchema[] {
           },
         ],
       },
-      help: '建电子协议子菜单时选「业务场景」：只能勾选已开通的按钮',
+      help: '协议子菜单选「业务场景」。保存后还要在菜单管理里挂上，侧栏才会出现入口',
     },
     {
-      component: 'Input',
+      component: 'Select',
       fieldName: 'scene',
-      label: '业务场景标识',
+      label: '业务场景',
       dependencies: {
         show: (values) => values.schemaKind === 'scene',
         triggerFields: ['schemaKind'],
       },
       componentProps: {
-        placeholder: '如 entry、lawyer_audit（决定拉哪批数据）',
+        allowCreate: true,
+        filterable: true,
+        options: SCENE_SELECT_OPTIONS,
+        placeholder: '选择录入 / 审核 / 预览，或输入新场景码',
       },
-      help: '同一批协议数据里，用这个标识区分「录入 / 审核 / 预览」等看到的数据范围',
+      help: '决定这份配置看哪一批协议。选「协议录入」会和现有录入菜单看到同一批数据',
     },
     {
-      component: 'Input',
+      component: 'ApiSelect',
       fieldName: 'columnTemplateId',
-      label: '使用哪套表头',
+      label: '共用表头',
       dependencies: {
         show: (values) => values.schemaKind === 'scene',
         triggerFields: ['schemaKind'],
       },
       componentProps: {
-        placeholder: '一般填 PS_AGREE_COLS（协议列表表头）',
+        api: fetchTemplatePageSchemas,
+        class: 'w-full',
+        clearable: true,
+        filterable: true,
+        labelField: 'optionLabel',
+        placeholder: '选择共用表头',
+        valueField: 'id',
       },
-      help: '填写「共用表头」那条配置的编号，场景不再单独配列',
+      help: '从已有的共用表头里选。名称后面的编号只作对照，不用手填',
     },
     {
       component: 'RadioGroup',
@@ -156,6 +202,8 @@ export function useGridFormSchema(): VbenFormSchema[] {
  */
 export function useColumns(
   onActionClick: OnActionClickFn<PageSchemaApi.PageSchema>,
+  /** 配置编号 → 已挂菜单名称 */
+  menuTitleOf?: (schemaId: string) => string,
 ): VxeTableGridColumns {
   return [
     { field: 'id', title: '配置编号', width: 150 },
@@ -211,6 +259,9 @@ export function useColumns(
         if (row.schemaKind === 'scene' && row.columnTemplateId) {
           const tpl =
             TEMPLATE_LABEL[row.columnTemplateId] || row.columnTemplateId;
+          if ((row.columns || []).length > 0) {
+            return `本场景单独调整（表头「${tpl}」仍可改回）`;
+          }
           return `沿用「${tpl}」`;
         }
         if (row.schemaKind === 'template') {
@@ -225,7 +276,13 @@ export function useColumns(
         return `本页 ${n} 列`;
       },
     },
-    { field: 'remark', title: '说明', minWidth: 200 },
+    { field: 'remark', title: '说明', minWidth: 160 },
+    {
+      field: 'boundMenus',
+      title: '已挂菜单',
+      minWidth: 140,
+      formatter: ({ row }) => menuTitleOf?.(String(row.id)) || '未使用',
+    },
     {
       align: 'center',
       cellRender: {
@@ -233,13 +290,14 @@ export function useColumns(
         name: 'CellOperation',
         options: [
           { code: 'edit', text: '去配置' },
+          { code: 'history', text: '历史' },
           'delete',
         ],
       },
       field: 'operation',
       fixed: 'right',
       title: '操作',
-      width: 160,
+      width: 200,
     },
   ];
 }

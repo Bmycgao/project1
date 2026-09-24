@@ -1,9 +1,9 @@
+import type { AgreeFieldRule } from '../../biz/agreement/access/field-access';
+import type { AgreeModuleMount } from '../../biz/agreement/access/module-access';
 import type {
   AgreeButtonBind,
   AgreeToolbarButton,
 } from '../../biz/agreement/actions';
-import type { AgreeFieldRule } from '../../biz/agreement/field-access';
-import type { AgreeModuleMount } from '../../biz/agreement/module-access';
 
 /**
  * 页面配置可视化预览：按「当前草稿配置 + 某角色权限码」模拟列表列/按钮/字段/模块效果
@@ -12,21 +12,21 @@ import type { AgreeModuleMount } from '../../biz/agreement/module-access';
 import type { PageSchemaApi } from '#/api';
 
 import {
-  filterButtonsByAccessCodes,
-  resolveToolbarButtons,
-} from '../../biz/agreement/actions';
-import {
   filterColumnsByFieldRules,
   formatAgreeFieldValue,
   resolveFieldAccess,
-} from '../../biz/agreement/field-access';
+} from '../../biz/agreement/access/field-access';
 import {
   AGREE_DETAIL_MODULES,
   isAgreeModuleVisible,
   normalizeAgreeModuleMounts,
   normalizeModuleSpan,
   resolveAgreeModulesForPage,
-} from '../../biz/agreement/module-access';
+} from '../../biz/agreement/access/module-access';
+import {
+  filterButtonsByAccessCodes,
+  resolveToolbarButtons,
+} from '../../biz/agreement/actions';
 
 /** 预览入参（表单草稿） */
 export interface SchemaPreviewInput {

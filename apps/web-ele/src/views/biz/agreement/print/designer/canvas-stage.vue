@@ -4,7 +4,7 @@
  * - 不使用 hiprint design() 模式，元素坐标完全自控，避免横向错乱与刻度杂线
  * - 以模板 JSON 为唯一数据源，交互结束后回写并向上层 emit
  */
-import type { AgreePrintFieldItem } from '../fields';
+import type { AgreePrintFieldItem } from '../data/fields';
 import type { AgreePrintData } from '../types';
 import type {
   CanvasFieldDropPayload,
@@ -23,17 +23,19 @@ import {
   watch,
 } from 'vue';
 
-import { preparePrintTemplate } from '../prepare-template';
+import { cloneJson as cloneTemplate } from '../../clone';
+import { preparePrintTemplate } from '../runtime/prepare-template';
+import { getFlowGroupName, isAutoFlowElement } from '../runtime/print-flow';
+import { fieldInFilterExpr } from '../runtime/print-row-filter';
+import {
+  normalizeTableColor,
+  resolveTableCellColor,
+} from '../runtime/print-table-color';
 import {
   AGREE_PRINT_FIELD_DND,
   AGREE_PRINT_TOOLBOX_DND,
   getAgreePrintHtml5Drag,
-} from '../print-element-meta';
-import {
-  normalizeTableColor,
-  resolveTableCellColor,
-} from '../print-table-color';
-import { cloneTemplate } from '../template-store';
+} from '../template/print-element-meta';
 import CanvasCode from './canvas-code.vue';
 import {
   elementKey,
@@ -66,6 +68,14 @@ const props = defineProps<{
     startCol: number;
     startRow: number;
   };
+  /** 当前选中的表头叶子列范围 */
+  headerCellSelection?: null | {
+    field: string;
+    fromLeaf: number;
+    key: string;
+    mergeId: string;
+    toLeaf: number;
+  };
   /** 检视器或表体交互正在高亮的叶子列 */
   highlightColIndex?: number;
   /** 列高亮只作用于这一张表，避免其他表格同序号列被误选 */
@@ -91,6 +101,17 @@ const emit = defineEmits<{
   contextmenu: [payload: { clientX: number; clientY: number; key: string }];
   /** 数据源字段拖入纸面 */
   fieldDrop: [payload: CanvasFieldDropPayload];
+  headerFilterRequested: [
+    payload: {
+      anchor: { bottom: number; left: number; right: number; top: number };
+      clientX: number;
+      clientY: number;
+      field: string;
+      fromLeaf: number;
+      key: string;
+      toLeaf: number;
+    },
+  ];
   /** 点中某页空白处 */
   pageSelect: [panelIndex: number];
   /** 点选表体格；拖选或 Shift 点终点可扩成矩形范围 */
@@ -106,6 +127,19 @@ const emit = defineEmits<{
   /** 点选表尾格 */
   tableFooterCellSelect: [
     payload: { cellIndex: number; key: string; rowIndex: number },
+  ];
+  /** 点选表头格；画布不合并表头，由设计器打开编辑明细表 */
+  tableHeaderCellSelect: [
+    payload: {
+      clientX: number;
+      clientY: number;
+      field: string;
+      fromLeaf: number;
+      key: string;
+      mergeId: string;
+      shiftKey: boolean;
+      toLeaf: number;
+    },
   ];
   /** 左侧积木拖入纸面 */
   toolboxDrop: [payload: CanvasToolboxDropPayload];
@@ -214,6 +248,7 @@ function applyMeasuredTableFlow(page: RenderPage) {
   return {
     ...page,
     elements: page.elements.map((el, elementIndex) => {
+      if (!isAutoFlowElement(el)) return el;
       const top = Number(el.options.top) || 0;
       let shift = 0;
       for (const table of tables) {
@@ -354,6 +389,18 @@ function elementStyle(el: DesignElement) {
     width: `${(Number(o.width) || 0) * PT_TO_PX}px`,
     height: `${displayHeight(el) * PT_TO_PX}px`,
   };
+}
+
+/** 高亮本页同组成员，分组不跨手工页关联。 */
+function isFlowPeer(el: DesignElement) {
+  if (el.key === props.selectedKey || !isAutoFlowElement(el)) return false;
+  const [pageIndex, elementIndex] = props.selectedKey.split(':').map(Number);
+  if (pageIndex !== el.panelIndex || elementIndex === undefined) return false;
+  const selected =
+    local.value?.panels?.[pageIndex]?.printElements?.[elementIndex];
+  const group =
+    selected && isAutoFlowElement(selected) ? getFlowGroupName(selected) : '';
+  return !!group && group === getFlowGroupName(el);
 }
 
 /** 选框、吸附与表格实际内容使用同一尺寸，不改打印用的设计高度。 */
@@ -526,11 +573,20 @@ function cellStyle(
             >,
           ) || 'inherit',
     height: `${Number(options.tableBodyRowHeight) || 18}pt`,
-    textAlign: (cell.align || 'left') as any,
+    textAlign: (cell.align || 'center') as any,
+    ...(options.agreeFormGrid && area === 'body'
+      ? {
+          ...(row.__formStyles as Record<string, any>[] | undefined)?.[
+            Number(String(cell.field).replace('__form_c', ''))
+          ],
+          height: `${Number(row.__formHeight) || 22}pt`,
+        }
+      : {}),
   };
 }
 
 let bodySelectionKey = '';
+let headerSelectionKey = '';
 
 function onTableBodyCellPointer(
   e: MouseEvent,
@@ -543,6 +599,7 @@ function onTableBodyCellPointer(
   extend = false,
 ) {
   selectElement(el);
+  if (el.options.agreeFormGrid) return;
   emit('tableBodyCellSelect', {
     colIndex: cell.colIndex,
     key: el.key,
@@ -604,6 +661,134 @@ function isBodyCellSelected(key: string, rowIndex: number, colIndex: number) {
     rowIndex >= startRow &&
     rowIndex <= endRow
   );
+}
+
+/** 表头格是否落在当前选区（含分组格、已合并的跨列格） */
+function isHeaderCellSelected(
+  key: string,
+  cell: {
+    editorGroupFrom?: number;
+    editorGroupTo?: number;
+    editorLeafEnd?: number;
+    editorLeafIndex?: number;
+  },
+) {
+  const selection = props.headerCellSelection;
+  if (!selection || selection.key !== key) return false;
+  const from = Number.isInteger(cell.editorLeafIndex)
+    ? Number(cell.editorLeafIndex)
+    : Number(cell.editorGroupFrom);
+  const to = Number.isInteger(cell.editorLeafEnd)
+    ? Number(cell.editorLeafEnd)
+    : Number.isInteger(cell.editorGroupTo)
+      ? Number(cell.editorGroupTo)
+      : from;
+  if (!Number.isInteger(from)) return false;
+  return from === selection.fromLeaf && to === selection.toLeaf;
+}
+
+/** 列头是否已写入筛选（三角标记） */
+function isHeaderCellFiltered(el: DesignElement, cell: { field?: string }) {
+  return fieldInFilterExpr(
+    String(el.options.agreeRowFilter || ''),
+    String(cell.field || ''),
+  );
+}
+
+function isHeaderCellSorted(el: DesignElement, cell: { field?: string }) {
+  const field = String(cell.field || '');
+  return (
+    !!field &&
+    (el.options.agreeRowSort || []).some(
+      (rule: { field?: string }) => rule?.field === field,
+    )
+  );
+}
+
+function onTableHeaderCellPointer(
+  e: MouseEvent,
+  el: DesignElement,
+  cell: {
+    editorGroupFrom?: number;
+    editorGroupTo?: number;
+    editorLeafEnd?: number;
+    editorLeafIndex?: number;
+    field?: string;
+    headerMergeId?: string;
+  },
+) {
+  const fromLeaf = Number.isInteger(cell.editorLeafIndex)
+    ? Number(cell.editorLeafIndex)
+    : Number(cell.editorGroupFrom);
+  const toLeaf = Number.isInteger(cell.editorLeafEnd)
+    ? Number(cell.editorLeafEnd)
+    : Number.isInteger(cell.editorGroupTo)
+      ? Number(cell.editorGroupTo)
+      : fromLeaf;
+  if (!Number.isInteger(fromLeaf)) return;
+  selectElement(el);
+  emit('tableHeaderCellSelect', {
+    key: el.key,
+    fromLeaf,
+    toLeaf,
+    field: String(cell.field || ''),
+    mergeId: String(cell.headerMergeId || ''),
+    shiftKey: e.shiftKey,
+    clientX: e.clientX,
+    clientY: e.clientY,
+  });
+}
+
+function onTableHeaderCellMouseDown(
+  e: MouseEvent,
+  el: DesignElement,
+  cell: {
+    editorGroupFrom?: number;
+    editorGroupTo?: number;
+    editorLeafEnd?: number;
+    editorLeafIndex?: number;
+    field?: string;
+    headerMergeId?: string;
+  },
+) {
+  headerSelectionKey = el.key;
+  onTableHeaderCellPointer(e, el, cell);
+}
+
+function onHeaderFilterClick(
+  e: MouseEvent,
+  el: DesignElement,
+  cell: {
+    editorLeafEnd?: number;
+    editorLeafIndex?: number;
+    field?: string;
+  },
+) {
+  if (!Number.isInteger(cell.editorLeafIndex) || !cell.field) return;
+  selectElement(el);
+  const fromLeaf = Number(cell.editorLeafIndex);
+  const target = e.currentTarget as HTMLElement;
+  const rect = target.getBoundingClientRect();
+  emit('headerFilterRequested', {
+    key: el.key,
+    field: String(cell.field),
+    fromLeaf,
+    toLeaf: Number.isInteger(cell.editorLeafEnd)
+      ? Number(cell.editorLeafEnd)
+      : fromLeaf,
+    clientX: rect.left,
+    clientY: rect.bottom,
+    anchor: {
+      left: rect.left,
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+    },
+  });
+}
+
+function clearHeaderSelecting() {
+  headerSelectionKey = '';
 }
 
 /** 越界红框 */
@@ -977,12 +1162,14 @@ function onWindowMouseUp() {
 onMounted(() => {
   window.addEventListener('dragend', clearDropGuide);
   window.addEventListener('mouseup', clearBodySelecting);
+  window.addEventListener('mouseup', clearHeaderSelecting);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener('blur', onWindowMouseUp);
   window.removeEventListener('dragend', clearDropGuide);
   window.removeEventListener('mouseup', clearBodySelecting);
+  window.removeEventListener('mouseup', clearHeaderSelecting);
   window.removeEventListener('mousemove', onWindowMouseMove);
   window.removeEventListener('mouseup', onWindowMouseUp);
   document.body.style.userSelect = '';
@@ -1078,6 +1265,7 @@ defineExpose({
           :class="{
             'is-selected': el.key === selectedKey,
             'is-overflow': isOverflow(el, page),
+            'is-flow-peer': isFlowPeer(el),
           }"
           :style="elementStyle(el)"
           @mousedown="onElementMouseDown($event, el)"
@@ -1152,9 +1340,35 @@ defineExpose({
                   :key="ci"
                   :colspan="Number(cell.colspan) || 1"
                   :rowspan="Number(cell.rowspan) || 1"
+                  :class="{
+                    'is-header-selected': isHeaderCellSelected(el.key, cell),
+                    'is-header-filtered': isHeaderCellFiltered(el, cell),
+                  }"
                   :style="headerCellStyle(el.options, cell)"
+                  @mousedown.stop.prevent="
+                    onTableHeaderCellMouseDown($event, el, cell)
+                  "
                 >
                   {{ cell.title }}
+                  <button
+                    v-if="
+                      Number.isInteger(cell.editorLeafIndex) &&
+                      (cell.editorLeafEnd ?? cell.editorLeafIndex) ===
+                        cell.editorLeafIndex &&
+                      cell.field
+                    "
+                    type="button"
+                    class="agree-canvas__header-filter"
+                    :class="{
+                      'is-on': isHeaderCellFiltered(el, cell),
+                      'is-sorted': isHeaderCellSorted(el, cell),
+                    }"
+                    aria-label="筛选本列"
+                    @mousedown.stop.prevent
+                    @click.stop="onHeaderFilterClick($event, el, cell)"
+                  >
+                    ▾
+                  </button>
                 </td>
               </tr>
             </thead>
@@ -1361,6 +1575,11 @@ defineExpose({
 </template>
 
 <style scoped>
+.agree-canvas__el.is-flow-peer {
+  outline: 1px dashed #60a5fa;
+  outline-offset: 2px;
+}
+
 .agree-canvas__move-table {
   position: absolute;
   top: -27px;
@@ -1368,10 +1587,10 @@ defineExpose({
   z-index: 2;
   padding: 3px 8px;
   font-size: 12px;
-  color: #2563eb;
+  color: var(--el-color-primary);
   cursor: move;
-  background: white;
-  border: 1px solid #93c5fd;
+  background: var(--el-bg-color-overlay);
+  border: 1px solid var(--el-color-primary-light-5);
   border-radius: 4px;
 }
 
@@ -1382,7 +1601,7 @@ defineExpose({
   align-items: center;
   min-height: 100%;
   padding: 24px 16px 48px;
-  background: #eef1f6;
+  background: transparent;
 }
 
 .agree-canvas__hud {
@@ -1437,9 +1656,9 @@ defineExpose({
   bottom: 4px;
   padding: 2px 7px;
   font-size: 10px;
-  color: #92400e;
-  background: #fffbeb;
-  border: 1px solid #fde68a;
+  color: var(--el-color-warning);
+  background: var(--el-color-warning-light-9);
+  border: 1px solid var(--el-color-warning-light-7);
   border-radius: 4px;
 }
 
@@ -1448,7 +1667,7 @@ defineExpose({
   top: -22px;
   left: 0;
   font-size: 12px;
-  color: #94a3b8;
+  color: var(--el-text-color-secondary);
 }
 
 .agree-canvas__safe {
@@ -1553,7 +1772,10 @@ defineExpose({
 }
 
 .agree-canvas__table thead td {
+  position: relative;
+  padding-right: 16px;
   font-weight: 400;
+  cursor: pointer;
   background: transparent;
 }
 
@@ -1565,6 +1787,60 @@ defineExpose({
 .agree-canvas__table td.is-cell-selected {
   background: #dbeafe;
   box-shadow: inset 0 0 0 2px #2563eb;
+}
+
+.agree-canvas__table td.is-header-selected {
+  background: #dbeafe;
+  box-shadow: inset 0 0 0 2px #2563eb;
+}
+
+.agree-canvas__table td.is-header-filtered::after {
+  content: none;
+}
+
+.agree-canvas__header-filter {
+  position: absolute;
+  top: 50%;
+  right: 1px;
+  z-index: 1;
+  width: 14px;
+  height: 16px;
+  padding: 0;
+  font-size: 10px;
+  line-height: 16px;
+  color: var(--el-text-color-secondary);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  opacity: 0;
+  transform: translateY(-50%);
+}
+
+.agree-canvas__table thead td:hover .agree-canvas__header-filter,
+.agree-canvas__header-filter.is-on,
+.agree-canvas__header-filter.is-sorted {
+  opacity: 1;
+}
+
+.agree-canvas__header-filter:hover,
+.agree-canvas__header-filter.is-on {
+  color: #15803d;
+}
+
+.agree-canvas__header-filter.is-sorted {
+  color: var(--el-color-primary);
+}
+
+.agree-canvas__cell-toolbar.is-header {
+  top: auto;
+  bottom: -36px;
+}
+
+.agree-canvas__cell-toolbar input {
+  width: 88px;
+  padding: 1px 4px;
+  border: 1px solid #bfdbfe;
+  border-radius: 3px;
 }
 
 .agree-canvas__table td:hover {
@@ -1582,26 +1858,26 @@ defineExpose({
   align-items: center;
   padding: 4px 6px;
   font-size: 11px;
-  color: #334155;
+  color: var(--el-text-color-primary);
   white-space: nowrap;
-  background: #fff;
-  border: 1px solid #93c5fd;
+  background: var(--el-bg-color-overlay);
+  border: 1px solid var(--el-color-primary-light-5);
   border-radius: 5px;
   box-shadow: 0 3px 10px rgb(15 23 42 / 16%);
 }
 
 .agree-canvas__cell-toolbar button {
   padding: 2px 7px;
-  color: #1d4ed8;
+  color: var(--el-color-primary);
   cursor: pointer;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
+  background: var(--el-color-primary-light-9);
+  border: 1px solid var(--el-color-primary-light-7);
   border-radius: 3px;
 }
 
 .agree-canvas__cell-toolbar em {
   font-style: normal;
-  color: #94a3b8;
+  color: var(--el-text-color-secondary);
 }
 
 .agree-canvas__handle {

@@ -1,16 +1,18 @@
 <script lang="ts" setup>
+import type { AgreePrintFieldItem } from '../data/fields';
+import type { AgreePrintData } from '../types';
+import type { ColumnFilterAnchor } from './print-column-filter-place';
+import type {
+  CanvasFieldDropPayload,
+  CanvasToolboxDropPayload,
+} from './template-model';
 /**
  * 协议打印设计器（重构版）
  * - 自绘多页纵向连续画布，越界自动翻页
  * - 复用既有纯逻辑：字段面板 / 检视器 / 预览打印管线 / 元素构造 / 纸张换算
  * - 对外契约与旧设计器一致：props(templateId, delegateSave)、expose(getTemplateJson, markClean)、emit(saveRequested)
  */
-import type { AgreePrintFieldItem } from '../fields';
-import type { AgreePrintData } from '../types';
-import type {
-  CanvasFieldDropPayload,
-  CanvasToolboxDropPayload,
-} from './template-model';
+import type { PalettePayload, PalettePoint } from './use-palette-pointer-drag';
 
 import {
   computed,
@@ -35,12 +37,62 @@ import {
 
 import { getPrintTemplate, updatePrintTemplate } from '#/api';
 
-import { agreePrintTemplate } from '../agreement-template';
-import { ensureHiprint } from '../ensure-hiprint';
-import { preparePrintTemplate } from '../prepare-template';
+import { cloneJson as cloneTemplate } from '../../clone';
+import { buildDesignerSamplePrintData } from '../data/sample-print-data';
+import { createDocumentPrint } from '../engine/document-print';
+import { ensureHiprint } from '../engine/ensure-hiprint';
 import PrintDataJsonDialog from '../print-data-json-dialog.vue';
-import PrintDataPanel from '../print-data-panel.vue';
 import {
+  adjustDocumentElementSpacing,
+  isDocumentTemplate,
+  placeNewDocumentElement,
+  splitDocumentPanel,
+  toDocumentTemplate,
+} from '../runtime/document-layout';
+import { preparePrintTemplate } from '../runtime/prepare-template';
+import {
+  normalizeAgreeRowSort,
+  validatePrintExpr,
+} from '../runtime/print-expr';
+import {
+  applyPrintExprInsert,
+  printExprInputEl,
+  rowPrintExprFields,
+} from '../runtime/print-expr-catalog';
+import { installHeaderMergeRuntime } from '../runtime/print-header-merge';
+import {
+  applyPrintPageSizeFromTemplate,
+  fitPrintPreviewHost,
+  normalizePrintPreviewPages,
+} from '../runtime/print-page-css';
+import {
+  applyPaperToTemplate,
+  describePrintPaper,
+  insertBlankPanelAfter,
+  mmToCssPx,
+  previewDialogWidthCss,
+  PRINT_PAPER_PRESETS,
+  readTemplatePaperSpec,
+  removePrintPanel,
+  splitPanelAtY,
+} from '../runtime/print-paper';
+import {
+  collectLeafColumns,
+  listFilterColumns,
+} from '../runtime/print-row-filter';
+import {
+  normalizeAgreeBodyCellExprs,
+  normalizeAgreeBodyCellMerges,
+  normalizeAgreeBodyHMerges,
+  removeAgreeBodyCellMergeAt,
+  removeAgreeBodyHMerge,
+  upsertAgreeBodyCellExpr,
+  upsertAgreeBodyCellMerge,
+} from '../runtime/print-table-runtime';
+import { isWatermarkEnabled } from '../runtime/print-watermark';
+import { agreePrintTemplate } from '../template/agreement-template';
+import {
+  AGREE_PRINT_FIELD_DND,
   AGREE_PRINT_TOOLBOX_DND,
   buildBoundPrintElement,
   buildToolboxPrintElement,
@@ -53,50 +105,26 @@ import {
   removePrintElement,
   sanitizePrintTemplate,
   setAgreePrintHtml5Drag,
-} from '../print-element-meta';
-import { validatePrintExpr } from '../print-expr';
-import { installHeaderMergeRuntime } from '../print-header-merge';
-import PrintInspector from '../print-inspector.vue';
+} from '../template/print-element-meta';
 import {
-  applyPrintPageSizeFromTemplate,
-  fitPrintPreviewHost,
-  normalizePrintPreviewPages,
-} from '../print-page-css';
-import {
-  applyPaperToTemplate,
-  describePrintPaper,
-  insertBlankPanelAfter,
-  mmToCssPx,
-  previewDialogWidthCss,
-  PRINT_PAPER_PRESETS,
-  readTemplatePaperSpec,
-  removePrintPanel,
-  splitPanelAtY,
-} from '../print-paper';
-import {
-  normalizeAgreeBodyCellExprs,
-  normalizeAgreeBodyCellMerges,
-  normalizeAgreeBodyHMerges,
-  removeAgreeBodyCellMergeAt,
-  removeAgreeBodyHMerge,
-  upsertAgreeBodyCellExpr,
-  upsertAgreeBodyCellMerge,
-} from '../print-table-runtime';
-import { isWatermarkEnabled } from '../print-watermark';
-import PrintWatermarkDialog from '../print-watermark-dialog.vue';
-import { buildDesignerSamplePrintData } from '../sample-print-data';
-import {
-  cloneTemplate,
   loadAgreePrintTemplate,
   saveAgreePrintTemplate,
-} from '../template-store';
+} from '../template/template-store';
 import CanvasStage from './canvas-stage.vue';
+import DocumentCanvas from './document-canvas.vue';
+import { placeColumnFilterPopover } from './print-column-filter-place';
+import PrintColumnFilter from './print-column-filter.vue';
+import PrintDataPanel from './print-data-panel.vue';
+import PrintExprHelp from './print-expr-help.vue';
+import PrintInspector from './print-inspector.vue';
+import PrintWatermarkDialog from './print-watermark-dialog.vue';
 import {
   autoPaginate,
   fitElementIntoPaper,
   fitTemplateIntoPaper,
   PAGE_MARGIN_PT,
 } from './template-model';
+import { usePalettePointerDrag } from './use-palette-pointer-drag';
 
 const props = defineProps<{
   /** 委托父页保存（编辑页用） */
@@ -118,7 +146,7 @@ const TOOLBOX = [
   { tid: 'staticTitle', label: '标题' },
   { tid: 'dynamicText', label: '文本' },
   { tid: 'longText', label: '长文本' },
-  { tid: 'table', label: '表格' },
+  { tid: 'tableChoice', label: '表格' },
   { tid: 'qrcode', label: '二维码' },
   { tid: 'barcode', label: '条形码' },
   { tid: 'hline', label: '横线' },
@@ -127,6 +155,15 @@ const TOOLBOX = [
   { tid: 'pageBreak', label: '页面隔断' },
 ];
 
+const tableChoiceOpen = ref(false);
+let pendingTableDrop: CanvasToolboxDropPayload | null = null;
+function chooseTableKind(tid: 'formGrid' | 'table') {
+  const pending = pendingTableDrop;
+  pendingTableDrop = null;
+  tableChoiceOpen.value = false;
+  if (pending) onCanvasToolboxDrop({ ...pending, tid });
+  else addToolbox(tid);
+}
 const templateJson = ref<null | Record<string, any>>(null);
 const sampleData = ref<AgreePrintData>(buildDesignerSamplePrintData());
 const zoom = ref(100);
@@ -141,12 +178,41 @@ const selElement = ref(-1);
 const currentPanel = ref(0);
 
 const stageRef = ref<HTMLElement | null>(null);
-const canvasRef = ref<null | { scrollToPanel: (panelIndex: number) => void }>(
-  null,
-);
+const canvasRef = ref<null | {
+  cancelPaletteDrag?: () => void;
+  paletteDragOver?: (point: PalettePoint) => void;
+  paletteDrop?: (point: PalettePoint, payload: PalettePayload) => void;
+  scrollToPanel: (panelIndex: number) => void;
+}>(null);
+const {
+  preview: palettePreview,
+  start: startPaletteDrag,
+  suppressClick: suppressPaletteClick,
+} = usePalettePointerDrag({
+  move: (point) => canvasRef.value?.paletteDragOver?.(point),
+  drop: (point, payload) => canvasRef.value?.paletteDrop?.(point, payload),
+  cancel: () => canvasRef.value?.cancelPaletteDrag?.(),
+});
+function onPalettePointerDown(
+  event: PointerEvent,
+  payload: PalettePayload,
+  label: string,
+) {
+  if (isDocumentTemplate(templateJson.value))
+    startPaletteDrag(event, payload, label);
+}
+function onFieldPointerDown(event: PointerEvent, item: AgreePrintFieldItem) {
+  onPalettePointerDown(event, { kind: AGREE_PRINT_FIELD_DND, item }, item.text);
+}
 const inspectorRef = ref<null | {
   focusColumn: (colIndex: number) => void;
   focusFooterCell: (rowIndex: number, cellIndex: number) => void;
+  openFilterDialog: () => void;
+  openTableEditor: (opts?: {
+    fromLeaf?: number;
+    mergeId?: string;
+    toLeaf?: number;
+  }) => void;
 }>(null);
 const highlightColIndex = ref(-1);
 const highlightTableKey = ref('');
@@ -159,6 +225,25 @@ const bodyCellSelection = ref<null | {
   startCol: number;
   startRow: number;
 }>(null);
+const headerCellSelection = ref<null | {
+  field: string;
+  fromLeaf: number;
+  key: string;
+  mergeId: string;
+  toLeaf: number;
+}>(null);
+/** 列头轻量筛选浮层 */
+const columnFilter = ref<null | {
+  anchor: ColumnFilterAnchor;
+  field: string;
+  key: string;
+  tableField: string;
+  title: string;
+  x: number;
+  y: number;
+}>(null);
+const columnFilterEl = ref<HTMLElement | null>(null);
+let lastHeaderPointer = { x: 24, y: 120 };
 const previewOpen = ref(false);
 const previewHost = ref<HTMLElement | null>(null);
 const templateCode = ref('PrintAgreement');
@@ -172,6 +257,10 @@ const bodyFormulaOpen = ref(false);
 const bodyFormulaExpr = ref('');
 /** 当前单格公式对应字段，用于生成不写死业务字段的快捷表达式 */
 const bodyFormulaField = ref('');
+/** 单格公式输入框，芯片按光标插入 */
+const bodyFormulaInputRef = ref<null | { textarea?: HTMLTextAreaElement }>(
+  null,
+);
 /** 模板 JSON 编辑器文本 */
 const jsonText = ref('');
 
@@ -231,6 +320,7 @@ const watermarkOn = computed(() =>
 
 /** 越界元素数量（红框提示统计） */
 const overflowCount = computed(() => {
+  if (isDocumentTemplate(templateJson.value)) return 0;
   const panels = templateJson.value?.panels || [];
   let n = 0;
   panels.forEach((panel: Record<string, any>) => {
@@ -269,7 +359,9 @@ async function fetchTemplateJson(): Promise<Record<string, any>> {
 async function loadTemplate() {
   loading.value = true;
   try {
-    let tpl = sanitizePrintTemplate(await fetchTemplateJson());
+    let tpl = toDocumentTemplate(
+      sanitizePrintTemplate(await fetchTemplateJson()),
+    );
     const spec = readTemplatePaperSpec(tpl);
     if (spec.orientation === 'landscape') {
       tpl = applyPaperToTemplate(tpl, {
@@ -299,6 +391,8 @@ function clearSelection() {
   selPanel.value = -1;
   selElement.value = -1;
   bodyCellSelection.value = null;
+  headerCellSelection.value = null;
+  columnFilter.value = null;
   highlightColIndex.value = -1;
   highlightTableKey.value = '';
 }
@@ -314,6 +408,10 @@ function onCanvasSelect(key: string) {
     bodyCellSelection.value = null;
     highlightColIndex.value = -1;
     highlightTableKey.value = '';
+  }
+  if (headerCellSelection.value?.key !== key) {
+    headerCellSelection.value = null;
+    columnFilter.value = null;
   }
   selPanel.value = Number(p);
   selElement.value = Number(e);
@@ -336,6 +434,8 @@ function onTableBodyCellSelect(payload: {
   // 表体格选择与“整列编辑”是两种语义：点格只高亮格/矩形，不联动整列。
   highlightColIndex.value = -1;
   highlightTableKey.value = '';
+  headerCellSelection.value = null;
+  columnFilter.value = null;
   const current = bodyCellSelection.value;
   if (payload.shiftKey && current?.key === payload.key) {
     bodyCellSelection.value = {
@@ -467,6 +567,23 @@ function selectedBodyFormulaContext() {
   const leaf = ctx.leaves[selection.startCol];
   if (!leaf?.field) return null;
   return { ...ctx, leaf };
+}
+
+/** 单格计算可点插入的本行列 / 合计 / 行号 */
+const bodyFormulaHelpFields = computed(() =>
+  rowPrintExprFields(selectedBodyFormulaContext()?.leaves || []),
+);
+
+/**
+ * 把帮助芯片插入当前单元格公式
+ * @param token 字段名或函数骨架
+ */
+function insertBodyFormulaToken(token: string) {
+  bodyFormulaExpr.value = applyPrintExprInsert(
+    bodyFormulaExpr.value,
+    token,
+    printExprInputEl(bodyFormulaInputRef.value),
+  );
 }
 
 /** 单格公式即时校验；与最终保存使用完全相同的样例行上下文。 */
@@ -604,6 +721,165 @@ function onTableFooterCellSelect(payload: {
   inspectorRef.value?.focusFooterCell(payload.rowIndex, payload.cellIndex);
 }
 
+/** 点选表头：高亮后打开编辑明细表，不在画布上合并/拆分 */
+function onTableHeaderCellSelect(payload: {
+  clientX: number;
+  clientY: number;
+  field: string;
+  fromLeaf: number;
+  key: string;
+  mergeId: string;
+  shiftKey: boolean;
+  toLeaf: number;
+}) {
+  onCanvasSelect(payload.key);
+  bodyCellSelection.value = null;
+  highlightColIndex.value = -1;
+  highlightTableKey.value = '';
+  lastHeaderPointer = { x: payload.clientX, y: payload.clientY };
+  headerCellSelection.value = {
+    key: payload.key,
+    fromLeaf: payload.fromLeaf,
+    toLeaf: payload.toLeaf,
+    field: payload.fromLeaf === payload.toLeaf ? payload.field : '',
+    mergeId: payload.mergeId,
+  };
+  inspectorRef.value?.openTableEditor({
+    fromLeaf: payload.fromLeaf,
+    toLeaf: payload.toLeaf,
+    mergeId: payload.mergeId,
+  });
+}
+
+function columnFilterColumns() {
+  const key = columnFilter.value?.key || headerCellSelection.value?.key || '';
+  const el = findPrintElementByCanvasKey(templateJson.value, key, 'table');
+  const leaf = collectLeafColumns(el?.options?.columns);
+  return listFilterColumns(
+    String(el?.options?.field || columnFilter.value?.tableField || ''),
+    leaf,
+  );
+}
+
+function columnFilterExpr() {
+  const key = columnFilter.value?.key || '';
+  const el = findPrintElementByCanvasKey(templateJson.value, key, 'table');
+  return String(el?.options?.agreeRowFilter || '');
+}
+
+function columnFilterSortDir(): '' | 'asc' | 'desc' {
+  const key = columnFilter.value?.key || '';
+  const field = columnFilter.value?.field || '';
+  const el = findPrintElementByCanvasKey(templateJson.value, key, 'table');
+  const rule = normalizeAgreeRowSort(el?.options?.agreeRowSort).find(
+    (item) => item.field === field,
+  );
+  return rule?.dir || '';
+}
+
+/**
+ * 打开后按浮层真实高度再贴一次 ▾，避免估算高度把面板翻到奇怪的位置
+ */
+watch(columnFilter, async (cf) => {
+  if (!cf) return;
+  await nextTick();
+  await nextTick();
+  const el = columnFilterEl.value;
+  const live = columnFilter.value;
+  if (!el || !live) return;
+  const rect = el.getBoundingClientRect();
+  const pos = placeColumnFilterPopover(live.anchor, {
+    width: rect.width,
+    height: rect.height,
+  });
+  if (Math.abs(pos.x - live.x) > 1 || Math.abs(pos.y - live.y) > 1) {
+    columnFilter.value = { ...live, x: pos.x, y: pos.y };
+  }
+});
+
+/** 点列头 ▾ 打开 Excel 式值列表，不必先选中整列 */
+function openHeaderColumnFilter(payload?: {
+  anchor?: { bottom: number; left: number; right: number; top: number };
+  clientX: number;
+  clientY: number;
+  field: string;
+  fromLeaf: number;
+  key: string;
+  toLeaf: number;
+}) {
+  const key = payload?.key || headerCellSelection.value?.key || '';
+  const field = payload?.field || headerCellSelection.value?.field || '';
+  const fromLeaf =
+    payload?.fromLeaf ?? headerCellSelection.value?.fromLeaf ?? -1;
+  const anchor = payload?.anchor || {
+    left: payload?.clientX || lastHeaderPointer.x,
+    right: (payload?.clientX || lastHeaderPointer.x) + 14,
+    top: (payload?.clientY || lastHeaderPointer.y) - 16,
+    bottom: payload?.clientY || lastHeaderPointer.y,
+  };
+  lastHeaderPointer = { x: anchor.left, y: anchor.bottom };
+  if (!key || !field || fromLeaf < 0) {
+    ElMessage.info('请点列头右侧的筛选箭头');
+    return;
+  }
+  const el = findPrintElementByCanvasKey(templateJson.value, key, 'table');
+  if (!el?.options?.field) {
+    ElMessage.warning('请先绑定表格数据源');
+    return;
+  }
+  const leaf = listLeafTableCells(el.options.columns)[fromLeaf];
+  const pos = placeColumnFilterPopover(anchor);
+  columnFilter.value = {
+    anchor,
+    key,
+    field,
+    title: String(leaf?.title || field),
+    tableField: String(el.options.field),
+    x: pos.x,
+    y: pos.y,
+  };
+}
+
+function applyColumnFilterExpr(expr: string) {
+  const key = columnFilter.value?.key;
+  const template = templateJson.value;
+  if (!key || !template) return;
+  const el = findPrintElementByCanvasKey(template, key, 'table');
+  if (!el) return;
+  commit(patchElementOptions(template, el, { agreeRowFilter: expr.trim() }), {
+    paginate: false,
+  });
+  columnFilter.value = null;
+  ElMessage.success(expr.trim() ? '已按列筛选打印行' : '已清除该列筛选');
+}
+
+function applyColumnSort(dir: '' | 'asc' | 'desc') {
+  const key = columnFilter.value?.key;
+  const field = columnFilter.value?.field;
+  const template = templateJson.value;
+  if (!key || !field || !template) return;
+  const el = findPrintElementByCanvasKey(template, key, 'table');
+  if (!el) return;
+  const next = dir ? [{ field, dir }] : [];
+  commit(
+    patchElementOptions(template, el, {
+      agreeRowSort: next.length > 0 ? next : null,
+    }),
+    { paginate: false },
+  );
+  ElMessage.success(
+    dir
+      ? `已按${columnFilter.value?.title || field}${dir === 'desc' ? '降序' : '升序'}打印`
+      : '已清除该列排序',
+  );
+  columnFilter.value = null;
+}
+
+function openMoreColumnFilter() {
+  columnFilter.value = null;
+  inspectorRef.value?.openFilterDialog();
+}
+
 /** 点中页面空白处时切换当前页 */
 function onCanvasPageSelect(panelIndex: number) {
   currentPanel.value = panelIndex;
@@ -681,14 +957,17 @@ function commit(
     pushHist?: boolean;
   },
 ) {
-  let working = next;
+  let working = toDocumentTemplate(next);
   // 标记当前选中元素，翻页/克隆后重新定位
-  if (opts?.markSelected && selPanel.value >= 0) {
+  const hasSelectionMark = working.panels?.some((panel: any) =>
+    panel.printElements?.some((element: any) => element.options?.[SEL_MARK]),
+  );
+  if (opts?.markSelected && selPanel.value >= 0 && !hasSelectionMark) {
     const el =
       working?.panels?.[selPanel.value]?.printElements?.[selElement.value];
     if (el?.options) el.options[SEL_MARK] = true;
   }
-  if (opts?.paginate !== false) {
+  if (opts?.paginate !== false && !isDocumentTemplate(working)) {
     working = autoPaginate(working);
   }
   // 回定位选中并清除标记
@@ -703,6 +982,7 @@ function commit(
 /** 扫描标记，恢复选中并清除标记 */
 function relocateSelection(tpl: Record<string, any>) {
   const panels: Record<string, any>[] = tpl?.panels || [];
+  let located = false;
   for (let p = 0; p < panels.length; p += 1) {
     const els = panels[p]?.printElements || [];
     for (let e = 0; e < els.length; e += 1) {
@@ -712,10 +992,12 @@ function relocateSelection(tpl: Record<string, any>) {
           unknown
         >;
         els[e].options = rest;
-        selPanel.value = p;
-        selElement.value = e;
-        currentPanel.value = p;
-        return;
+        if (!located) {
+          selPanel.value = p;
+          selElement.value = e;
+          currentPanel.value = p;
+          located = true;
+        }
       }
     }
   }
@@ -723,12 +1005,12 @@ function relocateSelection(tpl: Record<string, any>) {
 
 /** 画布拖拽/缩放结束回写 */
 function onCanvasTemplate(next: Record<string, any>) {
-  commit(next, { markSelected: true });
+  commit(next, { markSelected: !isDocumentTemplate(next) });
 }
 
 /** 检视器写回 */
 function onInspectorPatch(next: Record<string, any>) {
-  commit(next, { markSelected: true });
+  commit(next, { markSelected: true, paginate: false });
 }
 
 /** 撤销到上一个快照 */
@@ -793,6 +1075,11 @@ function activePanelIndex() {
 function addToolbox(tid: string) {
   if (!templateJson.value) return;
   if (toolboxDragging) return;
+  if (tid === 'tableChoice') {
+    pendingTableDrop = null;
+    tableChoiceOpen.value = true;
+    return;
+  }
   if (tid === 'pageBreak') {
     ElMessage.info('请把「页面隔断」拖到纸面需要分页的位置');
     return;
@@ -878,28 +1165,44 @@ function onCanvasFieldDrop(payload: CanvasFieldDropPayload) {
     -1,
     node,
   );
-  commit(next, { markSelected: true });
+  commit(
+    placeNewDocumentElement(
+      next,
+      payload.panelIndex,
+      payload.documentTarget,
+      payload.documentPlacement,
+    ),
+    { markSelected: true },
+  );
 }
 
 /** 积木拖入纸面；页面隔断会把线下内容整体搬到紧随其后的新页 */
 function onCanvasToolboxDrop(payload: CanvasToolboxDropPayload) {
+  if (payload.tid === 'tableChoice') {
+    pendingTableDrop = { ...payload };
+    tableChoiceOpen.value = true;
+    return;
+  }
   if (!templateJson.value) return;
   const panel = templateJson.value.panels?.[payload.panelIndex];
   if (!panel) return;
   currentPanel.value = payload.panelIndex;
   if (payload.tid === 'pageBreak') {
-    const result = splitPanelAtY(
-      templateJson.value,
-      payload.panelIndex,
-      payload.top,
-    );
+    const result = isDocumentTemplate(templateJson.value)
+      ? splitDocumentPanel(
+          templateJson.value,
+          payload.panelIndex,
+          payload.documentTarget,
+          payload.documentPlacement === 'after',
+        )
+      : splitPanelAtY(templateJson.value, payload.panelIndex, payload.top);
     clearSelection();
     currentPanel.value = result.newPanelIndex;
     commit(result.template, { paginate: false });
     void nextTick(() => canvasRef.value?.scrollToPanel(result.newPanelIndex));
     ElMessage.success(
       result.movedCount > 0
-        ? `已隔断，${result.movedCount} 个元素移到第 ${result.newPanelIndex + 1} 页`
+        ? `已隔断，${result.movedCount} 个元素移到第 ${result.newPanelIndex + 1} 个手工区段`
         : '已在此处隔断并新增空白页',
     );
     return;
@@ -913,7 +1216,15 @@ function onCanvasToolboxDrop(payload: CanvasToolboxDropPayload) {
     -1,
     node,
   );
-  commit(next, { markSelected: true });
+  commit(
+    placeNewDocumentElement(
+      next,
+      payload.panelIndex,
+      payload.documentTarget,
+      payload.documentPlacement,
+    ),
+    { markSelected: true },
+  );
 }
 
 /** 删除选中元素 */
@@ -936,6 +1247,11 @@ function duplicateSelected() {
   });
   // 选中复制出的下一个
   selElement.value += 1;
+  if (isDocumentTemplate(next)) {
+    const element = next.panels[selPanel.value].printElements[selElement.value];
+    element.options.agreeDocument.row += 0.5;
+    element.options.agreeDocument.gap = 12;
+  }
   commit(next, { markSelected: false });
 }
 
@@ -951,6 +1267,27 @@ function nudgeSelected(dxPt: number, dyPt: number) {
   const el = next.panels?.[selPanel.value]?.printElements?.[selElement.value];
   if (!el?.options) return;
   const o = el.options;
+  if (isDocumentTemplate(next)) {
+    const peers = next.panels[selPanel.value].printElements.filter(
+      (member: any) => member.options.agreeDocument.row === o.agreeDocument.row,
+    );
+    if (dxPt && peers.length === 1)
+      o.agreeDocument.left = Math.max(
+        0,
+        Math.min(100 - o.agreeDocument.width, o.agreeDocument.left + dxPt),
+      );
+    commit(
+      dyPt
+        ? adjustDocumentElementSpacing(
+            next,
+            `${selPanel.value}:${selElement.value}`,
+            dyPt,
+          )
+        : next,
+      { markSelected: true },
+    );
+    return;
+  }
   o.left = Math.max(0, Math.round((Number(o.left) || 0) + dxPt));
   o.top = Math.max(0, Math.round((Number(o.top) || 0) + dyPt));
   el.options[SEL_MARK] = true;
@@ -978,14 +1315,18 @@ function addPage() {
 /** 删除当前页 */
 async function removeCurrentPage() {
   if (!templateJson.value || pageCount.value <= 1) {
-    ElMessage.warning('至少保留一页');
+    ElMessage.warning('至少保留一个手工区段');
     return;
   }
   const idx = activePanelIndex();
   try {
-    await ElMessageBox.confirm(`确认删除第 ${idx + 1} 页？`, '删除页', {
-      type: 'warning',
-    });
+    await ElMessageBox.confirm(
+      `确认删除第 ${idx + 1} 个手工区段及其中所有内容（含自动续页）？`,
+      '删除区段',
+      {
+        type: 'warning',
+      },
+    );
   } catch {
     return;
   }
@@ -1070,10 +1411,13 @@ async function onPreview() {
       json,
       sampleData.value,
     );
-    const previewTpl = new PrintTemplate({
-      template: cloneTemplate(preparedTpl),
-    });
-    installHeaderMergeRuntime(previewTpl, preparedTpl);
+    const previewTpl = isDocumentTemplate(preparedTpl)
+      ? await createDocumentPrint(preparedTpl, enriched)
+      : new PrintTemplate({
+          template: cloneTemplate(preparedTpl),
+        });
+    if (!isDocumentTemplate(preparedTpl))
+      installHeaderMergeRuntime(previewTpl, preparedTpl);
     previewOpen.value = true;
     await nextTick();
     const host = previewHost.value;
@@ -1299,12 +1643,22 @@ function onDesignerKeydown(e: KeyboardEvent) {
   }
 }
 
-/** 点击页面任意处关闭右键菜单 */
+/** 点击页面任意处关闭右键菜单和列头筛选 */
 function onDocPointerDown(e: MouseEvent) {
-  if (!ctxMenu.value.open) return;
   const target = e.target as HTMLElement | null;
-  if (target?.closest('.agree-designer__ctx')) return;
-  closeCtxMenu();
+  if (ctxMenu.value.open && !target?.closest('.agree-designer__ctx')) {
+    closeCtxMenu();
+  }
+  if (
+    columnFilter.value &&
+    !target?.closest('.agree-designer__col-filter') &&
+    !target?.closest('.document-cell-toolbar') &&
+    !target?.closest('.agree-canvas__cell-toolbar') &&
+    !target?.closest('.document-header-filter') &&
+    !target?.closest('.agree-canvas__header-filter')
+  ) {
+    columnFilter.value = null;
+  }
 }
 
 // ---------------- 生命周期 / 对外 ----------------
@@ -1344,6 +1698,39 @@ defineExpose({
 
 <template>
   <div class="agree-designer" v-loading="loading">
+    <Teleport to="body">
+      <div
+        v-if="palettePreview"
+        class="agree-designer__drag-preview"
+        :style="{ left: `${palettePreview.x}px`, top: `${palettePreview.y}px` }"
+      >
+        添加{{ palettePreview.label }} · 松开放置，Esc 取消
+      </div>
+    </Teleport>
+    <ElDialog
+      v-model="tableChoiceOpen"
+      title="添加表格"
+      width="560px"
+      append-to-body
+      @closed="pendingTableDrop = null"
+    >
+      <p class="mb-4 text-sm text-gray-500">
+        选择起步方式，两种表格都支持文档流排版。{{
+          pendingTableDrop ? '将在刚才的落点添加。' : '将在当前区段添加。'
+        }}
+      </p>
+      <div class="agree-designer__table-choices">
+        <button type="button" @click="chooseTableKind('table')">
+          <strong>明细表</strong><span>选择一个数据源，按列配置并自动重复记录。适合房屋、补偿、奖励清单。</span>
+        </button>
+        <button type="button" @click="chooseTableKind('formGrid')">
+          <strong>自由表单</strong><span>按单元格设置内容，可混排固定信息、动态明细、合计和签字。</span>
+        </button>
+      </div>
+      <template #footer>
+        <ElButton @click="tableChoiceOpen = false">取消</ElButton>
+      </template>
+    </ElDialog>
     <!-- 顶部工具栏 -->
     <div class="agree-designer__toolbar">
       <div class="agree-designer__group">
@@ -1386,10 +1773,11 @@ defineExpose({
       </div>
 
       <div class="agree-designer__group">
-        <ElButton size="small" @click="addPage">在此页后新增</ElButton>
-        <ElButton size="small" @click="removeCurrentPage">删除页</ElButton>
+        <ElButton size="small" @click="addPage">新增手工区段</ElButton>
+        <ElButton size="small" @click="removeCurrentPage">删除区段</ElButton>
         <span class="agree-designer__hint">
-          当前第 {{ activePanelIndex() + 1 }} 页 · 共 {{ pageCount }} 页
+          第 {{ activePanelIndex() + 1 }} / {{ pageCount }} 个手工区段 ·
+          内容自动续页
         </span>
       </div>
 
@@ -1458,7 +1846,7 @@ defineExpose({
       }"
     >
       <!-- 左：积木 + 字段 -->
-      <div class="agree-designer__left">
+      <div class="agree-designer__left" @click.capture="suppressPaletteClick">
         <div class="agree-designer__palette">
           <div class="agree-designer__panel-heading">
             <div class="agree-designer__panel-title">添加元素</div>
@@ -1470,15 +1858,22 @@ defineExpose({
               :key="t.tid"
               class="agree-designer__tool"
               :class="{ 'is-page-break': t.tid === 'pageBreak' }"
-              draggable="true"
+              :draggable="!isDocumentTemplate(templateJson)"
+              @pointerdown="
+                onPalettePointerDown(
+                  $event,
+                  { kind: AGREE_PRINT_TOOLBOX_DND, tid: t.tid },
+                  t.label,
+                )
+              "
               :aria-label="
                 t.tid === 'pageBreak'
-                  ? '拖到纸面任意纵向位置进行隔断'
+                  ? '拖到元素上方或下方，在此另起一页'
                   : `单击添加${t.label}，或拖到纸面指定位置`
               "
               :title="
                 t.tid === 'pageBreak'
-                  ? '拖到纸面任意纵向位置进行隔断'
+                  ? '拖到元素上方或下方，在此另起一页'
                   : `单击添加${t.label}，或拖到纸面指定位置`
               "
               @dragstart="onToolboxDragStart($event, t.tid)"
@@ -1493,6 +1888,8 @@ defineExpose({
         <div class="agree-designer__fields">
           <PrintDataPanel
             :data="sampleData"
+            :pointer-drag="isDocumentTemplate(templateJson)"
+            @pointer-drag-start="onFieldPointerDown"
             :selected-field="selectedElement?.field"
             :selected-type="selectedElement?.type"
             @pick="onFieldPick"
@@ -1502,9 +1899,11 @@ defineExpose({
 
       <!-- 中：画布 -->
       <div ref="stageRef" class="agree-designer__stage">
-        <CanvasStage
+        <component
+          :is="isDocumentTemplate(templateJson) ? DocumentCanvas : CanvasStage"
           ref="canvasRef"
           :body-cell-selection="bodyCellSelection"
+          :header-cell-selection="headerCellSelection"
           :highlight-col-index="highlightColIndex"
           :highlight-table-key="highlightTableKey"
           :template-json="templateJson"
@@ -1517,10 +1916,12 @@ defineExpose({
           @body-formula-requested="openBodyCellFormula"
           @body-merge-requested="mergeSelectedBodyCells"
           @body-split-requested="splitSelectedBodyCell"
+          @header-filter-requested="openHeaderColumnFilter"
           @field-drop="onCanvasFieldDrop"
           @page-select="onCanvasPageSelect"
           @table-body-cell-select="onTableBodyCellSelect"
           @table-footer-cell-select="onTableFooterCellSelect"
+          @table-header-cell-select="onTableHeaderCellSelect"
           @toolbox-drop="onCanvasToolboxDrop"
         />
       </div>
@@ -1551,6 +1952,31 @@ defineExpose({
       <button type="button" @click="ctxDuplicate">复制</button>
       <button type="button" class="is-danger" @click="ctxDelete">删除</button>
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="columnFilter"
+        ref="columnFilterEl"
+        class="agree-designer__col-filter"
+        :style="{ left: `${columnFilter.x}px`, top: `${columnFilter.y}px` }"
+        @click.stop
+        @pointerdown.stop
+      >
+        <PrintColumnFilter
+          :field="columnFilter.field"
+          :title="columnFilter.title"
+          :columns="columnFilterColumns()"
+          :filter-expr="columnFilterExpr()"
+          :sort-dir="columnFilterSortDir()"
+          :sample-data="sampleData"
+          :table-field="columnFilter.tableField"
+          @apply="applyColumnFilterExpr"
+          @sort="applyColumnSort"
+          @more="openMoreColumnFilter"
+          @close="columnFilter = null"
+        />
+      </div>
+    </Teleport>
 
     <!-- 预览弹窗 -->
     <ElDialog
@@ -1626,14 +2052,22 @@ defineExpose({
         </div>
       </div>
       <ElInput
+        ref="bodyFormulaInputRef"
         v-model="bodyFormulaExpr"
         class="mt-3 font-mono"
+        type="textarea"
+        :autosize="{ minRows: 2, maxRows: 5 }"
         clearable
         :placeholder="
           bodyFormulaField
             ? `如 IF(EMPTY(${bodyFormulaField}), &quot;/&quot;, ${bodyFormulaField})`
             : '请输入计算表达式'
         "
+      />
+      <PrintExprHelp
+        scene="cell"
+        :fields="bodyFormulaHelpFields"
+        @insert="insertBodyFormulaToken"
       />
       <div class="mt-2 flex flex-wrap gap-2">
         <ElButton size="small" @click="setBodyFormulaPreset('empty-slash')">
@@ -1651,29 +2085,7 @@ defineExpose({
         >
           数量 × 单价
         </ElButton>
-        <ElButton
-          size="small"
-          @click="bodyFormulaExpr = 'IF(quantity > 0, quantity * unitPrice, 0)'"
-        >
-          IF 条件
-        </ElButton>
-        <ElButton
-          size="small"
-          @click="bodyFormulaExpr = 'quantity > 0 ? quantity * unitPrice : 0'"
-        >
-          三元条件
-        </ElButton>
-        <ElButton
-          size="small"
-          @click="bodyFormulaExpr = 'SQRT(POW(NUMBER(quantity), 2))'"
-        >
-          科学函数
-        </ElButton>
       </div>
-      <p class="mt-3 text-xs text-gray-500">
-        可用当前行字段、row、i / index 与 SUM、IF、ROUND、IFS、SQRT
-        等安全计算函数；不支持脚本语句。
-      </p>
       <ElAlert
         v-if="bodyFormulaValidation"
         class="mt-3"
@@ -1704,14 +2116,57 @@ defineExpose({
 </template>
 
 <style scoped>
+.agree-designer__table-choices {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.agree-designer__table-choices button {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px;
+  color: var(--el-text-color-primary);
+  text-align: left;
+  cursor: pointer;
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color);
+  border-radius: 8px;
+}
+
+.agree-designer__table-choices button:hover {
+  background: var(--el-color-primary-light-9);
+  border-color: var(--el-color-primary);
+}
+
+.agree-designer__table-choices span {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--el-text-color-secondary);
+}
+
+.agree-designer__drag-preview {
+  position: fixed;
+  z-index: 10000;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--el-color-primary);
+  pointer-events: none;
+  background: var(--el-color-primary-light-9);
+  border: 1px solid var(--el-color-primary-light-5);
+  border-radius: 4px;
+}
+
 .agree-designer {
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
   overflow: hidden;
-  background: #fff;
-  border: 1px solid rgb(0 0 0 / 8%);
+  color: var(--el-text-color-primary);
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color);
   border-radius: 8px;
 }
 
@@ -1721,7 +2176,8 @@ defineExpose({
   gap: 8px 14px;
   align-items: center;
   padding: 8px 12px;
-  border-bottom: 1px solid rgb(0 0 0 / 8%);
+  background: var(--el-bg-color);
+  border-bottom: 1px solid var(--el-border-color);
 }
 
 .agree-designer__group {
@@ -1732,7 +2188,7 @@ defineExpose({
 
 .agree-designer__group + .agree-designer__group {
   padding-left: 12px;
-  border-left: 1px solid #e5e7eb;
+  border-left: 1px solid var(--el-border-color);
 }
 
 .agree-designer__group--right {
@@ -1741,17 +2197,17 @@ defineExpose({
 
 .agree-designer__label {
   font-size: 12px;
-  color: #64748b;
+  color: var(--el-text-color-secondary);
 }
 
 .agree-designer__hint {
   font-size: 12px;
-  color: #94a3b8;
+  color: var(--el-text-color-secondary);
 }
 
 .agree-designer__warn {
   font-size: 12px;
-  color: #ef4444;
+  color: var(--el-color-danger);
 }
 
 .agree-designer__body {
@@ -1782,12 +2238,14 @@ defineExpose({
 
 .agree-designer__left {
   overflow: hidden;
-  border-right: 1px solid rgb(0 0 0 / 8%);
+  background: var(--el-bg-color);
+  border-right: 1px solid var(--el-border-color);
 }
 
 .agree-designer__right {
   overflow: auto;
-  border-left: 1px solid rgb(0 0 0 / 8%);
+  background: var(--el-bg-color);
+  border-left: 1px solid var(--el-border-color);
 }
 
 .agree-designer__body.is-left-collapsed > .agree-designer__left,
@@ -1801,7 +2259,7 @@ defineExpose({
 
 .agree-designer__palette {
   padding: 10px;
-  border-bottom: 1px solid rgb(0 0 0 / 6%);
+  border-bottom: 1px solid var(--el-border-color-lighter);
 }
 
 .agree-designer__panel-heading {
@@ -1814,14 +2272,14 @@ defineExpose({
 
 .agree-designer__panel-heading > span {
   font-size: 10px;
-  color: #94a3b8;
+  color: var(--el-text-color-secondary);
   white-space: nowrap;
 }
 
 .agree-designer__panel-title {
   font-size: 12px;
   font-weight: 600;
-  color: #475569;
+  color: var(--el-text-color-primary);
 }
 
 .agree-designer__toolbox {
@@ -1837,10 +2295,12 @@ defineExpose({
   justify-content: center;
   padding: 6px 0;
   font-size: 12px;
-  color: #334155;
+  color: var(--el-text-color-regular);
+  touch-action: none;
   cursor: grab;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
+  user-select: none;
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color);
   border-radius: 4px;
 }
 
@@ -1850,20 +2310,20 @@ defineExpose({
 
 .agree-designer__tool.is-page-break {
   grid-column: 1 / -1;
-  color: #92400e;
-  background: #fffbeb;
-  border-color: #fde68a;
+  color: var(--el-color-warning);
+  background: var(--el-color-warning-light-9);
+  border-color: var(--el-color-warning-light-7);
 }
 
 .agree-designer__tool-grip {
   font-size: 11px;
-  color: #94a3b8;
+  color: var(--el-text-color-secondary);
 }
 
 .agree-designer__tool:hover {
-  color: #2563eb;
-  background: #eff6ff;
-  border-color: #bfdbfe;
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  border-color: var(--el-color-primary-light-5);
 }
 
 .agree-designer__fields {
@@ -1877,6 +2337,9 @@ defineExpose({
 .agree-designer__stage {
   min-height: 0;
   overflow: auto;
+
+  /* 纸张周围的工作区跟页面底色，纸张本身保持白色 */
+  background: var(--el-bg-color-page);
 }
 
 .agree-designer__preview {
@@ -1885,7 +2348,7 @@ defineExpose({
   max-height: 72vh;
   padding: 12px;
   overflow: auto;
-  background: #f0f2f5;
+  background: var(--el-bg-color-page);
   border-radius: 6px;
 }
 
@@ -1905,8 +2368,9 @@ defineExpose({
   flex-direction: column;
   min-width: 120px;
   padding: 4px;
-  background: #fff;
-  border: 1px solid rgb(0 0 0 / 10%);
+  color: var(--el-text-color-primary);
+  background: var(--el-bg-color-overlay);
+  border: 1px solid var(--el-border-color);
   border-radius: 6px;
   box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
 }
@@ -1921,11 +2385,16 @@ defineExpose({
   border-radius: 4px;
 }
 
+.agree-designer__col-filter {
+  position: fixed;
+  z-index: 4100;
+}
+
 .agree-designer__ctx button:hover {
-  background: #f1f5f9;
+  background: var(--el-fill-color-light);
 }
 
 .agree-designer__ctx button.is-danger {
-  color: #dc2626;
+  color: var(--el-color-danger);
 }
 </style>

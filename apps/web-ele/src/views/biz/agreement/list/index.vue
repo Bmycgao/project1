@@ -6,7 +6,7 @@
  * - 数据：GET /biz/agreement/list?scene=xxx
  */
 import type { AgreeToolbarButton } from '../actions';
-import type { AgreeListRuntime } from '../resolve-runtime';
+import type { AgreeListRuntime } from '../config/resolve-runtime';
 import type { AgreementDetail, AgreementListItem } from '../types';
 
 import { computed, ref, watch } from 'vue';
@@ -34,15 +34,15 @@ import {
 import { getAgreementList } from '#/api';
 import { getAgreementDetail } from '#/api/biz/agreement';
 
+import { filterColumnsByFieldRules } from '../access/field-access';
 import {
   filterButtonsByAccessCodes,
   filterButtonsByShowWhen,
   isAgreeActionRegistered,
   runAgreeAction,
 } from '../actions';
-import { filterColumnsByFieldRules } from '../field-access';
+import { loadAgreeListRuntime } from '../config/resolve-runtime';
 import PrintPreviewDialog from '../print/print-preview-dialog.vue';
-import { loadAgreeListRuntime } from '../resolve-runtime';
 
 const route = useRoute();
 const router = useRouter();
@@ -148,12 +148,13 @@ async function loadList() {
       scene: runtime.value.scene,
       keyword: keyword.value || undefined,
       statusValue: statusFilter.value || undefined,
+      schemaId: runtime.value.schemaId,
       page: 1,
       pageSize: 100,
     });
     tableData.value = res?.items || [];
   } catch {
-    const { MOCK_AGREEMENT_LIST } = await import('../mock-data');
+    const { MOCK_AGREEMENT_LIST } = await import('../data/mock-data');
     let list = [...MOCK_AGREEMENT_LIST];
     const statusIn = runtime.value?.statusIn || [];
     if (statusIn.length > 0) {
@@ -223,7 +224,7 @@ async function openPrintPreview(
     });
     printPreviewDetail.value = detail;
   } catch {
-    const { buildAgreementDetail } = await import('../mock-data');
+    const { buildAgreementDetail } = await import('../data/mock-data');
     printPreviewDetail.value = buildAgreementDetail(row.agreementNo);
     ElMessage.warning('详情接口暂不可用，已使用本地 mock 数据预览');
   }
@@ -326,19 +327,21 @@ watch(
         </div>
         <div>
           <div class="mb-1 text-xs text-gray-500">状态</div>
-          <ElSelect
-            v-model="statusFilter"
-            clearable
-            placeholder="全部"
-            class="w-40"
-          >
-            <ElOption
-              v-for="s in statusOptions"
-              :key="s"
-              :label="s"
-              :value="s"
-            />
-          </ElSelect>
+          <div class="w-40">
+            <ElSelect
+              v-model="statusFilter"
+              clearable
+              placeholder="全部"
+              class="w-40"
+            >
+              <ElOption
+                v-for="s in statusOptions"
+                :key="s"
+                :label="s"
+                :value="s"
+              />
+            </ElSelect>
+          </div>
         </div>
       </div>
       <ElSpace>

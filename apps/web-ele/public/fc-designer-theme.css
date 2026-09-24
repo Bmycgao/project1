@@ -1,0 +1,97 @@
+/**
+ * 表单设计器 iframe 跟主应用主题走。
+ * 选择器用 html.fc-themed，压过设计器包里写死的浅色。
+ * 纸面控件仍走 Element Plus 变量，由父页面 postMessage 写到 :root。
+ */
+html.fc-themed,
+html.fc-themed body,
+html.fc-themed #app {
+  background: var(--el-bg-color, #fff);
+  color: var(--el-text-color-primary, #303133);
+}
+
+html.fc-themed ._fc-designer,
+html.fc-themed ._fc-l,
+html.fc-themed ._fc-m,
+html.fc-themed ._fc-r,
+html.fc-themed ._fc-l-close,
+html.fc-themed ._fc-l-open,
+html.fc-themed ._fc-r-close,
+html.fc-themed ._fc-r-open,
+html.fc-themed ._fc-m-tools,
+html.fc-themed ._fc-m-drag,
+html.fc-themed .draggable-drag,
+html.fc-themed ._fc-m-input-handle,
+html.fc-themed ._fd-table-context-menu,
+html.fc-themed ._fd-language-header {
+  background-color: var(--el-bg-color, #fff);
+  color: var(--el-text-color-primary, #262626);
+}
+
+html.fc-themed ._fc-l-item {
+  background-color: var(--el-fill-color-blank, #fff);
+  color: var(--el-text-color-primary, #262626);
+  border-color: var(--el-border-color, #ececec);
+}
+
+html.fc-themed ._fc-l-item:hover {
+  background: var(--el-color-primary, #2e73ff);
+  color: #fff;
+}
+
+html.fc-themed ._fc-m-con,
+html.fc-themed ._fc-m-tools ._fd-m-extend,
+html.fc-themed ._fc-m .form-create ._fc-l-item,
+html.fc-themed ._fd-draggable-drag.drag-holder {
+  background-color: var(--el-fill-color-light, #f5f5f5);
+  color: var(--el-text-color-primary, #262626);
+}
+
+html.fc-themed ._fc-l,
+html.fc-themed ._fc-m,
+html.fc-themed ._fc-r,
+html.fc-themed ._fc-l-menu,
+html.fc-themed ._fc-l-menu-form,
+html.fc-themed ._fc-m-tools {
+  border-color: var(--el-border-color, #ececec);
+}
+
+html.fc-themed ._fc-l-label,
+html.fc-themed ._fc-l-tab,
+html.fc-themed ._fc-r ._fc-r-tab,
+html.fc-themed ._fc-r-tools-close,
+html.fc-themed ._fd-config-item,
+html.fc-themed ._fd-ci-label {
+  color: var(--el-text-color-primary, #262626);
+}
+
+html.fc-themed ._fc-l-info {
+  color: var(--el-text-color-secondary, #909399);
+}
+
+html.fc-themed ._fc-l-menu-item.active,
+html.fc-themed ._fc-l-menu-item i:hover,
+html.fc-themed ._fc-tree-node.active,
+html.fc-themed ._fc-tree-node.active .icon-more,
+html.fc-themed ._fc-m-tools-l .devices .fc-icon.active,
+html.fc-themed ._fc-r-name-input .icon-group:hover,
+html.fc-themed ._fc-manage-text {
+  color: var(--el-color-primary, #2e73ff);
+}
+
+html.fc-themed ._fc-l-menu-item .el-badge__content {
+  background-color: var(--el-color-primary, #2e73ff);
+}
+
+html.fc-themed ._fd-drag-tool.active {
+  outline-color: var(--el-color-primary, #2e73ff);
+}
+
+html.fc-themed ._fd-drag-tool:hover {
+  outline-color: var(--el-color-primary, #2e73ff);
+}
+
+html.fc-themed .fc-json-dialog-body {
+  color: var(--el-text-color-primary, #303133);
+  background: var(--el-fill-color-light, #f5f7fa);
+}

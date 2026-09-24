@@ -14,6 +14,34 @@ const routes: RouteRecordRaw[] = [
     path: '/system',
     children: [
       {
+        path: 'workflow',
+        name: 'SystemWorkflow',
+        meta: {
+          icon: 'mdi:vector-polyline',
+          title: '流程设计',
+        },
+        component: () => import('#/views/system/workflow/list.vue'),
+      },
+      {
+        path: 'workflow/edit/:id',
+        name: 'SystemWorkflowEdit',
+        meta: {
+          title: '流程设计器',
+          hideInMenu: true,
+          activePath: '/system/workflow',
+        },
+        component: () => import('#/views/system/workflow/edit.vue'),
+      },
+      {
+        path: 'workflow/monitor',
+        name: 'SystemWorkflowMonitor',
+        meta: {
+          icon: 'mdi:monitor-dashboard',
+          title: '流程监控',
+        },
+        component: () => import('#/views/system/workflow/monitor.vue'),
+      },
+      {
         path: 'user',
         name: 'SystemUser',
         meta: {

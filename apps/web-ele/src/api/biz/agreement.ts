@@ -18,6 +18,8 @@ export interface AgreementListQuery {
   statusValue?: string;
   page?: number;
   pageSize?: number;
+  /** 菜单挂的页面配置，后端按这份配置的状态范围过滤 */
+  schemaId?: string;
 }
 
 /** 按场景拉取协议列表（同一接口） */
@@ -53,10 +55,10 @@ async function saveAgreementModule(
   module: AgreementModuleKey,
   data: Recordable<any>,
 ) {
-  return requestClient.put<AgreementDetail>(
-    `/biz/agreement/module/${module}`,
-    { agreementNo, data },
-  );
+  return requestClient.put<AgreementDetail>(`/biz/agreement/module/${module}`, {
+    agreementNo,
+    data,
+  });
 }
 
 /**
@@ -72,10 +74,7 @@ async function saveAgreementAll(payload: Recordable<any>) {
  * @param payload 完整详情
  */
 async function submitAgreement(payload: Recordable<any>) {
-  return requestClient.post<AgreementDetail>(
-    '/biz/agreement/submit',
-    payload,
-  );
+  return requestClient.post<AgreementDetail>('/biz/agreement/submit', payload);
 }
 
 /**
@@ -130,7 +129,10 @@ async function createAgreement(input?: {
   compensatee?: string;
   houseAddress?: string;
 }) {
-  return requestClient.post<AgreementListItem>('/biz/agreement/create', input || {});
+  return requestClient.post<AgreementListItem>(
+    '/biz/agreement/create',
+    input || {},
+  );
 }
 
 export {

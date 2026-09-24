@@ -11,7 +11,7 @@ import { ElAlert, ElButton, ElDialog, ElInput, ElMessage } from 'element-plus';
 import {
   buildDesignerSamplePrintData,
   parseAgreePrintDataJson,
-} from './sample-print-data';
+} from './data/sample-print-data';
 
 const props = defineProps<{
   /** 打开时填入编辑器的当前数据 */

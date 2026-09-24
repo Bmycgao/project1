@@ -5,10 +5,11 @@
  */
 import type { FcRule } from '../../biz/agreement/fc/types';
 
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import { Page } from '@vben/common-ui';
+import { preferences } from '@vben/preferences';
 
 import { ElButton, ElInput, ElMessage, ElOption, ElSelect } from 'element-plus';
 
@@ -79,6 +80,46 @@ function postToEmbed(payload: Record<string, unknown>) {
   );
   win.postMessage(safe, '*');
 }
+
+/**
+ * 读取主文档上的 Element Plus 变量（含当前主题色）
+ */
+function collectThemeVars(): Record<string, string> {
+  const style = getComputedStyle(document.documentElement);
+  const vars: Record<string, string> = {};
+  for (let i = 0; i < style.length; i += 1) {
+    const name = style.item(i);
+    if (!name.startsWith('--el-')) continue;
+    const value = style.getPropertyValue(name).trim();
+    if (value) vars[name] = value;
+  }
+  return vars;
+}
+
+/**
+ * 把明暗模式和主题色推进设计器 iframe
+ */
+function pushTheme() {
+  if (!iframeReady.value) return;
+  postToEmbed({
+    type: 'fc-theme',
+    dark: document.documentElement.classList.contains('dark'),
+    vars: collectThemeVars(),
+  });
+}
+
+/**
+ * 主题偏好变化后，等 CSS 变量写完再同步 iframe
+ */
+watch(
+  () => preferences.theme,
+  () => {
+    nextTick(() => {
+      requestAnimationFrame(() => pushTheme());
+    });
+  },
+  { deep: true },
+);
 
 /**
  * 推送 rule 到设计器
@@ -171,6 +212,7 @@ function onMessage(event: MessageEvent) {
   if (data.type === 'fc-ready') {
     iframeReady.value = true;
     postToEmbed({ type: 'fc-init', ruleJson: pendingRuleJson.value });
+    pushTheme();
     return;
   }
 
@@ -257,8 +299,8 @@ onUnmounted(() => {
   height: calc(100vh - 120px);
   min-height: 520px;
   overflow: hidden;
-  background: #fff;
-  border: 1px solid #e5e7eb;
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color);
   border-radius: 8px;
 }
 
@@ -270,7 +312,7 @@ onUnmounted(() => {
   align-items: center;
   height: 52px;
   padding: 0 12px;
-  border-bottom: 1px solid #ececec;
+  border-bottom: 1px solid var(--el-border-color);
 }
 
 .fc-edit-page__name {
@@ -290,7 +332,7 @@ onUnmounted(() => {
   flex: 1;
   width: 100%;
   min-height: 0;
-  background: #fff;
+  background: var(--el-bg-color);
   border: 0;
 }
 </style>

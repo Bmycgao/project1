@@ -1,4 +1,4 @@
-import type { AgreeModuleMount } from '../module-access';
+import type { AgreeModuleMount } from '../access/module-access';
 import type { FcRuleMap } from './types';
 
 /**

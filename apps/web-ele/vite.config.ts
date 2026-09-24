@@ -1,4 +1,4 @@
-import { defineConfig, viteCssLayerPlugin } from '@vben/vite-config';
+import { defineConfig } from '@vben/vite-config';
 
 import ElementPlus from 'unplugin-element-plus/vite';
 import monacoEditorPlugin from 'vite-plugin-monaco-editor';
@@ -17,8 +17,8 @@ export default defineConfig(async () => {
     application: {},
     vite: {
       plugins: [
-        // element-plus 的 css 包进 @layer el，使 Tailwind 工具类可覆盖组件样式
-        viteCssLayerPlugin({ layerName: 'el', packageName: 'element-plus' }),
+        // 不把 element-plus 打进 @layer：生产环境 @layer el 会被 Tailwind 盖掉，
+        // 按钮丢失圆角和主色。无层样式与 pnpm dev 一致。
         ElementPlus({ format: 'esm' }),
         monacoPlugin,
       ],

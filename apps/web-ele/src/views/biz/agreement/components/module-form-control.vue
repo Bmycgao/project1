@@ -6,7 +6,7 @@
  * @param pageEditable 详情是否编辑态
  * @param fieldEditable 角色字段是否可编辑
  */
-import type { ModuleInnerFieldItem } from '../module-inner-config';
+import type { ModuleInnerFieldItem } from '../config/module-inner-config';
 
 import { computed } from 'vue';
 

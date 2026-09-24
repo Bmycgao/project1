@@ -3,7 +3,10 @@
  * 通用动态列表页：同一套壳子，按 route.meta.schemaId 加载字段配置并渲染
  */
 import type { VbenFormSchema } from '#/adapter/form';
-import type { VxeTableGridColumns, VxeTableGridOptions } from '#/adapter/vxe-table';
+import type {
+  VxeTableGridColumns,
+  VxeTableGridOptions,
+} from '#/adapter/vxe-table';
 import type { PageSchemaApi } from '#/api';
 
 import { computed, nextTick, ref, watch } from 'vue';
@@ -23,13 +26,10 @@ const loadError = ref('');
 const ready = ref(false);
 
 /** 从路由读取关联的页面配置 ID */
-const schemaId = computed(
-  () =>
-    String(
-      (route.meta as Record<string, any>)?.schemaId ||
-        route.query.schemaId ||
-        '',
-    ),
+const schemaId = computed(() =>
+  String(
+    (route.meta as Record<string, any>)?.schemaId || route.query.schemaId || '',
+  ),
 );
 
 /**
@@ -145,6 +145,11 @@ async function loadSchemaAndGrid() {
   loading.value = true;
   try {
     const data = await getPageSchema(schemaId.value);
+    if (data.status === 0) {
+      loadError.value =
+        '该页面配置已停用，动态列表不再使用它。请重新启用，或给菜单换一份配置。';
+      return;
+    }
     schema.value = data;
 
     gridApi.setState({
@@ -162,9 +167,7 @@ async function loadSchemaAndGrid() {
     await queryAfterGridMounted();
   } catch (error: any) {
     loadError.value =
-      error?.response?.data?.message ||
-      error?.message ||
-      '加载页面配置失败';
+      error?.response?.data?.message || error?.message || '加载页面配置失败';
     ElMessage.error(loadError.value);
   } finally {
     loading.value = false;

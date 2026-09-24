@@ -1,12 +1,12 @@
 <script lang="ts" setup>
 import type { Ref } from 'vue';
 
-import type { FcRuleMap } from '../fc/types';
 import type {
   ModuleInnerConfig,
   ModuleInnerFieldItem,
   ModuleInnerSection,
-} from '../module-inner-config';
+} from '../config/module-inner-config';
+import type { FcRuleMap } from '../fc/types';
 /**
  * 协议人口信息：绑 FC 模板时用完整 FormCreate 渲染
  */
@@ -16,17 +16,17 @@ import { computed, inject, reactive, ref, watch } from 'vue';
 
 import { ElCol, ElForm, ElFormItem, ElMessage, ElRow } from 'element-plus';
 
+import { useAgreeFieldAccess } from '../access/use-field-access';
 import { cloneJson } from '../clone';
 import FcRuntime from '../components/fc-runtime.vue';
 import ModuleFormControl from '../components/module-form-control.vue';
-import { isFcRule } from '../fc/types';
 import {
   normalizeFieldSpan,
   normalizePopulationModuleInner,
   resolveEnabledFields,
   resolveEnabledSections,
-} from '../module-inner-config';
-import { useAgreeFieldAccess } from '../use-field-access';
+} from '../config/module-inner-config';
+import { isFcRule } from '../fc/types';
 
 const props = defineProps<{
   detail: AgreementDetail | null;

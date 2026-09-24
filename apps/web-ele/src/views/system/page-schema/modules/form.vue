@@ -1,11 +1,11 @@
 <script lang="ts" setup>
+import type { AgreeFieldRule } from '../../../biz/agreement/access/field-access';
+import type { AgreeModuleMount } from '../../../biz/agreement/access/module-access';
 import type { AgreeButtonBind } from '../../../biz/agreement/actions';
-import type { AgreeFieldRule } from '../../../biz/agreement/field-access';
-import type { AgreeModuleMount } from '../../../biz/agreement/module-access';
 import type {
   BasicModuleInnerConfig,
   ModuleInnerConfig,
-} from '../../../biz/agreement/module-inner-config';
+} from '../../../biz/agreement/config/module-inner-config';
 import type { SchemaPreviewResult } from '../preview-runtime';
 import type { ModuleLayoutEditRow } from './module-layout-editor.vue';
 
@@ -41,6 +41,8 @@ import {
   ElSwitch,
   ElTable,
   ElTableColumn,
+  ElTabPane,
+  ElTabs,
   ElTag,
 } from 'element-plus';
 
@@ -56,12 +58,7 @@ import {
   updatePageSchema,
 } from '#/api';
 
-import {
-  groupAgreeActions,
-  resolveToolbarButtons,
-} from '../../../biz/agreement/actions';
-import { buildDefaultFcBindings } from '../../../biz/agreement/fc/resolve-bindings';
-import { DEFAULT_AGREE_FIELD_RULES } from '../../../biz/agreement/field-access';
+import { DEFAULT_AGREE_FIELD_RULES } from '../../../biz/agreement/access/field-access';
 import {
   AGREE_DETAIL_MODULES,
   buildAgreeModuleMounts,
@@ -70,7 +67,11 @@ import {
   metaFromMount,
   normalizeAgreeModuleMounts,
   normalizeModuleSpan,
-} from '../../../biz/agreement/module-access';
+} from '../../../biz/agreement/access/module-access';
+import {
+  groupAgreeActions,
+  resolveToolbarButtons,
+} from '../../../biz/agreement/actions';
 import {
   buildDefaultBasicModuleInner,
   buildDefaultCompensationModuleInner,
@@ -86,8 +87,10 @@ import {
   normalizeHousesModuleInner,
   normalizePopulationModuleInner,
   normalizeRewardsModuleInner,
-} from '../../../biz/agreement/module-inner-config';
+} from '../../../biz/agreement/config/module-inner-config';
+import { buildDefaultFcBindings } from '../../../biz/agreement/fc/resolve-bindings';
 import {
+  AGREE_LIST_FIELD_OPTIONS,
   getDefaultColumns,
   getDefaultQueryFields,
   useFormSchema,
@@ -138,6 +141,12 @@ const fcBindingsMap = ref<FcBindingsMap>({ ...DEFAULT_FC_BINDINGS });
 const customInnerMap = ref<Record<string, ModuleInnerConfig>>({});
 /** 当前配置类型（与表单 schemaKind 同步） */
 const schemaKind = ref<'entity' | 'scene' | 'template'>('entity');
+/** 抽屉步骤 */
+const configTab = ref('base');
+/** 场景是否单独保存列表列；否则沿用表头 */
+const columnOverride = ref(false);
+/** 按钮的接口绑定默认收起 */
+const bindCollapse = ref<string[]>([]);
 
 /** —— 可视化预览 —— */
 const roleOptions = ref<SystemRoleApi.SystemRole[]>([]);
@@ -162,6 +171,76 @@ const STATUS_OPTIONS = [
   '项目经理已审核',
   '签约已确认',
 ];
+
+/** 状态范围预设 */
+const STATUS_PRESETS: { label: string; values: string[] }[] = [
+  { label: '录入', values: ['告知单', '待复核', '草稿'] },
+  { label: '审核', values: ['组长已复核'] },
+  { label: '全部', values: [...STATUS_OPTIONS] },
+];
+
+/** 六个状态都勾选时，和其他场景看到的数据会重叠 */
+const allStatusSelected = computed(() =>
+  STATUS_OPTIONS.every((item) => selectedStatusIn.value.includes(item)),
+);
+
+/**
+ * 套用状态预设
+ * @param values 要勾选的状态
+ */
+function applyStatusPreset(values: string[]) {
+  selectedStatusIn.value = [...values];
+}
+
+/**
+ * 补上列类型，避免下拉停在「请选择」
+ * @param list 列
+ */
+function normalizeColumnTypes(list: PageSchemaApi.Column[]) {
+  for (const col of list) {
+    if (col.cellType) continue;
+    const known = AGREE_LIST_FIELD_OPTIONS.find(
+      (item) => item.field === col.field,
+    );
+    col.cellType =
+      known?.cellType ||
+      (col.field === 'status' || col.field === 'statusValue'
+        ? 'status'
+        : 'text');
+  }
+}
+
+/**
+ * 选协议字段时带上默认标题和类型
+ * @param row 当前列
+ * @param field 字段名
+ */
+function syncColumnFromField(row: PageSchemaApi.Column, field: string) {
+  const known = AGREE_LIST_FIELD_OPTIONS.find((item) => item.field === field);
+  if (!known) return;
+  if (!row.title || row.title === '新字段') row.title = known.title;
+  row.cellType = known.cellType || row.cellType || 'text';
+}
+
+/**
+ * 表格行类型较宽，先收成列配置再套用字段默认值
+ * @param row 表格行
+ * @param field 字段名
+ */
+function onColumnFieldChange(row: object, field: string) {
+  syncColumnFromField(row as PageSchemaApi.Column, field);
+}
+
+/** 本场景单独改列 */
+function enableColumnOverride() {
+  columnOverride.value = true;
+  normalizeColumnTypes(columns.value);
+}
+
+/** 改回沿用表头，保存时不单独写列 */
+function clearColumnOverride() {
+  columnOverride.value = false;
+}
 
 const METHOD_OPTIONS = ['GET', 'POST', 'PUT', 'DELETE'] as const;
 
@@ -194,6 +273,18 @@ const actionGroups = groupAgreeActions();
 
 /** 是否场景类型：模块/按钮 + 可覆盖列表列 */
 const isScene = computed(() => schemaKind.value === 'scene');
+
+watch(schemaKind, (kind) => {
+  if (kind === 'scene' && configTab.value === 'fields') {
+    configTab.value = 'list';
+  }
+  if (
+    kind !== 'scene' &&
+    ['actions', 'detail', 'list'].includes(configTab.value)
+  ) {
+    configTab.value = 'fields';
+  }
+});
 
 /** 安全拷贝列配置（避免非数组脏数据） */
 function cloneColumns(list: unknown): PageSchemaApi.Column[] {
@@ -454,18 +545,15 @@ function buildSceneButtons() {
 
 /** 新增一列表字段 */
 function addColumn() {
-  let maxOrder = 0;
-  for (const c of columns.value) {
-    maxOrder = Math.max(maxOrder, c.order ?? 0);
-  }
   columns.value.push({
     field: `field${columns.value.length + 1}`,
     title: '新字段',
     visible: true,
     width: 120,
     cellType: 'text',
-    order: maxOrder + 10,
+    order: ((columns.value.at(-1)?.order ?? 0) as number) + 10,
   });
+  columnOverride.value = true;
 }
 
 /** 删除列 */
@@ -710,6 +798,9 @@ async function fillForm(detail: PageSchemaApi.PageSchema) {
     columnTemplateId: detail.columnTemplateId || '',
   });
   columns.value = cloneColumns(detail.columns);
+  normalizeColumnTypes(columns.value);
+  columnOverride.value =
+    detail.schemaKind === 'scene' ? detail.columnsInherited === false : false;
   // 补齐缺失 order，并按顺序展示
   columns.value.forEach((c, i) => {
     if (c.order === undefined || c.order === null) c.order = (i + 1) * 10;
@@ -776,6 +867,12 @@ const [Drawer, drawerApi] = useVbenDrawer({
       // 场景可继承列模板：仅当本场景已配列时才校验至少一列可见
       if (columns.value.length > 0 && !columns.value.some((c) => c.visible)) {
         ElMessage.warning('至少保留一列可见的列表字段');
+        configTab.value = 'list';
+        return;
+      }
+      if (!columnOverride.value && columns.value.length === 0) {
+        ElMessage.warning('还没有表头可沿用，请先选择共用表头或单独添加列');
+        configTab.value = 'list';
         return;
       }
     } else if (!columns.value.some((c) => c.visible)) {
@@ -789,10 +886,13 @@ const [Drawer, drawerApi] = useVbenDrawer({
         ? ({
             ...values,
             schemaKind: 'scene',
-            columns: columns.value.map((c, i) => ({
-              ...c,
-              order: c.order ?? (i + 1) * 10,
-            })),
+            columns: columnOverride.value
+              ? columns.value.map((c, i) => ({
+                  ...c,
+                  cellType: c.cellType || 'text',
+                  order: c.order ?? (i + 1) * 10,
+                }))
+              : [],
             queryFields: queryFields.value,
             buttons: buildSceneButtons(),
             statusIn: selectedStatusIn.value,
@@ -833,6 +933,11 @@ const [Drawer, drawerApi] = useVbenDrawer({
         ? updatePageSchema(id.value, payload)
         : createPageSchema(payload));
       emits('success');
+      ElMessage.success(
+        id.value
+          ? '已保存。打开挂了这份配置的菜单并刷新即可看到效果'
+          : '已创建。请到菜单管理新建菜单并选中这份配置，侧栏才会出现入口',
+      );
       drawerApi.close();
     } catch {
       drawerApi.unlock();
@@ -862,6 +967,10 @@ const [Drawer, drawerApi] = useVbenDrawer({
     fcBindingsMap.value = { ...DEFAULT_FC_BINDINGS };
     customInnerMap.value = {};
     schemaKind.value = 'entity';
+    columnOverride.value = false;
+    configTab.value =
+      (data as { focusTab?: string } | undefined)?.focusTab || 'base';
+    bindCollapse.value = [];
     previewResult.value = null;
     previewRoleName.value = '';
     historyList.value = [];
@@ -888,6 +997,7 @@ const [Drawer, drawerApi] = useVbenDrawer({
     } else {
       id.value = undefined;
       columns.value = getDefaultColumns();
+      normalizeColumnTypes(columns.value);
       queryFields.value = getDefaultQueryFields();
       fieldRules.value = structuredClone(DEFAULT_AGREE_FIELD_RULES);
       await formApi.setValues({ schemaKind: 'entity', status: 1 });
@@ -903,764 +1013,878 @@ const title = computed(() => {
 
 <template>
   <Drawer :title="title">
-    <Form />
+    <ElAlert
+      class="mb-3"
+      type="info"
+      show-icon
+      :closable="false"
+      title="保存不会新建菜单，也不会生成一张新业务页"
+      description="业务场景改的是已经存在的协议列表。和现有菜单选同一个场景时，看到的是同一批协议。侧栏要出现新入口，请到菜单管理把菜单挂到这份配置上。"
+    />
+    <ElTabs v-model="configTab">
+      <ElTabPane label="基础信息" name="base">
+        <Form />
+      </ElTabPane>
 
-    <!-- 场景：数据范围 / 模块 / 列表列 / 动作 -->
-    <div v-if="isScene" class="mt-4">
-      <div class="mb-2 font-medium">本岗能看的状态</div>
-      <p class="mb-2 text-xs text-gray-500">
-        这是列表数据白名单，不是搜索条件。勾选后本场景列表只出现这些状态（如录入岗：告知单/待复核/草稿）。不勾选则不过滤。
-      </p>
-      <ElCheckboxGroup v-model="selectedStatusIn" class="mb-4">
-        <div class="flex flex-wrap gap-x-4 gap-y-2">
-          <ElCheckbox v-for="s in STATUS_OPTIONS" :key="s" :value="s">
-            {{ s }}
-          </ElCheckbox>
+      <!-- 场景：列表 -->
+      <ElTabPane v-if="isScene" label="列表" name="list">
+        <div class="mb-2 font-medium">本岗能看的状态</div>
+        <p class="mb-2 text-xs text-gray-500">
+          这是列表数据范围，不是搜索框。勾选后只出现这些状态。全部取消则不过滤。
+        </p>
+        <div class="mb-2 flex flex-wrap gap-2">
+          <ElButton
+            v-for="preset in STATUS_PRESETS"
+            :key="preset.label"
+            size="small"
+            @click="applyStatusPreset(preset.values)"
+          >
+            {{ preset.label }}
+          </ElButton>
+          <ElButton size="small" @click="applyStatusPreset([])">
+            不过滤
+          </ElButton>
         </div>
-      </ElCheckboxGroup>
-
-      <div class="mb-2 mt-2 flex items-center justify-between">
-        <div class="font-medium">列表表格字段</div>
-        <ElButton size="small" type="primary" @click="addColumn">
-          添加列
-        </ElButton>
-      </div>
-      <p class="mb-2 text-xs text-gray-500">
-        控制协议列表表头（协议编号、被补偿人等）：开关「显示」、改标题/宽度、上下调整顺序。
-        首次打开若为空会从列模板带入；保存后本场景独立生效。
-      </p>
-      <ElTable :data="columns" border size="small" class="mb-4">
-        <ElTableColumn label="字段名" min-width="110">
-          <template #default="{ row }">
-            <ElInput v-model="row.field" size="small" />
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="列标题" min-width="110">
-          <template #default="{ row }">
-            <ElInput v-model="row.title" size="small" />
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="类型" width="100">
-          <template #default="{ row }">
-            <ElSelect v-model="row.cellType" size="small" class="w-full">
-              <ElOption
-                v-for="opt in cellTypeOptions"
-                :key="opt.value"
-                :label="opt.label"
-                :value="opt.value"
-              />
-            </ElSelect>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="顺序" width="88" align="center">
-          <template #default="{ row }">
-            <ElInputNumber
-              v-model="row.order"
-              size="small"
-              :min="1"
-              :max="9999"
-              controls-position="right"
-              class="w-full"
-              @change="resortColumns"
-            />
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="宽度" width="90">
-          <template #default="{ row }">
-            <ElInputNumber
-              v-model="row.width"
-              size="small"
-              :min="60"
-              :max="400"
-              controls-position="right"
-              class="w-full"
-            />
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="显示" width="70" align="center">
-          <template #default="{ row }">
-            <ElSwitch v-model="row.visible" />
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="操作" width="120" align="center">
-          <template #default="{ $index }">
-            <ElButton
-              link
-              type="primary"
-              size="small"
-              :disabled="$index === 0"
-              @click="moveColumn($index, -1)"
-            >
-              上
-            </ElButton>
-            <ElButton
-              link
-              type="primary"
-              size="small"
-              :disabled="$index >= columns.length - 1"
-              @click="moveColumn($index, 1)"
-            >
-              下
-            </ElButton>
-            <ElButton
-              link
-              type="danger"
-              size="small"
-              @click="removeColumn($index)"
-            >
-              删
-            </ElButton>
-          </template>
-        </ElTableColumn>
-      </ElTable>
-
-      <div class="mb-2 font-medium">详情组装</div>
-      <p class="mb-2 text-xs text-gray-500">
-        挂模块、拖胶囊排序；每块在下拉框选择「表单模板」库中的模板。改字段请去
-        系统管理 → 表单模板。列表列仍用上方「列表表格字段」。
-      </p>
-      <DetailDesigner
-        v-model:layouts="moduleLayoutRows"
-        v-model:basic-inner="basicInnerConfig"
-        v-model:houses-inner="housesInnerConfig"
-        v-model:compensation-inner="compensationInnerConfig"
-        v-model:rewards-inner="rewardsInnerConfig"
-        v-model:population-inner="populationInnerConfig"
-        v-model:custom-inners="customInnerMap"
-        v-model:fc-bindings="fcBindingsMap"
-      />
-
-      <div class="mb-2 font-medium">工具栏动作（仅可勾选已实现）</div>
-      <p class="mb-3 text-xs text-gray-500">
-        新按钮需开发先在
-        <code class="rounded bg-gray-100 px-1">actions.ts</code>
-        注册 handler，此处才能勾选；不可自由发明动作码。
-      </p>
-      <div
-        v-for="group in actionGroups"
-        :key="group.key"
-        class="mb-4 rounded-lg border border-gray-200/80 p-3"
-      >
-        <div class="mb-2 text-sm font-medium text-gray-700">
-          {{ group.title }}
-        </div>
-        <ElCheckboxGroup v-model="selectedActionCodes">
+        <ElAlert
+          v-if="allStatusSelected"
+          class="mb-3"
+          type="warning"
+          show-icon
+          :closable="false"
+          title="已选全部状态，录入、审核、查看会看到同一批协议"
+        />
+        <ElCheckboxGroup v-model="selectedStatusIn" class="mb-4">
           <div class="flex flex-wrap gap-x-4 gap-y-2">
-            <ElCheckbox
-              v-for="act in group.items"
-              :key="act.code"
-              :value="act.code"
-            >
-              <span>{{ act.label }}</span>
-              <span class="ml-1 text-xs text-gray-400">({{ act.code }})</span>
+            <ElCheckbox v-for="s in STATUS_OPTIONS" :key="s" :value="s">
+              {{ s }}
             </ElCheckbox>
           </div>
         </ElCheckboxGroup>
-      </div>
 
-      <div class="mb-2 mt-4 font-medium">差异化操作绑定（可选）</div>
-      <p class="mb-3 text-xs text-gray-500">
-        同一动作码在不同场景可绑不同接口 / 确认文案 / 成功提示 / 跳转 /
-        状态显隐。 填写「接口」后优先走配置调用；不填则仍用动作库默认逻辑。
-        「允许状态」：勾选行状态需全部命中，否则工具栏隐藏该按钮。
-      </p>
-      <ElTable :data="bindRows" border size="small" class="mb-4">
-        <ElTableColumn label="动作" width="110" fixed>
-          <template #default="{ row }">
-            <div class="text-xs font-medium">{{ row.label }}</div>
-            <div class="text-xs text-gray-400">{{ row.code }}</div>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="接口路径" min-width="160">
-          <template #default="{ row }">
-            <ElInput
-              v-model="row.bind.api"
-              size="small"
-              placeholder="/biz/agreement/..."
-            />
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="方法" width="100">
-          <template #default="{ row }">
-            <ElSelect v-model="row.bind.method" size="small" class="w-full">
-              <ElOption
-                v-for="m in METHOD_OPTIONS"
-                :key="m"
-                :label="m"
-                :value="m"
-              />
-            </ElSelect>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="确认文案" min-width="120">
-          <template #default="{ row }">
-            <ElInput
-              v-model="row.bind.confirmText"
-              size="small"
-              placeholder="二次确认"
-            />
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="成功提示" min-width="100">
-          <template #default="{ row }">
-            <ElInput
-              v-model="row.bind.successMsg"
-              size="small"
-              placeholder="成功 Message"
-            />
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="跳转" min-width="100">
-          <template #default="{ row }">
-            <ElInput
-              v-model="row.bind.redirect"
-              size="small"
-              placeholder="path 或 detail"
-            />
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="允许状态" min-width="160">
-          <template #default="{ row }">
-            <ElSelect
-              v-model="row.bind.showWhenStatusIn"
-              multiple
-              clearable
-              collapse-tags
-              collapse-tags-tooltip
-              size="small"
-              class="w-full"
-              placeholder="不限"
-            >
-              <ElOption
-                v-for="s in STATUS_OPTIONS"
-                :key="s"
-                :label="s"
-                :value="s"
-              />
-            </ElSelect>
-          </template>
-        </ElTableColumn>
-      </ElTable>
-    </div>
-
-    <!-- 实体 / 列模板：编辑列 -->
-    <template v-else>
-      <div class="mb-2 mt-4 flex items-center justify-between">
-        <div class="font-medium">表格字段</div>
-        <ElButton size="small" type="primary" @click="addColumn">
-          添加列
-        </ElButton>
-      </div>
-      <ElTable :data="columns" border size="small" class="mb-4">
-        <ElTableColumn label="字段名" min-width="110">
-          <template #default="{ row }">
-            <ElInput v-model="row.field" size="small" />
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="列标题" min-width="110">
-          <template #default="{ row }">
-            <ElInput v-model="row.title" size="small" />
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="类型" width="110">
-          <template #default="{ row }">
-            <ElSelect v-model="row.cellType" size="small" class="w-full">
-              <ElOption
-                v-for="opt in cellTypeOptions"
-                :key="opt.value"
-                :label="opt.label"
-                :value="opt.value"
-              />
-            </ElSelect>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="顺序" width="88" align="center">
-          <template #default="{ row }">
-            <ElInputNumber
-              v-model="row.order"
-              size="small"
-              :min="1"
-              :max="9999"
-              controls-position="right"
-              class="w-full"
-              @change="resortColumns"
-            />
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="宽度" width="100">
-          <template #default="{ row }">
-            <ElInputNumber
-              v-model="row.width"
-              size="small"
-              :min="60"
-              :max="400"
-              controls-position="right"
-              class="w-full"
-            />
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="显示" width="70" align="center">
-          <template #default="{ row }">
-            <ElSwitch v-model="row.visible" />
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="操作" width="120" align="center">
-          <template #default="{ $index }">
+        <div class="mb-2 mt-2 flex items-center justify-between">
+          <div class="font-medium">列表表格字段</div>
+          <div class="flex gap-2">
             <ElButton
-              link
+              v-if="!columnOverride"
+              size="small"
               type="primary"
-              size="small"
-              :disabled="$index === 0"
-              @click="moveColumn($index, -1)"
+              @click="enableColumnOverride"
             >
-              上
+              本场景单独调整
+            </ElButton>
+            <ElButton v-else size="small" @click="clearColumnOverride">
+              改回沿用表头
             </ElButton>
             <ElButton
-              link
+              size="small"
               type="primary"
-              size="small"
-              :disabled="$index >= columns.length - 1"
-              @click="moveColumn($index, 1)"
+              :disabled="!columnOverride"
+              @click="addColumn"
             >
-              下
+              添加列
             </ElButton>
-            <ElButton
-              link
-              type="danger"
-              size="small"
-              @click="removeColumn($index)"
-            >
-              删
-            </ElButton>
-          </template>
-        </ElTableColumn>
-      </ElTable>
-
-      <div class="mb-2 mt-4 flex items-center justify-between">
-        <div class="font-medium">字段权限规则</div>
-        <ElButton size="small" type="primary" @click="addFieldRule">
-          添加规则
-        </ElButton>
-      </div>
-      <p class="mb-2 text-xs text-gray-500">
-        配置可见/可编辑所需权限码（逗号分隔），如
-        <code class="rounded bg-gray-100 px-1">Agree:Field:phone</code>
-        。场景继承列模板规则；无权限则列表隐藏列、详情隐藏或只读。展示类型可配金额千分位、日期格式。
-      </p>
-      <ElTable :data="fieldRules" border size="small" class="mb-4">
-        <ElTableColumn label="字段名" min-width="100">
-          <template #default="{ row }">
-            <ElInput
-              size="small"
-              placeholder="phone"
-              :model-value="asFieldRule(row).field"
-              @update:model-value="(v: string) => (asFieldRule(row).field = v)"
-            />
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="强制隐藏" width="90" align="center">
-          <template #default="{ row }">
-            <ElSwitch
-              :model-value="!!asFieldRule(row).hidden"
-              @change="
-                (v: boolean | string | number) =>
-                  (asFieldRule(row).hidden = !!v)
-              "
-            />
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="可见权限码" min-width="140">
-          <template #default="{ row }">
-            <ElInput
-              size="small"
-              :model-value="codesToText(asFieldRule(row).visibleCodes)"
-              placeholder="Agree:Field:xxx"
-              @update:model-value="
-                (v: string) => (asFieldRule(row).visibleCodes = textToCodes(v))
-              "
-            />
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="可编辑权限码" min-width="140">
-          <template #default="{ row }">
-            <ElInput
-              size="small"
-              :model-value="codesToText(asFieldRule(row).editableCodes)"
-              placeholder="Agree:Field:xxx"
-              @update:model-value="
-                (v: string) => (asFieldRule(row).editableCodes = textToCodes(v))
-              "
-            />
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="展示类型" width="110">
-          <template #default="{ row }">
-            <ElSelect
-              size="small"
-              class="w-full"
-              :model-value="ensureDisplayFormat(row).type || 'text'"
-              @update:model-value="
-                (v: string) => (ensureDisplayFormat(row).type = v as any)
-              "
-            >
-              <ElOption label="文本" value="text" />
-              <ElOption label="金额" value="money" />
-              <ElOption label="日期" value="date" />
-            </ElSelect>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="格式参数" min-width="160">
-          <template #default="{ row }">
-            <template v-if="ensureDisplayFormat(row).type === 'money'">
-              <div class="flex flex-col gap-1">
-                <ElInput
-                  size="small"
-                  :model-value="ensureDisplayFormat(row).prefix || ''"
-                  placeholder="前缀 ¥"
-                  @update:model-value="
-                    (v: string) => (ensureDisplayFormat(row).prefix = v)
-                  "
+          </div>
+        </div>
+        <p class="mb-2 text-xs text-gray-500">
+          {{
+            columnOverride
+              ? '正在单独调整本场景的列，保存后不再跟着共用表头变。'
+              : '当前沿用上方选择的共用表头。要改标题、顺序或隐藏列，点「本场景单独调整」。'
+          }}
+        </p>
+        <ElTable :data="columns" border size="small" class="mb-4">
+          <ElTableColumn label="字段名" min-width="150">
+            <template #default="{ row }">
+              <ElSelect
+                v-model="row.field"
+                size="small"
+                class="w-full"
+                filterable
+                allow-create
+                default-first-option
+                :disabled="!columnOverride"
+                @change="(value: string) => onColumnFieldChange(row, value)"
+              >
+                <ElOption
+                  v-for="opt in AGREE_LIST_FIELD_OPTIONS"
+                  :key="opt.field"
+                  :label="`${opt.title}（${opt.field}）`"
+                  :value="opt.field"
                 />
-                <ElInputNumber
-                  size="small"
-                  class="w-full"
-                  :min="0"
-                  :max="6"
-                  controls-position="right"
-                  :model-value="ensureDisplayFormat(row).decimals ?? 2"
-                  @update:model-value="
-                    (v: number | undefined) =>
-                      (ensureDisplayFormat(row).decimals = v ?? 2)
-                  "
-                />
-                <ElCheckbox
-                  size="small"
-                  :model-value="
-                    ensureDisplayFormat(row).thousandSeparator !== false
-                  "
-                  @update:model-value="
-                    (v: boolean | string | number) =>
-                      (ensureDisplayFormat(row).thousandSeparator = !!v)
-                  "
-                >
-                  千分位
-                </ElCheckbox>
-              </div>
+              </ElSelect>
             </template>
-            <template v-else-if="ensureDisplayFormat(row).type === 'date'">
+          </ElTableColumn>
+          <ElTableColumn label="列标题" min-width="110">
+            <template #default="{ row }">
+              <ElInput
+                v-model="row.title"
+                size="small"
+                :disabled="!columnOverride"
+              />
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="类型" width="100">
+            <template #default="{ row }">
+              <ElSelect
+                v-model="row.cellType"
+                size="small"
+                class="w-full"
+                :disabled="!columnOverride"
+              >
+                <ElOption
+                  v-for="opt in cellTypeOptions"
+                  :key="opt.value"
+                  :label="opt.label"
+                  :value="opt.value"
+                />
+              </ElSelect>
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="顺序" width="88" align="center">
+            <template #default="{ row }">
+              <ElInputNumber
+                v-model="row.order"
+                size="small"
+                :min="1"
+                :max="9999"
+                :disabled="!columnOverride"
+                controls-position="right"
+                class="w-full"
+                @change="resortColumns"
+              />
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="宽度" width="90">
+            <template #default="{ row }">
+              <ElInputNumber
+                v-model="row.width"
+                size="small"
+                :min="60"
+                :max="400"
+                :disabled="!columnOverride"
+                controls-position="right"
+                class="w-full"
+              />
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="显示" width="70" align="center">
+            <template #default="{ row }">
+              <ElSwitch v-model="row.visible" :disabled="!columnOverride" />
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="操作" width="120" align="center">
+            <template #default="{ $index }">
+              <ElButton
+                link
+                type="primary"
+                size="small"
+                :disabled="!columnOverride || $index === 0"
+                @click="moveColumn($index, -1)"
+              >
+                上
+              </ElButton>
+              <ElButton
+                link
+                type="primary"
+                size="small"
+                :disabled="!columnOverride || $index >= columns.length - 1"
+                @click="moveColumn($index, 1)"
+              >
+                下
+              </ElButton>
+              <ElButton
+                link
+                type="danger"
+                size="small"
+                :disabled="!columnOverride"
+                @click="removeColumn($index)"
+              >
+                删
+              </ElButton>
+            </template>
+          </ElTableColumn>
+        </ElTable>
+      </ElTabPane>
+
+      <ElTabPane v-if="isScene" label="详情" name="detail">
+        <div class="mb-2 font-medium">详情组装</div>
+        <p class="mb-2 text-xs text-gray-500">
+          挂模块、拖胶囊排序；每块选择表单模板。改字段请到系统管理 →
+          表单模板。中间的协议号和指标只是示意。
+        </p>
+        <DetailDesigner
+          v-model:layouts="moduleLayoutRows"
+          v-model:basic-inner="basicInnerConfig"
+          v-model:houses-inner="housesInnerConfig"
+          v-model:compensation-inner="compensationInnerConfig"
+          v-model:rewards-inner="rewardsInnerConfig"
+          v-model:population-inner="populationInnerConfig"
+          v-model:custom-inners="customInnerMap"
+          v-model:fc-bindings="fcBindingsMap"
+        />
+      </ElTabPane>
+
+      <ElTabPane v-if="isScene" label="按钮" name="actions">
+        <div class="mb-2 font-medium">工具栏动作</div>
+        <p class="mb-3 text-xs text-gray-500">
+          只能勾选系统已经做好的动作，不能自己写一个新按钮名称。
+        </p>
+        <div
+          v-for="group in actionGroups"
+          :key="group.key"
+          class="mb-4 rounded-lg border border-gray-200/80 p-3"
+        >
+          <div class="mb-2 text-sm font-medium text-gray-700">
+            {{ group.title }}
+          </div>
+          <ElCheckboxGroup v-model="selectedActionCodes">
+            <div class="flex flex-wrap gap-x-4 gap-y-2">
+              <ElCheckbox
+                v-for="act in group.items"
+                :key="act.code"
+                :value="act.code"
+              >
+                <span>{{ act.label }}</span>
+                <span class="ml-1 text-xs text-gray-400">({{ act.code }})</span>
+              </ElCheckbox>
+            </div>
+          </ElCheckboxGroup>
+        </div>
+
+        <ElCollapse v-model="bindCollapse" class="mt-2">
+          <ElCollapseItem
+            name="bind"
+            title="高级：接口、确认文案和允许状态（可选）"
+          >
+            <p class="mb-3 text-xs text-gray-500">
+              不填接口时，按钮仍走原来的功能。填了接口后，点击会按这里的地址调用。允许状态未选表示不限制。
+            </p>
+            <ElTable :data="bindRows" border size="small" class="mb-4">
+              <ElTableColumn label="动作" width="110" fixed>
+                <template #default="{ row }">
+                  <div class="text-xs font-medium">{{ row.label }}</div>
+                  <div class="text-xs text-gray-400">{{ row.code }}</div>
+                </template>
+              </ElTableColumn>
+              <ElTableColumn label="接口路径" min-width="160">
+                <template #default="{ row }">
+                  <ElInput
+                    v-model="row.bind.api"
+                    size="small"
+                    placeholder="/biz/agreement/..."
+                  />
+                </template>
+              </ElTableColumn>
+              <ElTableColumn label="方法" width="100">
+                <template #default="{ row }">
+                  <ElSelect
+                    v-model="row.bind.method"
+                    size="small"
+                    class="w-full"
+                  >
+                    <ElOption
+                      v-for="m in METHOD_OPTIONS"
+                      :key="m"
+                      :label="m"
+                      :value="m"
+                    />
+                  </ElSelect>
+                </template>
+              </ElTableColumn>
+              <ElTableColumn label="确认文案" min-width="120">
+                <template #default="{ row }">
+                  <ElInput
+                    v-model="row.bind.confirmText"
+                    size="small"
+                    placeholder="二次确认"
+                  />
+                </template>
+              </ElTableColumn>
+              <ElTableColumn label="成功提示" min-width="100">
+                <template #default="{ row }">
+                  <ElInput
+                    v-model="row.bind.successMsg"
+                    size="small"
+                    placeholder="成功 Message"
+                  />
+                </template>
+              </ElTableColumn>
+              <ElTableColumn label="跳转" min-width="100">
+                <template #default="{ row }">
+                  <ElInput
+                    v-model="row.bind.redirect"
+                    size="small"
+                    placeholder="path 或 detail"
+                  />
+                </template>
+              </ElTableColumn>
+              <ElTableColumn label="允许状态" min-width="160">
+                <template #default="{ row }">
+                  <ElSelect
+                    v-model="row.bind.showWhenStatusIn"
+                    multiple
+                    clearable
+                    collapse-tags
+                    collapse-tags-tooltip
+                    size="small"
+                    class="w-full"
+                    placeholder="不限"
+                  >
+                    <ElOption
+                      v-for="s in STATUS_OPTIONS"
+                      :key="s"
+                      :label="s"
+                      :value="s"
+                    />
+                  </ElSelect>
+                </template>
+              </ElTableColumn>
+            </ElTable>
+          </ElCollapseItem>
+        </ElCollapse>
+      </ElTabPane>
+
+      <!-- 普通列表 / 共用表头 -->
+      <ElTabPane v-if="!isScene" label="列表字段" name="fields">
+        <div class="mb-2 mt-4 flex items-center justify-between">
+          <div class="font-medium">表格字段</div>
+          <ElButton size="small" type="primary" @click="addColumn">
+            添加列
+          </ElButton>
+        </div>
+        <ElTable :data="columns" border size="small" class="mb-4">
+          <ElTableColumn label="字段名" min-width="110">
+            <template #default="{ row }">
+              <ElInput v-model="row.field" size="small" />
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="列标题" min-width="110">
+            <template #default="{ row }">
+              <ElInput v-model="row.title" size="small" />
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="类型" width="110">
+            <template #default="{ row }">
+              <ElSelect v-model="row.cellType" size="small" class="w-full">
+                <ElOption
+                  v-for="opt in cellTypeOptions"
+                  :key="opt.value"
+                  :label="opt.label"
+                  :value="opt.value"
+                />
+              </ElSelect>
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="顺序" width="88" align="center">
+            <template #default="{ row }">
+              <ElInputNumber
+                v-model="row.order"
+                size="small"
+                :min="1"
+                :max="9999"
+                controls-position="right"
+                class="w-full"
+                @change="resortColumns"
+              />
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="宽度" width="100">
+            <template #default="{ row }">
+              <ElInputNumber
+                v-model="row.width"
+                size="small"
+                :min="60"
+                :max="400"
+                controls-position="right"
+                class="w-full"
+              />
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="显示" width="70" align="center">
+            <template #default="{ row }">
+              <ElSwitch v-model="row.visible" />
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="操作" width="120" align="center">
+            <template #default="{ $index }">
+              <ElButton
+                link
+                type="primary"
+                size="small"
+                :disabled="$index === 0"
+                @click="moveColumn($index, -1)"
+              >
+                上
+              </ElButton>
+              <ElButton
+                link
+                type="primary"
+                size="small"
+                :disabled="$index >= columns.length - 1"
+                @click="moveColumn($index, 1)"
+              >
+                下
+              </ElButton>
+              <ElButton
+                link
+                type="danger"
+                size="small"
+                @click="removeColumn($index)"
+              >
+                删
+              </ElButton>
+            </template>
+          </ElTableColumn>
+        </ElTable>
+
+        <div class="mb-2 mt-4 flex items-center justify-between">
+          <div class="font-medium">字段权限规则</div>
+          <ElButton size="small" type="primary" @click="addFieldRule">
+            添加规则
+          </ElButton>
+        </div>
+        <p class="mb-2 text-xs text-gray-500">
+          配置可见/可编辑所需权限码（逗号分隔），如
+          <code class="rounded bg-gray-100 px-1">Agree:Field:phone</code>
+          。场景继承列模板规则；无权限则列表隐藏列、详情隐藏或只读。展示类型可配金额千分位、日期格式。
+        </p>
+        <ElTable :data="fieldRules" border size="small" class="mb-4">
+          <ElTableColumn label="字段名" min-width="100">
+            <template #default="{ row }">
+              <ElInput
+                size="small"
+                placeholder="phone"
+                :model-value="asFieldRule(row).field"
+                @update:model-value="
+                  (v: string) => (asFieldRule(row).field = v)
+                "
+              />
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="强制隐藏" width="90" align="center">
+            <template #default="{ row }">
+              <ElSwitch
+                :model-value="!!asFieldRule(row).hidden"
+                @change="
+                  (v: boolean | string | number) =>
+                    (asFieldRule(row).hidden = !!v)
+                "
+              />
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="可见权限码" min-width="140">
+            <template #default="{ row }">
+              <ElInput
+                size="small"
+                :model-value="codesToText(asFieldRule(row).visibleCodes)"
+                placeholder="Agree:Field:xxx"
+                @update:model-value="
+                  (v: string) =>
+                    (asFieldRule(row).visibleCodes = textToCodes(v))
+                "
+              />
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="可编辑权限码" min-width="140">
+            <template #default="{ row }">
+              <ElInput
+                size="small"
+                :model-value="codesToText(asFieldRule(row).editableCodes)"
+                placeholder="Agree:Field:xxx"
+                @update:model-value="
+                  (v: string) =>
+                    (asFieldRule(row).editableCodes = textToCodes(v))
+                "
+              />
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="展示类型" width="110">
+            <template #default="{ row }">
               <ElSelect
                 size="small"
                 class="w-full"
-                :model-value="
-                  ensureDisplayFormat(row).datePattern || 'YYYY-MM-DD'
-                "
+                :model-value="ensureDisplayFormat(row).type || 'text'"
                 @update:model-value="
-                  (v: string) =>
-                    (ensureDisplayFormat(row).datePattern = v as any)
+                  (v: string) => (ensureDisplayFormat(row).type = v as any)
                 "
               >
-                <ElOption label="YYYY-MM-DD" value="YYYY-MM-DD" />
-                <ElOption label="YYYY年MM月DD日" value="YYYY年MM月DD日" />
+                <ElOption label="文本" value="text" />
+                <ElOption label="金额" value="money" />
+                <ElOption label="日期" value="date" />
               </ElSelect>
             </template>
-            <span v-else class="text-xs text-gray-400">—</span>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="备注" min-width="100">
-          <template #default="{ row }">
-            <ElInput
-              size="small"
-              :model-value="asFieldRule(row).remark"
-              @update:model-value="(v: string) => (asFieldRule(row).remark = v)"
-            />
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="操作" width="70" align="center">
-          <template #default="{ $index }">
-            <ElButton
-              link
-              type="danger"
-              size="small"
-              @click="removeFieldRule($index)"
-            >
-              删
-            </ElButton>
-          </template>
-        </ElTableColumn>
-      </ElTable>
-
-      <div class="mb-2 flex items-center justify-between">
-        <div class="font-medium">查询条件</div>
-        <ElButton size="small" type="primary" @click="addQueryField">
-          添加条件
-        </ElButton>
-      </div>
-      <ElTable :data="queryFields" border size="small">
-        <ElTableColumn label="字段名" min-width="110">
-          <template #default="{ row }">
-            <ElInput v-model="row.field" size="small" />
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="标题" min-width="110">
-          <template #default="{ row }">
-            <ElInput v-model="row.title" size="small" />
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="控件" width="120">
-          <template #default="{ row }">
-            <ElSelect v-model="row.component" size="small" class="w-full">
-              <ElOption
-                v-for="opt in queryCompOptions"
-                :key="opt.value"
-                :label="opt.label"
-                :value="opt.value"
+          </ElTableColumn>
+          <ElTableColumn label="格式参数" min-width="160">
+            <template #default="{ row }">
+              <template v-if="ensureDisplayFormat(row).type === 'money'">
+                <div class="flex flex-col gap-1">
+                  <ElInput
+                    size="small"
+                    :model-value="ensureDisplayFormat(row).prefix || ''"
+                    placeholder="前缀 ¥"
+                    @update:model-value="
+                      (v: string) => (ensureDisplayFormat(row).prefix = v)
+                    "
+                  />
+                  <ElInputNumber
+                    size="small"
+                    class="w-full"
+                    :min="0"
+                    :max="6"
+                    controls-position="right"
+                    :model-value="ensureDisplayFormat(row).decimals ?? 2"
+                    @update:model-value="
+                      (v: number | undefined) =>
+                        (ensureDisplayFormat(row).decimals = v ?? 2)
+                    "
+                  />
+                  <ElCheckbox
+                    size="small"
+                    :model-value="
+                      ensureDisplayFormat(row).thousandSeparator !== false
+                    "
+                    @update:model-value="
+                      (v: boolean | string | number) =>
+                        (ensureDisplayFormat(row).thousandSeparator = !!v)
+                    "
+                  >
+                    千分位
+                  </ElCheckbox>
+                </div>
+              </template>
+              <template v-else-if="ensureDisplayFormat(row).type === 'date'">
+                <ElSelect
+                  size="small"
+                  class="w-full"
+                  :model-value="
+                    ensureDisplayFormat(row).datePattern || 'YYYY-MM-DD'
+                  "
+                  @update:model-value="
+                    (v: string) =>
+                      (ensureDisplayFormat(row).datePattern = v as any)
+                  "
+                >
+                  <ElOption label="YYYY-MM-DD" value="YYYY-MM-DD" />
+                  <ElOption label="YYYY年MM月DD日" value="YYYY年MM月DD日" />
+                </ElSelect>
+              </template>
+              <span v-else class="text-xs text-gray-400">—</span>
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="备注" min-width="100">
+            <template #default="{ row }">
+              <ElInput
+                size="small"
+                :model-value="asFieldRule(row).remark"
+                @update:model-value="
+                  (v: string) => (asFieldRule(row).remark = v)
+                "
               />
-            </ElSelect>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="操作" width="70" align="center">
-          <template #default="{ $index }">
-            <ElButton
-              link
-              type="danger"
-              size="small"
-              @click="removeQueryField($index)"
-            >
-              删
-            </ElButton>
-          </template>
-        </ElTableColumn>
-      </ElTable>
-    </template>
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="操作" width="70" align="center">
+            <template #default="{ $index }">
+              <ElButton
+                link
+                type="danger"
+                size="small"
+                @click="removeFieldRule($index)"
+              >
+                删
+              </ElButton>
+            </template>
+          </ElTableColumn>
+        </ElTable>
 
-    <!-- 配置回滚：每次保存会留下上一版快照 -->
-    <div
-      v-if="id"
-      class="mt-6 rounded-lg border border-dashed border-amber-300/80 p-3"
-    >
-      <div class="mb-2 flex items-center justify-between">
-        <div class="font-medium">配置历史 / 回滚</div>
-        <ElButton size="small" :loading="historyLoading" @click="loadHistory">
-          刷新历史
-        </ElButton>
-      </div>
-      <p class="mb-3 text-xs text-gray-500">
-        每次保存成功会自动保留上一版（最多 10
-        条）。回滚后当前内容也会进入历史，可再次回退。
-      </p>
-      <ElTable
-        v-loading="historyLoading"
-        :data="historyList"
-        border
-        size="small"
-        max-height="220"
-        empty-text="暂无历史（保存修改后会出现）"
-      >
-        <ElTableColumn prop="savedAt" label="保存时间" min-width="160" />
-        <ElTableColumn prop="title" label="页面名称" min-width="120" />
-        <ElTableColumn label="用途" width="100">
-          <template #default="{ row }">
-            {{ row.schemaKind || '—' }}
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="列/按钮" width="100">
-          <template #default="{ row }">
-            {{ row.columnCount ?? 0 }} / {{ row.buttonCount ?? 0 }}
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="操作" width="90" align="center" fixed="right">
-          <template #default="{ row }">
-            <ElButton
-              link
-              type="warning"
-              size="small"
-              @click="onRollback(row.versionId)"
-            >
-              回滚
-            </ElButton>
-          </template>
-        </ElTableColumn>
-      </ElTable>
-    </div>
-
-    <!-- 按角色验权限：列/按钮/模块是否可见（表格对照，不是页面截图） -->
-    <ElCollapse v-model="previewCollapse" class="mt-6">
-      <ElCollapseItem name="preview" title="按角色验权限（可选）">
-        <p class="mb-3 text-xs text-gray-500">
-          用角色权限码对照当前草稿：列表哪些列、哪些按钮、详情哪些模块会显示。不是页面长什么样的预览。
-        </p>
-        <div class="mb-3 flex flex-wrap items-end gap-3">
-          <div class="min-w-[160px]">
-            <div class="mb-1 text-xs text-gray-500">预览角色</div>
-            <ElSelect
-              v-model="previewRoleId"
-              size="small"
-              class="w-full"
-              filterable
-            >
-              <ElOption
-                v-for="r in roleOptions"
-                :key="r.id"
-                :label="r.name"
-                :value="String(r.id)"
-              />
-            </ElSelect>
-          </div>
-          <div v-if="isScene" class="min-w-[140px]">
-            <div class="mb-1 text-xs text-gray-500">模拟勾选行状态</div>
-            <ElSelect
-              v-model="previewStatus"
-              size="small"
-              class="w-full"
-              clearable
-              placeholder="不限"
-            >
-              <ElOption
-                v-for="s in STATUS_OPTIONS"
-                :key="s"
-                :label="s"
-                :value="s"
-              />
-            </ElSelect>
-          </div>
-          <ElButton
-            type="primary"
-            size="small"
-            :loading="previewLoading"
-            @click="runPreview"
-          >
-            生成预览
+        <div class="mb-2 flex items-center justify-between">
+          <div class="font-medium">查询条件</div>
+          <ElButton size="small" type="primary" @click="addQueryField">
+            添加条件
           </ElButton>
         </div>
+        <ElTable :data="queryFields" border size="small">
+          <ElTableColumn label="字段名" min-width="110">
+            <template #default="{ row }">
+              <ElInput v-model="row.field" size="small" />
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="标题" min-width="110">
+            <template #default="{ row }">
+              <ElInput v-model="row.title" size="small" />
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="控件" width="120">
+            <template #default="{ row }">
+              <ElSelect v-model="row.component" size="small" class="w-full">
+                <ElOption
+                  v-for="opt in queryCompOptions"
+                  :key="opt.value"
+                  :label="opt.label"
+                  :value="opt.value"
+                />
+              </ElSelect>
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="操作" width="70" align="center">
+            <template #default="{ $index }">
+              <ElButton
+                link
+                type="danger"
+                size="small"
+                @click="removeQueryField($index)"
+              >
+                删
+              </ElButton>
+            </template>
+          </ElTableColumn>
+        </ElTable>
+      </ElTabPane>
 
-        <ElAlert
-          v-if="previewResult"
-          class="mb-3"
-          type="info"
-          :closable="false"
-          :title="`角色「${previewRoleName}」：可见列 ${previewResult.shownColumnCount} / ${previewResult.columns.length}，可见按钮 ${previewResult.shownButtonCount} / ${previewResult.buttons.length || 0}，可见模块 ${previewResult.shownModuleCount} / ${previewResult.modules.length || 0}`"
-        />
-
-        <template v-if="previewResult">
-          <div class="mb-2 text-sm font-medium">列表列</div>
-          <ElTable
-            :data="previewResult.columns"
-            border
-            size="small"
-            class="mb-4"
-            max-height="220"
-          >
-            <ElTableColumn prop="title" label="列标题" min-width="100" />
-            <ElTableColumn prop="field" label="字段" min-width="100" />
-            <ElTableColumn label="结果" width="90" align="center">
-              <template #default="{ row }">
-                <ElTag :type="row.shown ? 'success' : 'info'" size="small">
-                  {{ row.shown ? '显示' : '隐藏' }}
-                </ElTag>
-              </template>
-            </ElTableColumn>
-            <ElTableColumn prop="reason" label="说明" min-width="140" />
-          </ElTable>
-
-          <template v-if="isScene">
-            <div class="mb-2 text-sm font-medium">工具栏按钮</div>
-            <ElTable
-              :data="previewResult.buttons"
-              border
+      <ElTabPane label="检查" name="check">
+        <!-- 配置回滚：每次保存会留下上一版快照 -->
+        <div
+          v-if="id"
+          class="mt-6 rounded-lg border border-dashed border-amber-300/80 p-3"
+        >
+          <div class="mb-2 flex items-center justify-between">
+            <div class="font-medium">配置历史 / 回滚</div>
+            <ElButton
               size="small"
-              class="mb-4"
-              max-height="220"
+              :loading="historyLoading"
+              @click="loadHistory"
             >
-              <ElTableColumn prop="label" label="按钮" min-width="100" />
-              <ElTableColumn prop="code" label="动作码" min-width="110" />
-              <ElTableColumn label="结果" width="100" align="center">
-                <template #default="{ row }">
-                  <ElTag v-if="!row.shown" type="info" size="small">
-                    隐藏
-                  </ElTag>
-                  <ElTag v-else-if="row.disabled" type="warning" size="small">
-                    禁用
-                  </ElTag>
-                  <ElTag v-else type="success" size="small"> 可点 </ElTag>
-                </template>
-              </ElTableColumn>
-              <ElTableColumn prop="reason" label="说明" min-width="160" />
-            </ElTable>
-
-            <div class="mb-2 text-sm font-medium">详情模块</div>
-            <ElTable
-              :data="previewResult.modules"
-              border
-              size="small"
-              class="mb-4"
-              max-height="220"
-            >
-              <ElTableColumn prop="label" label="模块" min-width="100" />
-              <ElTableColumn prop="key" label="标识" min-width="110" />
-              <ElTableColumn
-                prop="order"
-                label="顺序"
-                width="70"
-                align="center"
-              />
-              <ElTableColumn
-                prop="span"
-                label="占比"
-                width="70"
-                align="center"
-              />
-              <ElTableColumn label="结果" width="90" align="center">
-                <template #default="{ row }">
-                  <ElTag :type="row.shown ? 'success' : 'info'" size="small">
-                    {{ row.shown ? '显示' : '隐藏' }}
-                  </ElTag>
-                </template>
-              </ElTableColumn>
-              <ElTableColumn prop="reason" label="说明" min-width="160" />
-            </ElTable>
-          </template>
-
-          <div
-            v-if="previewResult.fields.length"
-            class="mb-2 text-sm font-medium"
-          >
-            字段规则（详情/敏感项）
+              刷新历史
+            </ElButton>
           </div>
+          <p class="mb-3 text-xs text-gray-500">
+            每次保存成功会自动保留上一版（最多 10
+            条）。回滚后当前内容也会进入历史，可再次回退。
+          </p>
           <ElTable
-            v-if="previewResult.fields.length"
-            :data="previewResult.fields"
+            v-loading="historyLoading"
+            :data="historyList"
             border
             size="small"
             max-height="220"
+            empty-text="暂无历史（保存修改后会出现）"
           >
-            <ElTableColumn prop="field" label="字段" min-width="100" />
-            <ElTableColumn prop="remark" label="备注" min-width="100" />
-            <ElTableColumn
-              prop="formatSample"
-              label="展示样例"
-              min-width="120"
-            />
-            <ElTableColumn label="可见" width="70" align="center">
+            <ElTableColumn prop="savedAt" label="保存时间" min-width="160" />
+            <ElTableColumn prop="title" label="页面名称" min-width="120" />
+            <ElTableColumn label="用途" width="100">
               <template #default="{ row }">
-                <ElTag :type="row.visible ? 'success' : 'info'" size="small">
-                  {{ row.visible ? '是' : '否' }}
-                </ElTag>
+                {{ row.schemaKind || '—' }}
               </template>
             </ElTableColumn>
-            <ElTableColumn label="可编辑" width="80" align="center">
+            <ElTableColumn label="列/按钮" width="100">
               <template #default="{ row }">
-                <ElTag
-                  :type="row.editable ? 'success' : 'warning'"
+                {{ row.columnCount ?? 0 }} / {{ row.buttonCount ?? 0 }}
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="操作" width="90" align="center" fixed="right">
+              <template #default="{ row }">
+                <ElButton
+                  link
+                  type="warning"
                   size="small"
+                  @click="onRollback(row.versionId)"
                 >
-                  {{ row.editable ? '是' : '否' }}
-                </ElTag>
+                  回滚
+                </ElButton>
               </template>
             </ElTableColumn>
-            <ElTableColumn prop="reason" label="说明" min-width="140" />
           </ElTable>
-        </template>
-      </ElCollapseItem>
-    </ElCollapse>
+        </div>
+
+        <!-- 按角色验权限：列/按钮/模块是否可见（表格对照，不是页面截图） -->
+        <ElCollapse v-model="previewCollapse" class="mt-6">
+          <ElCollapseItem name="preview" title="按角色验权限（可选）">
+            <p class="mb-3 text-xs text-gray-500">
+              用角色权限码对照当前草稿：列表哪些列、哪些按钮、详情哪些模块会显示。不是页面长什么样的预览。
+            </p>
+            <div class="mb-3 flex flex-wrap items-end gap-3">
+              <div class="min-w-[160px]">
+                <div class="mb-1 text-xs text-gray-500">预览角色</div>
+                <ElSelect
+                  v-model="previewRoleId"
+                  size="small"
+                  class="w-full"
+                  filterable
+                >
+                  <ElOption
+                    v-for="r in roleOptions"
+                    :key="r.id"
+                    :label="r.name"
+                    :value="String(r.id)"
+                  />
+                </ElSelect>
+              </div>
+              <div v-if="isScene" class="min-w-[140px]">
+                <div class="mb-1 text-xs text-gray-500">模拟勾选行状态</div>
+                <ElSelect
+                  v-model="previewStatus"
+                  size="small"
+                  class="w-full"
+                  clearable
+                  placeholder="不限"
+                >
+                  <ElOption
+                    v-for="s in STATUS_OPTIONS"
+                    :key="s"
+                    :label="s"
+                    :value="s"
+                  />
+                </ElSelect>
+              </div>
+              <ElButton
+                type="primary"
+                size="small"
+                :loading="previewLoading"
+                @click="runPreview"
+              >
+                生成预览
+              </ElButton>
+            </div>
+
+            <ElAlert
+              v-if="previewResult"
+              class="mb-3"
+              type="info"
+              :closable="false"
+              :title="`角色「${previewRoleName}」：可见列 ${previewResult.shownColumnCount} / ${previewResult.columns.length}，可见按钮 ${previewResult.shownButtonCount} / ${previewResult.buttons.length || 0}，可见模块 ${previewResult.shownModuleCount} / ${previewResult.modules.length || 0}`"
+            />
+
+            <template v-if="previewResult">
+              <div class="mb-2 text-sm font-medium">列表列</div>
+              <ElTable
+                :data="previewResult.columns"
+                border
+                size="small"
+                class="mb-4"
+                max-height="220"
+              >
+                <ElTableColumn prop="title" label="列标题" min-width="100" />
+                <ElTableColumn prop="field" label="字段" min-width="100" />
+                <ElTableColumn label="结果" width="90" align="center">
+                  <template #default="{ row }">
+                    <ElTag :type="row.shown ? 'success' : 'info'" size="small">
+                      {{ row.shown ? '显示' : '隐藏' }}
+                    </ElTag>
+                  </template>
+                </ElTableColumn>
+                <ElTableColumn prop="reason" label="说明" min-width="140" />
+              </ElTable>
+
+              <template v-if="isScene">
+                <div class="mb-2 text-sm font-medium">工具栏按钮</div>
+                <ElTable
+                  :data="previewResult.buttons"
+                  border
+                  size="small"
+                  class="mb-4"
+                  max-height="220"
+                >
+                  <ElTableColumn prop="label" label="按钮" min-width="100" />
+                  <ElTableColumn prop="code" label="动作码" min-width="110" />
+                  <ElTableColumn label="结果" width="100" align="center">
+                    <template #default="{ row }">
+                      <ElTag v-if="!row.shown" type="info" size="small">
+                        隐藏
+                      </ElTag>
+                      <ElTag
+                        v-else-if="row.disabled"
+                        type="warning"
+                        size="small"
+                      >
+                        禁用
+                      </ElTag>
+                      <ElTag v-else type="success" size="small"> 可点 </ElTag>
+                    </template>
+                  </ElTableColumn>
+                  <ElTableColumn prop="reason" label="说明" min-width="160" />
+                </ElTable>
+
+                <div class="mb-2 text-sm font-medium">详情模块</div>
+                <ElTable
+                  :data="previewResult.modules"
+                  border
+                  size="small"
+                  class="mb-4"
+                  max-height="220"
+                >
+                  <ElTableColumn prop="label" label="模块" min-width="100" />
+                  <ElTableColumn prop="key" label="标识" min-width="110" />
+                  <ElTableColumn
+                    prop="order"
+                    label="顺序"
+                    width="70"
+                    align="center"
+                  />
+                  <ElTableColumn
+                    prop="span"
+                    label="占比"
+                    width="70"
+                    align="center"
+                  />
+                  <ElTableColumn label="结果" width="90" align="center">
+                    <template #default="{ row }">
+                      <ElTag
+                        :type="row.shown ? 'success' : 'info'"
+                        size="small"
+                      >
+                        {{ row.shown ? '显示' : '隐藏' }}
+                      </ElTag>
+                    </template>
+                  </ElTableColumn>
+                  <ElTableColumn prop="reason" label="说明" min-width="160" />
+                </ElTable>
+              </template>
+
+              <div
+                v-if="previewResult.fields.length"
+                class="mb-2 text-sm font-medium"
+              >
+                字段规则（详情/敏感项）
+              </div>
+              <ElTable
+                v-if="previewResult.fields.length"
+                :data="previewResult.fields"
+                border
+                size="small"
+                max-height="220"
+              >
+                <ElTableColumn prop="field" label="字段" min-width="100" />
+                <ElTableColumn prop="remark" label="备注" min-width="100" />
+                <ElTableColumn
+                  prop="formatSample"
+                  label="展示样例"
+                  min-width="120"
+                />
+                <ElTableColumn label="可见" width="70" align="center">
+                  <template #default="{ row }">
+                    <ElTag
+                      :type="row.visible ? 'success' : 'info'"
+                      size="small"
+                    >
+                      {{ row.visible ? '是' : '否' }}
+                    </ElTag>
+                  </template>
+                </ElTableColumn>
+                <ElTableColumn label="可编辑" width="80" align="center">
+                  <template #default="{ row }">
+                    <ElTag
+                      :type="row.editable ? 'success' : 'warning'"
+                      size="small"
+                    >
+                      {{ row.editable ? '是' : '否' }}
+                    </ElTag>
+                  </template>
+                </ElTableColumn>
+                <ElTableColumn prop="reason" label="说明" min-width="140" />
+              </ElTable>
+            </template>
+          </ElCollapseItem>
+        </ElCollapse>
+      </ElTabPane>
+    </ElTabs>
   </Drawer>
 </template>

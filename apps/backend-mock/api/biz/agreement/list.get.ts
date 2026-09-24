@@ -1,10 +1,7 @@
 import { eventHandler, getQuery } from 'h3';
 import { assertAnyAgreeAccess } from '~/utils/agree-api-auth';
 import { queryAgreeListByScene } from '~/utils/mock-agreement-list';
-import {
-  usePageResponseSuccess,
-  useResponseError,
-} from '~/utils/response';
+import { usePageResponseSuccess, useResponseError } from '~/utils/response';
 
 /**
  * GET /api/biz/agreement/list
@@ -24,6 +21,7 @@ export default eventHandler(async (event) => {
     scene,
     keyword: query.keyword as string | undefined,
     statusValue: query.statusValue as string | undefined,
+    schemaId: query.schemaId ? String(query.schemaId) : undefined,
   });
 
   const page = query.page || 1;

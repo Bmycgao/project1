@@ -5,7 +5,7 @@
  * - 卡片宽度 = 占比 span（24 栅格预览）
  * - 未挂载模块放在下方池，点击挂上（全量可多于本页：只配需要的）
  */
-import type { AgreeModuleMount } from '../../../biz/agreement/module-access';
+import type { AgreeModuleMount } from '../../../biz/agreement/access/module-access';
 
 import {
   computed,
@@ -23,7 +23,7 @@ import { ElButton, ElOption, ElSelect, ElTag } from 'element-plus';
 import {
   MODULE_SPAN_OPTIONS,
   normalizeModuleSpan,
-} from '../../../biz/agreement/module-access';
+} from '../../../biz/agreement/access/module-access';
 
 /** 编辑行（与页面配置表单一致） */
 export interface ModuleLayoutEditRow {
@@ -44,13 +44,11 @@ const model = defineModel<ModuleLayoutEditRow[]>({ required: true });
 
 const canvasRef = ref<HTMLElement | null>(null);
 /** Sortable 实例 */
-let sortableInst: { destroy: () => void } | null = null;
+let sortableInst: null | { destroy: () => void } = null;
 
 /** 已挂载，按 order 排序（画布展示） */
 const mountedRows = computed(() =>
-  [...model.value]
-    .filter((r) => r.enabled)
-    .sort((a, b) => a.order - b.order),
+  [...model.value].filter((r) => r.enabled).sort((a, b) => a.order - b.order),
 );
 
 /** 未挂载池 */
@@ -91,9 +89,7 @@ function setSpan(key: string, span: number) {
 async function mountModule(key: string) {
   const maxOrder = Math.max(0, ...model.value.map((r) => r.order || 0));
   model.value = model.value.map((row) =>
-    row.key === key
-      ? { ...row, enabled: true, order: maxOrder + 10 }
-      : row,
+    row.key === key ? { ...row, enabled: true, order: maxOrder + 10 } : row,
   );
   await nextTick();
   await initSortable();
@@ -160,8 +156,9 @@ watch(
 <template>
   <div class="module-layout-editor mb-4">
     <p class="mb-2 text-xs text-gray-500">
-      <strong>可视化布局（可拖拽）：</strong>拖动手柄调整详情模块顺序；下拉改占比（24
-      栅格预览）。点「挂上 / 卸下」控制本场景是否展示。
+      <strong>可视化布局（可拖拽）：</strong
+      >拖动手柄调整详情模块顺序；下拉改占比（24 栅格预览）。点「挂上 /
+      卸下」控制本场景是否展示。
       详情页：基础信息固定在上方，其余模块按此处顺序显示在 Tab 中。
     </p>
 
@@ -172,11 +169,7 @@ watch(
       </ElTag>
     </div>
 
-    <div
-      v-if="mountedRows.length"
-      ref="canvasRef"
-      class="module-canvas mb-3"
-    >
+    <div v-if="mountedRows.length" ref="canvasRef" class="module-canvas mb-3">
       <div
         v-for="row in mountedRows"
         :key="row.key"
@@ -270,10 +263,10 @@ watch(
 }
 
 .module-canvas__ghost {
-  opacity: 0.55;
   background: #eff6ff;
-  border-style: dashed;
   border-color: #93c5fd;
+  border-style: dashed;
+  opacity: 0.55;
 }
 
 .module-canvas__head {
@@ -297,8 +290,8 @@ watch(
 
 .module-pool__chip:hover {
   color: #1d4ed8;
-  border-color: #93c5fd;
   background: #eff6ff;
+  border-color: #93c5fd;
 }
 
 .module-pool__chip .text-primary {

@@ -1,7 +1,7 @@
 /**
  * moduleInner / FC 转换字段在详情控件上的禁用/只读状态
  */
-import type { ModuleInnerFieldItem } from '../module-inner-config';
+import type { ModuleInnerFieldItem } from '../config/module-inner-config';
 
 /** 控件锁定结果 */
 export interface ModuleFieldControlState {

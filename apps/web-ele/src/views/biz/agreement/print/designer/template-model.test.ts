@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { enrichPrintDataForTemplate } from '../enrich-print-data';
-import { preparePrintTemplate } from '../prepare-template';
+import { enrichPrintDataForTemplate } from '../data/enrich-print-data';
+import { preparePrintTemplate } from '../runtime/prepare-template';
+import {
+  applyAgreeBodyCellExprsToRows,
+  applyAgreeBodyCellMergesToRows,
+  createSameValueMergeSrc,
+  evalNamedMergeFn,
+} from '../runtime/print-table-runtime';
 import {
   extractTableHeaderGroups,
   findPrintElementByCanvasKey,
@@ -11,13 +17,7 @@ import {
   insertLeafTableColumn,
   listLeafTableCells,
   setAgreeTableIndexColumnVisible,
-} from '../print-element-meta';
-import {
-  applyAgreeBodyCellExprsToRows,
-  applyAgreeBodyCellMergesToRows,
-  createSameValueMergeSrc,
-  evalNamedMergeFn,
-} from '../print-table-runtime';
+} from '../template/print-element-meta';
 import {
   resolveTablePreview,
   resolveTextPreview,
@@ -317,9 +317,34 @@ describe('designer preview runtime parity', () => {
     /** 汇总按全部数据计算，不受画布可见行数限制。 */
     expect(preview.bodyRows).toHaveLength(2);
     expect(preview.footerRows[0]?.map((cell) => cell.text)).toEqual([
+      '合计',
       '',
-      '',
-      '合计:25.00',
+      '25.00',
+    ]);
+  });
+
+  it('keeps first-column totals and labels the summary only once', () => {
+    const preview = resolveTablePreview(
+      {
+        field: 'items',
+        columns: [
+          [
+            { title: '数量', field: 'quantity', tableSummary: 'sum' },
+            { title: '金额', field: 'amount', tableSummary: 'sum' },
+          ],
+        ],
+      },
+      {
+        items: [
+          { quantity: 2, amount: 10 },
+          { quantity: 3, amount: 20 },
+        ],
+      } as any,
+      1,
+    );
+    expect(preview.footerRows[0]?.map((cell) => cell.text)).toEqual([
+      '合计\n5.00',
+      '30.00',
     ]);
   });
 
@@ -336,7 +361,7 @@ describe('designer preview runtime parity', () => {
       2,
     );
 
-    expect(preview.footerRows[0]?.[2]?.text).toBe('合计:25.00');
+    expect(preview.footerRows[0]?.[2]?.text).toBe('25.00');
   });
 
   it('renders horizontal, vertical and rectangular body merges', () => {
@@ -561,50 +586,59 @@ describe('designer preview runtime parity', () => {
     expect(panel.printElements[3].options.tableFooterRepeat).toBe('last');
   });
 
-  it('moves a crowded table section to the next page instead of rendering a diagnostic block', () => {
-    const result = preparePrintTemplate(
-      {
-        panels: [
-          {
-            paperFooter: 800,
-            paperHeader: 70,
-            printElements: [
-              {
-                options: {
-                  agreeFlowGroup: 'rewards',
-                  height: 18,
-                  title: '三、奖励补贴',
-                  top: 750,
+  it.each(['auto', 'fixed'])(
+    'moves a crowded table section and respects the %s signature mode',
+    (mode) => {
+      const result = preparePrintTemplate(
+        {
+          panels: [
+            {
+              paperFooter: 800,
+              paperHeader: 70,
+              printElements: [
+                {
+                  options: {
+                    agreeFlowGroup: 'rewards',
+                    height: 18,
+                    title: '三、奖励补贴',
+                    top: 750,
+                  },
+                  printElementType: { type: 'text' },
                 },
-                printElementType: { type: 'text' },
-              },
-              {
-                options: {
-                  agreeFlowGroup: 'rewards',
-                  columns,
-                  field: 'items',
-                  height: 36,
-                  top: 764,
+                {
+                  options: {
+                    agreeFlowGroup: 'rewards',
+                    columns,
+                    field: 'items',
+                    height: 36,
+                    top: 764,
+                  },
+                  printElementType: { type: 'table' },
                 },
-                printElementType: { type: 'table' },
-              },
-              {
-                options: { height: 18, title: '签字', top: 810 },
-                printElementType: { type: 'text' },
-              },
-            ],
-          },
-        ],
-      },
-      sample,
-    );
-    const [title, tableElement, signature] =
-      result.template.panels[0].printElements;
+                {
+                  options: {
+                    height: 18,
+                    title: '签字',
+                    top: 810,
+                    agreeFlowMode: mode,
+                  },
+                  printElementType: { type: 'text' },
+                },
+              ],
+            },
+          ],
+        },
+        sample,
+      );
+      const [title, tableElement, signature] =
+        result.template.panels[0].printElements;
 
-    expect(title.options.top).toBe(802);
-    expect(tableElement.options.top).toBe(826);
-    expect(signature.options.top).toBe(862);
-  });
+      expect(title.options.top).toBe(802);
+      // 正文随表格顺延；明确固定的签字保持设计坐标。
+      expect(tableElement.options.top).toBe(816);
+      expect(signature.options.top).toBe(mode === 'fixed' ? 810 : 862);
+    },
+  );
 });
 
 describe('grouped table headers', () => {

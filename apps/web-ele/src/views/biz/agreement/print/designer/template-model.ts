@@ -6,15 +6,22 @@
  * - 元素 options.left/top/width/height 单位为 hiprint 点(pt)，1pt = 1/72 英寸
  * - 屏幕像素按 96dpi 计算，故 px = pt * 96 / 72
  */
-import type { AgreePrintFieldItem } from '../fields';
+import type { AgreePrintFieldItem } from '../data/fields';
 import type { AgreePrintData } from '../types';
 
-import { formatPrintValue, tableSummaryDecimals } from '../format-print-value';
-import { listLeafTableCells } from '../print-element-meta';
-import { evalPrintExpr, filterPrintRows } from '../print-expr';
-import { projectTableHeaders } from '../print-header-merge';
-import { mmToPt } from '../print-paper';
-import { normalizeAgreeFooters } from '../print-table-footer';
+import { cloneJson as cloneTemplate } from '../../clone';
+import {
+  formatPrintValue,
+  tableSummaryDecimals,
+} from '../data/format-print-value';
+import {
+  evalPrintExpr,
+  filterPrintRows,
+  sortPrintRows,
+} from '../runtime/print-expr';
+import { projectTableHeaders } from '../runtime/print-header-merge';
+import { mmToPt } from '../runtime/print-paper';
+import { normalizeAgreeFooters } from '../runtime/print-table-footer';
 import {
   applyAgreeBodyCellExprsToRows,
   applyAgreeBodyCellMergesToRows,
@@ -23,9 +30,9 @@ import {
   computeRowHColSpans,
   renumberAgreePrintRowIndexes,
   resolveAgreeColumnMergeConfig,
-} from '../print-table-runtime';
-import { resolvePrintTextValue } from '../print-text-value';
-import { cloneTemplate } from '../template-store';
+} from '../runtime/print-table-runtime';
+import { resolvePrintTextValue } from '../runtime/print-text-value';
+import { listLeafTableCells } from '../template/print-element-meta';
 
 /** hiprint 点(pt) 转屏幕像素(px)，96dpi 下 1pt = 4/3 px */
 export const PT_TO_PX = 96 / 72;
@@ -62,6 +69,8 @@ export interface DesignPage {
 
 /** 字段从数据源拖入纸面后的落点（坐标单位为 pt） */
 export interface CanvasFieldDropPayload {
+  documentTarget?: string;
+  documentPlacement?: 'after' | 'before' | 'beside' | 'beside-before';
   item: AgreePrintFieldItem;
   left: number;
   panelIndex: number;
@@ -70,6 +79,8 @@ export interface CanvasFieldDropPayload {
 
 /** 积木从左侧拖入纸面后的落点（坐标单位为 pt） */
 export interface CanvasToolboxDropPayload {
+  documentTarget?: string;
+  documentPlacement?: 'after' | 'before' | 'beside' | 'beside-before';
   left: number;
   panelIndex: number;
   tid: string;
@@ -342,6 +353,8 @@ export interface TablePreviewModel {
 
 /** 根据表格设计高度估算画布可展示的表体行数，避免固定 3 行与正式预览脱节。 */
 export function tablePreviewRowLimit(options: Record<string, any>) {
+  if (options.agreeFormGrid)
+    return Math.max(1, Number(options.__formRowCount) || 1);
   const headerRows = Array.isArray(options?.columns)
     ? Math.max(1, options.columns.filter(Array.isArray).length)
     : 1;
@@ -420,7 +433,7 @@ export function resolveTablePreview(
     ? options.columns
     : [];
   // 表头：逐行渲染原始单元格，隐藏 checked===false 的叶子列
-  const headerRows = projectTableHeaders(columns);
+  const headerRows = options.agreeFormGrid ? [] : projectTableHeaders(columns);
   const leaves = listLeafTableCells(columns);
   const leafCols = leaves.map((c) => ({
     ...c,
@@ -466,6 +479,7 @@ export function resolveTablePreview(
       rootCtx,
       { silent: true },
     );
+    computedRows = sortPrintRows(computedRows, options?.agreeRowSort);
     computedRows = renumberAgreePrintRowIndexes(computedRows);
   }
   computedRows = applyAgreeBodyHMergesToRows(
@@ -557,12 +571,12 @@ export function resolveTablePreview(
     ? leaves.map((col, cellIndex) => {
         if (!col.tableSummary) {
           return {
-            align: col.align || 'left',
+            align: col.align || 'center',
             cellIndex,
             colspan: 1,
             field: '',
             rowIndex: 0,
-            text: '',
+            text: cellIndex === 0 ? '合计' : '',
           };
         }
         let total = 0;
@@ -574,12 +588,13 @@ export function resolveTablePreview(
         // 的 0 也会回退为 2。画布遵循其实际输出，避免设计态与打印态不一致。
         const decimals = tableSummaryDecimals(col.agreeColFormat) || 2;
         return {
-          align: col.align || 'right',
+          align: col.align || 'center',
           cellIndex,
           colspan: 1,
           field: '',
           rowIndex: 0,
-          text: `合计:${total.toFixed(decimals)}`,
+          // 第一列承担行标题；若第一列本身也需汇总，换行保留其数值。
+          text: `${cellIndex === 0 ? '合计\n' : ''}${total.toFixed(decimals)}`,
         };
       })
     : [];
@@ -589,7 +604,7 @@ export function resolveTablePreview(
   ).map((row, rowIndex) =>
     row.cells.map((cell, cellIndex) => ({
       color: cell.color,
-      align: cell.align || 'left',
+      align: cell.align || 'center',
       cellIndex,
       colspan: cell.colspan,
       field: String(cell.field || ''),

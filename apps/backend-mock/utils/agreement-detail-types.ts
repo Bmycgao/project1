@@ -15,13 +15,13 @@ export interface HouseRow {
   address: string;
   certNo: string;
   propertyType: string;
-  buildArea?: string | number;
-  expropriatedArea?: string | number;
+  buildArea?: number | string;
+  expropriatedArea?: number | string;
   houseType?: string;
   structure?: string;
   yearBuilt?: string;
   floor?: string;
-  evalValue?: string | number;
+  evalValue?: number | string;
 }
 
 /** 协议头表单（含配置台扩展字段） */
@@ -31,7 +31,7 @@ export interface BasicInfo {
   department: string;
   acquirer: string;
   compensatee: string;
-  amount: string | number;
+  amount: number | string;
   signDate: string;
   statusValue: string;
   remark: string;
@@ -42,7 +42,7 @@ export interface BasicInfo {
 export interface PopulationInfo {
   headName: string;
   idNo: string;
-  familySize: string | number;
+  familySize: number | string;
   phone: string;
   hukouAddress: string;
   remark: string;
@@ -53,9 +53,9 @@ export interface CompensationRow {
   id: string;
   name: string;
   calcType: string;
-  quantity: string | number;
-  unitPrice: string | number;
-  amount: string | number;
+  quantity: number | string;
+  unitPrice: number | string;
+  amount: number | string;
   remark: string;
   [key: string]: unknown;
 }
@@ -64,7 +64,7 @@ export interface RewardRow {
   id: string;
   name: string;
   condition: string;
-  amount: string | number;
+  amount: number | string;
   remark: string;
   [key: string]: unknown;
 }
@@ -81,7 +81,7 @@ export interface SigningInfo {
   decorateEval: string;
   hasMortgage: string;
   mortgagee: string;
-  debtAmount: string | number;
+  debtAmount: number | string;
   hasSeal: string;
   sealCourt: string;
   signDate?: string;
@@ -105,7 +105,7 @@ export interface MaterialRow {
 export interface CompensationInfo {
   settleType: string;
   settleAddress: string;
-  amount: string | number;
+  amount: number | string;
   remark: string;
 }
 
@@ -131,4 +131,6 @@ export interface AgreementDetail {
   population: PopulationInfo;
   extraForms?: Record<string, Record<string, unknown>>;
   extraTables?: Record<string, Record<string, unknown>[]>;
+  /** 流程节点额外字段（如法务意见），按字段标识存 */
+  flowFields?: Record<string, unknown>;
 }

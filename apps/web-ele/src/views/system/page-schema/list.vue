@@ -10,6 +10,8 @@ import type {
 } from '#/adapter/vxe-table';
 import type { PageSchemaApi } from '#/api';
 
+import { ref } from 'vue';
+
 import { Page, useVbenDrawer } from '@vben/common-ui';
 import { Plus } from '@vben/icons';
 
@@ -17,9 +19,47 @@ import { ElAlert, ElButton, ElMessage } from 'element-plus';
 
 import { useVbenVxeGrid } from '#/adapter/vxe-table';
 import { deletePageSchema, getPageSchemaList } from '#/api';
+import { getMenuList } from '#/api/system/menu';
 
 import { useColumns, useGridFormSchema } from './data';
 import Form from './modules/form.vue';
+
+/** 配置编号 → 已挂菜单名称 */
+const menuTitleMap = ref<Record<string, string>>({});
+
+/**
+ * 把菜单树上的 schemaId 收成「配置 → 菜单名」
+ * @param nodes 菜单树
+ * @param bucket 收集结果
+ */
+function collectSchemaMenus(
+  nodes:
+    | {
+        children?: any[];
+        meta?: Record<string, any>;
+        name?: string;
+        type?: string;
+      }[]
+    | undefined,
+  bucket: Record<string, string[]>,
+) {
+  for (const node of nodes || []) {
+    const schemaId = String(node.meta?.schemaId || '');
+    if (schemaId && node.type === 'menu') {
+      const title = String(node.meta?.title || node.name || schemaId);
+      bucket[schemaId] = [...(bucket[schemaId] || []), title];
+    }
+    if (node.children?.length) collectSchemaMenus(node.children, bucket);
+  }
+}
+
+/**
+ * 列表「已挂菜单」列
+ * @param schemaId 配置编号
+ */
+function menuTitleOf(schemaId: string) {
+  return menuTitleMap.value[schemaId] || '未使用';
+}
 
 const [FormDrawer, formDrawerApi] = useVbenDrawer({
   connectedComponent: Form,
@@ -32,6 +72,8 @@ function onActionClick({
 }: OnActionClickParams<PageSchemaApi.PageSchema>) {
   if (code === 'edit') {
     formDrawerApi.setData(row).open();
+  } else if (code === 'history') {
+    formDrawerApi.setData({ ...row, focusTab: 'check' }).open();
   } else if (code === 'delete') {
     onDelete(row);
   }
@@ -57,14 +99,25 @@ const [Grid, gridApi] = useVbenVxeGrid({
     submitOnChange: true,
   },
   gridOptions: {
-    columns: useColumns(onActionClick),
+    columns: useColumns(onActionClick, menuTitleOf),
     height: 'auto',
     keepSource: true,
     pagerConfig: { enabled: false },
     proxyConfig: {
       ajax: {
         query: async (_params, formValues) => {
-          const list = await getPageSchemaList(formValues);
+          const [list, menus] = await Promise.all([
+            getPageSchemaList(formValues),
+            getMenuList().catch(() => []),
+          ]);
+          const bucket: Record<string, string[]> = {};
+          collectSchemaMenus(menus, bucket);
+          menuTitleMap.value = Object.fromEntries(
+            Object.entries(bucket).map(([key, titles]) => [
+              key,
+              titles.join('、'),
+            ]),
+          );
           return { items: list, total: list.length };
         },
       },
@@ -87,8 +140,8 @@ const [Grid, gridApi] = useVbenVxeGrid({
       type="info"
       show-icon
       :closable="false"
-      title="怎么用：菜单入口 + 本方案画详情"
-      description="① 菜单管理只新建入口并绑定本「页面方案」；② 场景先组装详情模块；点「编辑表单 / 编辑表格」用 FormCreate 拖字段或拖列；③ 列表点协议编号进入详情，按方案渲染；④ 保存会留历史可回滚。"
+      title="保存配置不会生成新页面"
+      description="普通列表挂到「动态列表」菜单，业务场景挂到协议列表菜单。没挂菜单时，下面会显示「未使用」。停用后，已挂上的菜单不再读取这份配置。"
     />
     <Grid table-title="页面与场景配置">
       <template #toolbar-tools>

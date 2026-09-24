@@ -7,7 +7,7 @@ import { startProgress, stopProgress } from '@vben/utils';
 
 import { accessRoutes, coreRouteNames } from '#/router/routes';
 import { useAuthStore } from '#/store';
-import { getAgreeListPathByScene } from '#/views/biz/agreement/scene-paths';
+import { getAgreeListPathByScene } from '#/views/biz/agreement/config/scene-paths';
 
 import { generateAccess } from './access';
 
@@ -27,11 +27,11 @@ function isAgreeDetailRoute(to: { name?: unknown; path: string }) {
  * @param to 目标路由
  */
 function applyAgreeDetailActivePath(to: {
+  matched?: { meta: Record<string, any>; name?: unknown; path: string }[];
+  meta: Record<string, any>;
   name?: unknown;
   path: string;
-  meta: Record<string, any>;
   query: Record<string, unknown>;
-  matched?: { name?: unknown; path: string; meta: Record<string, any> }[];
 }) {
   if (!isAgreeDetailRoute(to)) return;
 

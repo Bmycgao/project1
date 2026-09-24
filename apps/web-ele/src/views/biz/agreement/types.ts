@@ -189,4 +189,6 @@ export interface AgreementDetail {
   extraForms?: Record<string, Record<string, unknown>>;
   /** 配置台新建的自定义表格：模块 key → 行数组 */
   extraTables?: Record<string, Record<string, unknown>[]>;
+  /** 流程节点额外字段（如法务意见），按字段标识存 */
+  flowFields?: Record<string, unknown>;
 }

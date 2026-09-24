@@ -9,9 +9,9 @@ import { computed, ref, watch } from 'vue';
 
 import { ElMessage } from 'element-plus';
 
+import { useAgreeFieldAccess } from '../access/use-field-access';
 import { prepareFcRuntimeRule } from '../fc/apply-runtime';
 import { buildFcFormOption, cloneFcRule } from '../fc/types';
-import { useAgreeFieldAccess } from '../use-field-access';
 
 const props = defineProps<{
   /** 兼容旧 prop：整表单禁用 */

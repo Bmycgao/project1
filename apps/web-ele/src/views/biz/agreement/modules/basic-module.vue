@@ -1,12 +1,12 @@
 <script lang="ts" setup>
 import type { Ref } from 'vue';
 
-import type { FcRuleMap } from '../fc/types';
 import type {
   BasicModuleInnerConfig,
   ModuleInnerFieldItem,
   ModuleInnerSection,
-} from '../module-inner-config';
+} from '../config/module-inner-config';
+import type { FcRuleMap } from '../fc/types';
 /**
  * 基础信息：优先场景绑定的 FormCreate 表单模板；自定义表格子块仍走 moduleInner
  */
@@ -26,19 +26,19 @@ import {
   ElTableColumn,
 } from 'element-plus';
 
+import { useAgreeFieldAccess } from '../access/use-field-access';
 import { cloneJson } from '../clone';
 import FcRuntime from '../components/fc-runtime.vue';
 import ModuleFormControl from '../components/module-form-control.vue';
 import SectionCard from '../components/section-card.vue';
-import { isFcRule } from '../fc/types';
 import {
   isCustomBasicSection,
   normalizeBasicModuleInner,
   normalizeFieldSpan,
   resolveEnabledFields,
   resolveEnabledSections,
-} from '../module-inner-config';
-import { useAgreeFieldAccess } from '../use-field-access';
+} from '../config/module-inner-config';
+import { isFcRule } from '../fc/types';
 
 const props = defineProps<{
   detail: AgreementDetail | null;

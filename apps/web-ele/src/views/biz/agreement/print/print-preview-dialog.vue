@@ -2,7 +2,7 @@
 /**
  * 协议打印预览：按 templateCode 拉模板，可用协议详情或粘贴的数据源 JSON
  */
-import type { AgreeFieldRule } from '../field-access';
+import type { AgreeFieldRule } from '../access/field-access';
 import type { AgreementDetail } from '../types';
 import type { AgreePrintData } from './types';
 
@@ -12,24 +12,28 @@ import { useAccessStore } from '@vben/stores';
 
 import { ElButton, ElDialog, ElMessage } from 'element-plus';
 
-import { buildAgreePrintData } from './build-print-data';
-import { ensureHiprint } from './ensure-hiprint';
-import { preparePrintTemplate } from './prepare-template';
+import { cloneJson as cloneTemplate } from '../clone';
+import { buildAgreePrintData } from './data/build-print-data';
+import {
+  maskAgreePrintData,
+  mergePrintFieldRules,
+} from './data/print-sensitive';
+import { buildDesignerSamplePrintData } from './data/sample-print-data';
+import { createDocumentPrint } from './engine/document-print';
 import PrintDataJsonDialog from './print-data-json-dialog.vue';
-import { installHeaderMergeRuntime } from './print-header-merge';
+import { toDocumentTemplate } from './runtime/document-layout';
+import { preparePrintTemplate } from './runtime/prepare-template';
 import {
   applyPrintPageSizeFromTemplate,
   fitPrintPreviewHost,
   normalizePrintPreviewPages,
-} from './print-page-css';
+} from './runtime/print-page-css';
 import {
   describePrintPaper,
   previewDialogWidthCss,
   readTemplatePaperSpec,
-} from './print-paper';
-import { maskAgreePrintData, mergePrintFieldRules } from './print-sensitive';
-import { buildDesignerSamplePrintData } from './sample-print-data';
-import { cloneTemplate, loadPrintTemplateByCode } from './template-store';
+} from './runtime/print-paper';
+import { loadPrintTemplateByCode } from './template/template-store';
 
 const props = withDefaults(
   defineProps<{
@@ -96,7 +100,6 @@ function resolvePrintData(): AgreePrintData | null {
 
 /** 创建带条件/合并能力的模板实例；正式打印先按字段权限打码 */
 async function createTemplate(data: AgreePrintData) {
-  const { PrintTemplate } = await ensureHiprint();
   const raw = await loadPrintTemplateByCode(props.templateCode);
   const masked = maskAgreePrintData(
     data,
@@ -104,14 +107,13 @@ async function createTemplate(data: AgreePrintData) {
     accessStore.accessCodes,
   );
   const { template: prepared, printData: enriched } = preparePrintTemplate(
-    raw,
+    toDocumentTemplate(raw),
     masked,
   );
   // hiprint 初始化时会原地整理表格结构。先保留一份未编译的模板，
   // PDF 导出再基于它创建实例，避免多层表头被二次处理后 rowspan 错位。
   lastPrepared = cloneTemplate(prepared);
-  const inst = new PrintTemplate({ template: cloneTemplate(prepared) });
-  installHeaderMergeRuntime(inst, prepared);
+  const inst = await createDocumentPrint(prepared, enriched);
   applyPrintPageSizeFromTemplate(prepared);
   paperHint.value = describePrintPaper(readTemplatePaperSpec(prepared));
   dialogWidth.value = previewDialogWidthCss(
@@ -275,12 +277,11 @@ async function onExportPdf() {
       /** 遗留 paperType 会让 jsPDF 忽略自定义 width/height，必须以毫米尺寸为准。 */
       delete panel.paperType;
     }
-    const { PrintTemplate } = await ensureHiprint();
-    const pdfTemplate = new PrintTemplate({
-      template: cloneTemplate(exactPaperTemplate),
-    });
-    installHeaderMergeRuntime(pdfTemplate, exactPaperTemplate);
     const renderData = (templateInst as any).__agreePrintData || data;
+    const pdfTemplate = await createDocumentPrint(
+      exactPaperTemplate,
+      renderData,
+    );
     const filename = safePdfFilename(data, exactPaperTemplate);
     const blob = await createPdfBlob(pdfTemplate, renderData, filename);
     downloadPdfBlob(blob, filename);

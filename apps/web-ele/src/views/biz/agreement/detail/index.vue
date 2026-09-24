@@ -1,10 +1,13 @@
 <script lang="ts" setup>
-import type { FcRuleMap } from '../fc/types';
-import type { AgreeModuleLayoutItem, AgreeModuleMount } from '../module-access';
+import type {
+  AgreeModuleLayoutItem,
+  AgreeModuleMount,
+} from '../access/module-access';
 import type {
   BasicModuleInnerConfig,
   ModuleInnerConfig,
-} from '../module-inner-config';
+} from '../config/module-inner-config';
+import type { FcRuleMap } from '../fc/types';
 /**
  * 协议签约详情：默认浏览；顶栏「切换到编辑」后整页可改
  * 浏览为表单文字 + 展示表；编辑为控件 + 行抽屉；全部保存一次提交
@@ -42,22 +45,29 @@ import {
   saveAgreementModule,
   submitAgreement,
 } from '#/api';
+import { hasWorkflowRuntimeAccess } from '#/api/workflow-runtime';
 
-import { canOperateAgreeAction } from '../actions';
-import { cloneJson } from '../clone';
-import { buildDefaultFcRuleMap } from '../fc/default-rules';
-import { buildAgreementDetail } from '../mock-data';
 import {
   isCustomAgreeModule,
   resolveAgreeModulesForPage,
-} from '../module-access';
+} from '../access/module-access';
+import {
+  useProvideAgreeDetailEditable,
+  useProvideAgreeFieldRules,
+} from '../access/use-field-access';
+import { canOperateAgreeAction } from '../actions';
+import { cloneJson } from '../clone';
 import {
   buildDefaultBasicModuleInner,
   buildDefaultCompensationModuleInner,
   buildDefaultHousesModuleInner,
   buildDefaultPopulationModuleInner,
   buildDefaultRewardsModuleInner,
-} from '../module-inner-config';
+} from '../config/module-inner-config';
+import { loadAgreeDetailPageConfig } from '../config/resolve-runtime';
+import { getAgreeListPathByScene } from '../config/scene-paths';
+import { buildAgreementDetail } from '../data/mock-data';
+import { buildDefaultFcRuleMap } from '../fc/default-rules';
 import BasicModule from '../modules/basic-module.vue';
 import CompensationModule from '../modules/compensation-module.vue';
 import CustomFormModule from '../modules/custom-form-module.vue';
@@ -65,12 +75,6 @@ import CustomTableModule from '../modules/custom-table-module.vue';
 import HousesModule from '../modules/houses-module.vue';
 import PopulationModule from '../modules/population-module.vue';
 import RewardsModule from '../modules/rewards-module.vue';
-import { loadAgreeDetailPageConfig } from '../resolve-runtime';
-import { getAgreeListPathByScene } from '../scene-paths';
-import {
-  useProvideAgreeDetailEditable,
-  useProvideAgreeFieldRules,
-} from '../use-field-access';
 
 /** 顶栏摘要卡：指标 + 点击后切到的模块 */
 interface SummaryCardItem {
@@ -801,6 +805,17 @@ watch(
           </div>
         </div>
         <div class="flex flex-wrap gap-2">
+          <ElButton
+            v-if="hasWorkflowRuntimeAccess(accessStore.accessCodes, 'start')"
+            @click="
+              router.push({
+                path: '/workflow',
+                query: { agreementNo },
+              })
+            "
+            >
+发起配置流程
+</ElButton>
           <template v-if="!isEditing">
             <ElButton
               v-if="canEnterEdit"

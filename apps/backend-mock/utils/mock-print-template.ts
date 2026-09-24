@@ -140,10 +140,11 @@ function ensureBuiltinPrintTemplates() {
     }
     const patchedQr = patchTemplateQrcode(cur.templateJson, seed.templateJson);
     const patchedBox = patchDesignTableBoxes(patchedQr);
-    if (patchedBox !== cur.templateJson) {
+    const patchedAlign = patchTableCellAlignCenter(patchedBox);
+    if (patchedAlign !== cur.templateJson) {
       printTemplateStore[idx] = {
         ...cur,
-        templateJson: patchedBox,
+        templateJson: patchedAlign,
         updatedAt: new Date().toISOString(),
       };
       changed = true;
@@ -220,6 +221,38 @@ function patchDesignTableBoxes(current: Record<string, any>) {
     if (String(o.title || '').includes('征收人盖章')) o.top = 650;
   }
   return next;
+}
+
+/**
+ * 内置模板表格单元格统一水平居中；已是居中则不写盘
+ * @param current 当前 templateJson
+ */
+function patchTableCellAlignCenter(current: Record<string, any>) {
+  let changed = false;
+  const next = structuredClone(current);
+  for (const panel of next?.panels || []) {
+    for (const el of panel.printElements || []) {
+      if (el?.printElementType?.type !== 'table') continue;
+      const rows = el.options?.columns;
+      if (!Array.isArray(rows)) continue;
+      for (const row of rows) {
+        if (!Array.isArray(row)) {
+          if (row && row.align !== 'center') {
+            row.align = 'center';
+            changed = true;
+          }
+          continue;
+        }
+        for (const cell of row) {
+          if (cell && cell.align !== 'center') {
+            cell.align = 'center';
+            changed = true;
+          }
+        }
+      }
+    }
+  }
+  return changed ? next : current;
 }
 
 function hydratePrintTemplateFromDisk() {

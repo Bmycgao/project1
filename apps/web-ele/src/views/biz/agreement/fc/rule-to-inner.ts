@@ -6,7 +6,7 @@ import type {
   ModuleInnerControlType,
   ModuleInnerFieldItem,
   ModuleInnerSection,
-} from '../module-inner-config';
+} from '../config/module-inner-config';
 import type { FcRule } from './types';
 
 import { isFcRule } from './types';

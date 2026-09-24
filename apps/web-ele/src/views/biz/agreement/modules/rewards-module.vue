@@ -1,12 +1,12 @@
 <script lang="ts" setup>
 import type { Ref } from 'vue';
 
-import type { FcRuleMap } from '../fc/types';
 import type {
   ModuleInnerConfig,
   ModuleInnerFieldItem,
   ModuleInnerSection,
-} from '../module-inner-config';
+} from '../config/module-inner-config';
+import type { FcRuleMap } from '../fc/types';
 /**
  * 奖励补贴：浏览只读表；有权限时抽屉新增/编辑行
  */
@@ -24,17 +24,17 @@ import {
   ElTableColumn,
 } from 'element-plus';
 
+import { useAgreeFieldAccess } from '../access/use-field-access';
 import { cloneJson } from '../clone';
 import ModuleFormControl from '../components/module-form-control.vue';
 import SectionCard from '../components/section-card.vue';
-import { buildSectionFromFcTable } from '../fc/rule-to-inner';
-import { isFcRule } from '../fc/types';
 import {
   normalizeRewardsModuleInner,
   resolveEnabledFields,
   resolveEnabledSections,
-} from '../module-inner-config';
-import { useAgreeFieldAccess } from '../use-field-access';
+} from '../config/module-inner-config';
+import { buildSectionFromFcTable } from '../fc/rule-to-inner';
+import { isFcRule } from '../fc/types';
 
 const props = defineProps<{
   canEdit?: boolean;

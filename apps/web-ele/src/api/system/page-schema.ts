@@ -56,8 +56,10 @@ export namespace PageSchemaApi {
       label: string;
       type?: string;
     }[];
-    /** 场景数据范围：允许的状态值（后端可按 scene 或本字段过滤） */
+    /** 场景数据范围：允许的状态值。空数组表示不过滤 */
     statusIn?: string[];
+    /** 读接口标记：场景列来自表头模板，库里没有单独保存列 */
+    columnsInherited?: boolean;
     /** 字段显隐/可编辑规则（通常配在列模板上，场景继承） */
     fieldRules?: {
       /** 展示格式：金额/日期等 */

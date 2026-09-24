@@ -2,14 +2,14 @@
 import type {
   AgreeModuleMeta,
   AgreeModuleWidgetKind,
-} from '../../../biz/agreement/module-access';
+} from '../../../biz/agreement/access/module-access';
 import type {
   ModuleInnerCellType,
   ModuleInnerConfig,
   ModuleInnerControlType,
   ModuleInnerFieldItem,
   ModuleInnerSection,
-} from '../../../biz/agreement/module-inner-config';
+} from '../../../biz/agreement/config/module-inner-config';
 /**
  * 协议详情设计器：组装模块（挂载/排序），每块选择 FormCreate 模板
  */
@@ -43,17 +43,12 @@ import {
 import { getFcSchemaList } from '#/api';
 
 import {
-  buildSectionFromFcForm,
-  buildSectionFromFcTable,
-} from '../../../biz/agreement/fc/rule-to-inner';
-import { isFcRule } from '../../../biz/agreement/fc/types';
-import {
   AGREE_DETAIL_MODULES,
   createCustomAgreeModule,
   inferCustomWidgetKind,
   isCustomAgreeModule,
   metaFromMount,
-} from '../../../biz/agreement/module-access';
+} from '../../../biz/agreement/access/module-access';
 import {
   buildDefaultCustomFormInner,
   buildDefaultCustomTableInner,
@@ -65,7 +60,12 @@ import {
   resolveEnabledSections,
   snapFieldSpan,
   TABLE_CELL_OPTIONS,
-} from '../../../biz/agreement/module-inner-config';
+} from '../../../biz/agreement/config/module-inner-config';
+import {
+  buildSectionFromFcForm,
+  buildSectionFromFcTable,
+} from '../../../biz/agreement/fc/rule-to-inner';
+import { isFcRule } from '../../../biz/agreement/fc/types';
 
 const layouts = defineModel<ModuleLayoutEditRow[]>('layouts', {
   required: true,
@@ -1215,11 +1215,13 @@ watch(
           <span class="text-xs font-semibold">XY-2024-0025</span>
           <ElTag size="small" type="warning">待复核</ElTag>
           <span class="ml-auto text-[11px] text-gray-400">
-            {{ designerStep === 'assemble' ? '组装预览' : '模块预览' }}
+            示意，不是某条真实协议
           </span>
         </div>
         <div v-if="designerStep === 'assemble'" class="canvas-summary">
-          <div v-for="n in 4" :key="n" class="summary-mini">指标 {{ n }}</div>
+          <div v-for="n in 4" :key="n" class="summary-mini">
+            示意指标 {{ n }}
+          </div>
         </div>
 
         <nav
@@ -1252,7 +1254,7 @@ watch(
             :class="{ 'is-selected': selectedKey === row.key }"
             @click="selectBlock(row.key)"
           >
-            <div class="min-w-0 flex-1">
+            <div class="assemble-card__main">
               <div class="flex items-center gap-1">
                 <span class="text-xs font-semibold">
                   {{ metaOf(row.key)?.label || row.label }}
@@ -1270,7 +1272,7 @@ watch(
             </div>
             <ElSelect
               :model-value="bindingOf(row.key)"
-              class="w-[180px]"
+              class="assemble-card__select"
               placeholder="选择模板"
               size="small"
               filterable
@@ -1309,13 +1311,11 @@ watch(
               class="fc-basic-hint mb-3 rounded-md border border-dashed border-blue-200 bg-blue-50/60 px-3 py-3 text-xs text-gray-600"
             >
               <div class="mb-1 font-medium text-gray-800">
-                基础信息表单请用「FC 表单模板」绑定
+                基础信息的字段在「表单模板」里改
               </div>
               <div>
-                拖拽控件、改
-                label/占宽后点「保存到本场景」，再点页面配置「确认」落库；详情页用
-                详情页按 fcBindings / FormCreate rule 渲染
-                渲染。此处仅可管理下方自定义子表（若有）。
+                在这里选择要用哪一套表单模板。字段的增删和占宽，请到系统管理 →
+                表单模板里调整，再回到本页点确认保存。
               </div>
             </div>
             <div
@@ -1859,7 +1859,7 @@ watch(
   display: grid;
   grid-template-columns: 190px minmax(0, 1fr) 280px;
   gap: 10px;
-  min-height: 580px;
+  min-height: 640px;
 }
 
 .designer-pane {
@@ -1921,13 +1921,28 @@ watch(
 
 .assemble-card {
   display: flex;
-  gap: 8px;
+  gap: 12px;
   align-items: center;
   padding: 10px 12px;
   cursor: pointer;
   background: #fff;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
+}
+
+.assemble-card__main {
+  flex: 1 1 auto;
+  min-width: 140px;
+}
+
+.assemble-card__select {
+  flex: 0 0 200px;
+  width: 200px;
+}
+
+.assemble-card :deep(.el-select) {
+  width: 200px;
+  max-width: 100%;
 }
 
 .assemble-card.is-selected {

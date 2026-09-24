@@ -6,6 +6,7 @@
     <title>FormCreate Designer</title>
     <!-- 使用 public/vendor 本地包，与主应用样式完全隔离 -->
     <link rel="stylesheet" href="./vendor/fc/element-plus.css" />
+    <link rel="stylesheet" href="./fc-designer-theme.css" />
     <style>
       html,
       body,
@@ -15,7 +16,8 @@
         margin: 0;
         padding: 0;
         overflow: hidden;
-        background: #fff;
+        background: var(--el-bg-color, #fff);
+        color: var(--el-text-color-primary, #303133);
       }
       .fc-embed-error {
         padding: 24px;
@@ -463,9 +465,29 @@
               copyText(jsonDialog.value.content || '');
             }
 
+            /**
+             * 把主应用传来的明暗模式和 Element Plus 变量写到本页
+             * @param {{ dark?: boolean, vars?: Record<string, string> }} data 主题
+             */
+            function applyHostTheme(data) {
+              const root = document.documentElement;
+              const dark = !!(data && data.dark);
+              root.classList.add('fc-themed');
+              root.classList.toggle('dark', dark);
+              root.style.colorScheme = dark ? 'dark' : 'light';
+              const vars = (data && data.vars) || {};
+              Object.keys(vars).forEach(function (key) {
+                if (key.indexOf('--el-') !== 0) return;
+                root.style.setProperty(key, String(vars[key]));
+              });
+            }
+
             function onMessage(event) {
               const data = event.data;
               if (!data || data.source !== 'fc-designer-host') return;
+              if (data.type === 'fc-theme') {
+                applyHostTheme(data);
+              }
               if (data.type === 'fc-init' || data.type === 'fc-set-rule') {
                 const raw =
                   data.ruleJson != null ? data.ruleJson : data.rule;
