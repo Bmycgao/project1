@@ -33,6 +33,7 @@ export interface ModuleLayoutEditRow {
   enabled: boolean;
   order: number;
   span: number;
+  region?: 'content' | 'tabs';
   /** 表单 / 表格 */
   widgetKind?: 'form' | 'table';
   /** 配置台新建 */
@@ -156,10 +157,9 @@ watch(
 <template>
   <div class="module-layout-editor mb-4">
     <p class="mb-2 text-xs text-gray-500">
-      <strong>可视化布局（可拖拽）：</strong
-      >拖动手柄调整详情模块顺序；下拉改占比（24 栅格预览）。点「挂上 /
+      <strong>可视化布局（可拖拽）：</strong>拖动手柄调整详情模块顺序；下拉改占比（24 栅格预览）。点「挂上 /
       卸下」控制本场景是否展示。
-      详情页：基础信息固定在上方，其余模块按此处顺序显示在 Tab 中。
+      详情页按模块配置的内容区／标签页区展示；区域和模板请在详情视图设计器中设置。
     </p>
 
     <div class="mb-2 flex items-center justify-between text-xs text-gray-500">

@@ -32,6 +32,8 @@ export interface AgreeModuleMount {
    * 栅格占比（24 栅格）：24 整行 / 16 约 2/3 / 12 半宽 / 8 约 1/3
    */
   span?: number;
+  /** 内容区直接展开，标签区按页签查看；旧配置沿用基础信息置顶 */
+  region?: 'content' | 'tabs';
   /** 自定义组件显示名 */
   label?: string;
   /** 自定义组件说明 */
@@ -48,6 +50,18 @@ export interface AgreeModuleMount {
 export interface AgreeModuleLayoutItem extends AgreeModuleMeta {
   order: number;
   span: number;
+  region: 'content' | 'tabs';
+}
+
+export function normalizeModuleRegion(
+  key: string,
+  region?: string,
+): 'content' | 'tabs' {
+  return region === 'content' || region === 'tabs'
+    ? region
+    : key === 'basic'
+      ? 'content'
+      : 'tabs';
 }
 
 /** 占比下拉选项（配置台 / 说明共用） */
@@ -161,7 +175,8 @@ export function createCustomAgreeModule(opts: {
  */
 export function metaFromMount(mount: AgreeModuleMount): AgreeModuleMeta {
   const builtin = AGREE_DETAIL_MODULES.find((m) => m.key === mount.key);
-  if (builtin) return builtin;
+  if (builtin)
+    return { ...builtin, label: mount.label?.trim() || builtin.label };
   const widgetKind =
     mount.widgetKind || inferCustomWidgetKind(String(mount.key));
   return {
@@ -250,8 +265,9 @@ export function normalizeAgreeModuleMounts(
       enabled: raw ? raw.enabled !== false : inherited,
       order,
       span: normalizeModuleSpan(raw?.span),
+      region: normalizeModuleRegion(meta.key, raw?.region),
       widgetKind: meta.widgetKind,
-      label: meta.label,
+      label: raw?.label?.trim() || meta.label,
       desc: meta.desc,
       authCode: meta.authCode,
       custom: false,
@@ -274,6 +290,7 @@ export function normalizeAgreeModuleMounts(
             ? item.order
             : 500 + (index + 1) * 10,
         span: normalizeModuleSpan(item.span),
+        region: normalizeModuleRegion(item.key, item.region),
         label: item.label || '自定义组件',
         desc:
           item.desc || (widgetKind === 'table' ? '自定义表格' : '自定义表单'),
@@ -297,8 +314,7 @@ export function resolveMountedModuleKeys(
     .filter((m) => m.enabled)
     .toSorted((a, b) => (a.order ?? 0) - (b.order ?? 0))
     .map((m) => m.key);
-  // 全关时兜底基础信息，避免详情空白
-  return keys.length > 0 ? keys : (['basic'] as AgreementModuleKey[]);
+  return keys;
 }
 
 /**
@@ -350,10 +366,6 @@ export function resolveAgreeModulesForPage(
   const enabledKeys = new Set(
     normalized.filter((m) => m.enabled).map((m) => m.key),
   );
-  // 全关兜底
-  if (enabledKeys.size === 0) {
-    enabledKeys.add('basic');
-  }
 
   const result: AgreeModuleLayoutItem[] = [];
   for (const mount of normalized) {
@@ -364,6 +376,7 @@ export function resolveAgreeModulesForPage(
       ...meta,
       order: mount.order ?? 0,
       span: normalizeModuleSpan(mount.span),
+      region: normalizeModuleRegion(mount.key, mount.region),
     });
   }
   return result.toSorted((a, b) => a.order - b.order);

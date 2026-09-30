@@ -5,6 +5,7 @@ import type {
   WorkflowIssue,
   WorkflowOptions,
 } from './model';
+
 import {
   computed,
   nextTick,
@@ -21,7 +22,9 @@ import {
   useRoute,
   useRouter,
 } from 'vue-router';
+
 import { Page } from '@vben/common-ui';
+
 import {
   ElButton,
   ElEmpty,
@@ -29,26 +32,31 @@ import {
   ElMessageBox,
   ElTag,
 } from 'element-plus';
+
 import {
+  createWorkflowVersion,
   getWorkflow,
   getWorkflowOptions,
   updateWorkflow,
-  createWorkflowVersion,
 } from '#/api/system/workflow';
+
+import FlowCanvas from './flow-canvas.vue';
+import Inspector from './inspector.vue';
 import {
-  NODE_LABELS,
+  applyImportedWorkflow,
   createDocument,
   createNode,
   documentOf,
+  downloadWorkflowJson,
+  effectiveWorkflowDetailViewId,
   newId,
+  NODE_LABELS,
+  readWorkflowJsonFile,
   sampleGraph,
   validateWorkflow,
-  applyImportedWorkflow,
-  downloadWorkflowJson,
-  readWorkflowJsonFile,
+  workflowNodeDetailMode,
+  workflowNodeSupplementFormId,
 } from './model';
-import FlowCanvas from './flow-canvas.vue';
-import Inspector from './inspector.vue';
 import PublicationDialog from './publication-dialog.vue';
 
 const route = useRoute();
@@ -173,7 +181,7 @@ function travel(offset: number) {
   if (!node.value) selectedNode.value = '';
   if (!edge.value) selectedEdge.value = '';
 }
-function select(kind: 'node' | 'edge' | 'none', id: string) {
+function select(kind: 'edge' | 'node' | 'none', id: string) {
   flushHistory();
   selectedNode.value = kind === 'node' ? id : '';
   selectedEdge.value = kind === 'edge' ? id : '';
@@ -217,19 +225,40 @@ async function load(id: string) {
 }
 function check() {
   const result = validateWorkflow(doc.value);
-  if (!optionsLoaded.value)
-    result.push({
-      message: '可选资源尚未加载，暂时无法校验表单和办理人引用，请重试',
-    });
-  else
+  if (optionsLoaded.value) {
+    if (
+      doc.value.defaultDetailViewId &&
+      !options.value.views.some(
+        (view) =>
+          view.type === 'page' && view.id === doc.value.defaultDetailViewId,
+      )
+    )
+      result.push({ message: '流程默认办理详情视图已失效' });
     for (const n of doc.value.nodes) {
+      const mode = workflowNodeDetailMode(n);
+      const pageId = effectiveWorkflowDetailViewId(doc.value, n);
+      const supplementId = workflowNodeSupplementFormId(n);
       if (
-        n.form.id &&
+        mode !== 'formOnly' &&
+        pageId &&
         !options.value.views.some(
-          (v) => v.id === n.form.id && v.type === n.form.type,
+          (view) => view.id === pageId && view.type === 'page',
         )
       )
-        result.push({ nodeId: n.id, message: `${n.name}：绑定表单已失效` });
+        result.push({
+          nodeId: n.id,
+          message: `${n.name}：办理详情视图已失效`,
+        });
+      if (
+        supplementId &&
+        !options.value.views.some(
+          (view) => view.id === supplementId && view.type === 'form',
+        )
+      )
+        result.push({
+          nodeId: n.id,
+          message: `${n.name}：节点表单已失效`,
+        });
       const pool =
         n.assignee.type === 'role'
           ? options.value.roles
@@ -241,6 +270,11 @@ function check() {
       if (pool && n.assignee.ids.some((id) => !pool.some((p) => p.id === id)))
         result.push({ nodeId: n.id, message: `${n.name}：办理人引用已失效` });
     }
+  } else {
+    result.push({
+      message: '可选资源尚未加载，暂时无法校验表单和办理人引用，请重试',
+    });
+  }
   issues.value = result;
   checked.value = true;
   validationStale.value = false;
@@ -248,7 +282,7 @@ function check() {
 }
 function runCheck() {
   const result = check();
-  if (!result.length)
+  if (result.length === 0)
     ElMessage.success('结构与绑定校验通过，条件表达式语义将在服务端接入后校验');
 }
 async function save() {
@@ -380,7 +414,7 @@ async function removeSelection() {
 }
 function duplicate() {
   if (readOnly.value) return;
-  if (!node.value || ['start', 'end'].includes(node.value.type)) return;
+  if (!node.value || ['end', 'start'].includes(node.value.type)) return;
   if (doc.value.nodes.length >= 200) {
     ElMessage.warning('节点数量已达上限');
     return;
@@ -584,26 +618,26 @@ onBeforeUnmount(() => {
       @locate="locate"
     />
     <div v-loading="loading" class="designer">
-      <ElEmpty v-if="loadError" description="流程加载失败，请重试"
-        ><ElButton type="primary" @click="load(String(route.params.id))"
-          >重新加载</ElButton
-        ><ElButton @click="router.push('/system/workflow')"
-          >返回列表</ElButton
-        ></ElEmpty
-      >
+      <ElEmpty v-if="loadError" description="流程加载失败，请重试">
+<ElButton type="primary" @click="load(String(route.params.id))">
+重新加载
+</ElButton><ElButton @click="router.push('/system/workflow')">
+返回列表
+</ElButton>
+</ElEmpty>
       <template v-else-if="!loading">
         <header class="designer-header">
           <div class="title-area">
-            <ElButton text @click="router.push('/system/workflow')"
-              >← 返回</ElButton
-            >
+            <ElButton text @click="router.push('/system/workflow')">
+← 返回
+</ElButton>
             <div>
               <div class="title-line">
                 <h1>{{ doc.name || '未命名流程' }}</h1>
-                <ElTag type="info" size="small"
-                  >V{{ version }} ·
-                  {{ readOnly ? '已发布快照' : '草稿' }}</ElTag
-                >
+                <ElTag type="info" size="small">
+V{{ version }} ·
+                  {{ readOnly ? '已发布快照' : '草稿' }}
+</ElTag>
               </div>
               <p>
                 {{ doc.code }} · {{ doc.base
@@ -616,38 +650,40 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <div class="toolbar">
-            <ElButton :disabled="!doc.nodes.length" @click="printChart"
-              >打印</ElButton
-            >
-            <template v-if="!readOnly"
-              ><ElButton
+            <ElButton :disabled="!doc.nodes.length" @click="printChart">
+打印
+</ElButton>
+            <template v-if="!readOnly">
+<ElButton
                 :disabled="historyIndex === 0 && !pendingHistory"
                 title="Ctrl+Z"
                 @click="travel(-1)"
-                >撤销</ElButton
-              ><ElButton
+                >
+撤销
+</ElButton><ElButton
                 :disabled="historyIndex >= history.length - 1"
                 title="Ctrl+Shift+Z"
                 @click="travel(1)"
-                >重做</ElButton
-              ><ElButton @click="select('none', '')">流程属性</ElButton
-              ><ElButton @click="runCheck">校验流程</ElButton
-              ><ElButton
+                >
+重做
+</ElButton><ElButton @click="select('none', '')">流程属性</ElButton><ElButton @click="runCheck">校验流程</ElButton><ElButton
                 type="primary"
                 :loading="saving"
                 title="Ctrl+S"
                 @click="save"
-                >保存草稿</ElButton
-              ></template
-            ><ElButton
+                >
+保存草稿
+</ElButton>
+</template><ElButton
               v-if="!readOnly"
               type="success"
               :disabled="saving"
               @click="openPublication"
-              >发布</ElButton
-            ><ElButton v-else type="primary" @click="newVersion"
-              >新建版本</ElButton
-            >
+              >
+发布
+</ElButton><ElButton v-else type="primary" @click="newVersion">
+新建版本
+</ElButton>
           </div>
         </header>
         <div class="designer-body">
@@ -674,23 +710,22 @@ onBeforeUnmount(() => {
                       : type === 'approve'
                         ? '✓'
                         : '▤'
-              }}</i
-              ><span>{{ label }}</span>
+              }}</i><span>{{ label }}</span>
             </button>
             <div class="palette-guide">
-              <b>配置一条流程</b><span>1. 添加节点并连线</span
-              ><span>2. 配置办理人和表单</span><span>3. 校验后保存草稿</span>
+              <b>配置一条流程</b><span>1. 添加节点并连线</span><span>2. 配置办理人和表单</span><span>3. 校验后保存草稿</span>
             </div>
-            <ElButton size="small" :disabled="readOnly" @click="useSample"
-              >载入审核示例</ElButton
-            >
+            <ElButton size="small" :disabled="readOnly" @click="useSample">
+载入审核示例
+</ElButton>
             <ElButton size="small" @click="exportJson">导出 JSON</ElButton>
             <ElButton
               size="small"
               :disabled="readOnly"
               @click="jsonFile?.click()"
-              >导入 JSON</ElButton
-            >
+              >
+导入 JSON
+</ElButton>
             <input
               ref="jsonFile"
               type="file"
@@ -726,10 +761,9 @@ onBeforeUnmount(() => {
                     : issues.length
                       ? `发现 ${issues.length} 项问题`
                       : '结构与绑定校验通过'
-                }}</b
-                ><ElButton link size="small" @click="checked = false"
-                  >收起</ElButton
-                >
+                }}</b><ElButton link size="small" @click="checked = false">
+收起
+</ElButton>
               </div>
               <p v-if="!issues.length">
                 条件表达式的语义和分支互斥性尚待服务端验证；保存仅更新草稿。
@@ -740,8 +774,7 @@ onBeforeUnmount(() => {
                   :key="i"
                   @click="locate(issue)"
                 >
-                  <span>{{ i + 1 }}</span
-                  >{{ issue.message }}<b>定位 →</b>
+                  <span>{{ i + 1 }}</span>{{ issue.message }}<b>定位 →</b>
                 </button>
               </div>
             </div>

@@ -1,8 +1,5 @@
 <script lang="ts" setup>
-import type {
-  AgreeModuleLayoutItem,
-  AgreeModuleMount,
-} from '../access/module-access';
+import type { AgreeModuleMount } from '../access/module-access';
 import type {
   BasicModuleInnerConfig,
   ModuleInnerConfig,
@@ -14,15 +11,7 @@ import type { FcRuleMap } from '../fc/types';
  */
 import type { AgreementDetail, AgreementModuleKey } from '../types';
 
-import {
-  computed,
-  nextTick,
-  onBeforeUnmount,
-  onMounted,
-  provide,
-  ref,
-  watch,
-} from 'vue';
+import { computed, provide, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import { Page } from '@vben/common-ui';
@@ -30,9 +19,6 @@ import { useAccessStore } from '@vben/stores';
 
 import {
   ElButton,
-  ElDropdown,
-  ElDropdownItem,
-  ElDropdownMenu,
   ElEmpty,
   ElMessage,
   ElMessageBox,
@@ -57,6 +43,8 @@ import {
 } from '../access/use-field-access';
 import { canOperateAgreeAction } from '../actions';
 import { cloneJson } from '../clone';
+import DetailLayout from '../components/detail-layout.vue';
+import DetailModule from '../components/detail-module.vue';
 import {
   buildDefaultBasicModuleInner,
   buildDefaultCompensationModuleInner,
@@ -68,13 +56,6 @@ import { loadAgreeDetailPageConfig } from '../config/resolve-runtime';
 import { getAgreeListPathByScene } from '../config/scene-paths';
 import { buildAgreementDetail } from '../data/mock-data';
 import { buildDefaultFcRuleMap } from '../fc/default-rules';
-import BasicModule from '../modules/basic-module.vue';
-import CompensationModule from '../modules/compensation-module.vue';
-import CustomFormModule from '../modules/custom-form-module.vue';
-import CustomTableModule from '../modules/custom-table-module.vue';
-import HousesModule from '../modules/houses-module.vue';
-import PopulationModule from '../modules/population-module.vue';
-import RewardsModule from '../modules/rewards-module.vue';
 
 /** 顶栏摘要卡：指标 + 点击后切到的模块 */
 interface SummaryCardItem {
@@ -161,33 +142,11 @@ const dirtyMap = ref<Record<string, boolean>>({});
 /** 是否有未保存改动 */
 const hasDirty = computed(() => Object.values(dirtyMap.value).some(Boolean));
 
-const basicRef = ref<InstanceType<typeof BasicModule>>();
-const housesRef = ref<InstanceType<typeof HousesModule>>();
-const compensationRef = ref<InstanceType<typeof CompensationModule>>();
-const rewardsRef = ref<InstanceType<typeof RewardsModule>>();
-const populationRef = ref<InstanceType<typeof PopulationModule>>();
-const customApis = ref<
-  Record<string, { getValues: () => any; validate: () => Promise<boolean> }>
->({});
-
-/**
- * 绑定自定义模块组件实例
- * 注意：ref 回调在每次更新都会触发，若每次都 new 对象会触发「Maximum recursive updates」
- * @param key 模块
- * @param el 组件实例
- */
-function bindCustomApi(key: string, el: any) {
-  if (el) {
-    // 同一实例重复回调时直接跳过，避免 Recursive updates
-    if (customApis.value[key] === el) return;
-    customApis.value[key] = el;
-    return;
-  }
-  if (!(key in customApis.value)) return;
-  const next = { ...customApis.value };
-  customApis.value = Object.fromEntries(
-    Object.entries(next).filter(([k]) => k !== key),
-  );
+const layoutRef = ref<InstanceType<typeof DetailLayout>>();
+const moduleApis = new Map<string, InstanceType<typeof DetailModule>>();
+function bindModuleApi(key: string, el: any) {
+  if (el) moduleApis.set(key, el);
+  else moduleApis.delete(key);
 }
 
 /** 当前胶囊选中的模块（含基础信息） */
@@ -205,55 +164,9 @@ const visibleModules = computed(() =>
   resolveAgreeModulesForPage(moduleMounts.value, accessStore.accessCodes),
 );
 
-/** 明细 Tab（基础信息固定在上方，不进胶囊） */
 const tabModules = computed(() =>
-  visibleModules.value.filter((m) => m.key !== 'basic'),
+  visibleModules.value.filter((m) => m.region === 'tabs'),
 );
-
-/** 主胶囊：内置模块（房屋/补偿/奖励/人口） */
-const primaryTabModules = computed(() =>
-  tabModules.value.filter((m) => !isCustomAgreeModule(String(m.key))),
-);
-
-/** 「更多」：配置台自定义模块 */
-const moreTabModules = computed(() =>
-  tabModules.value.filter((m) => isCustomAgreeModule(String(m.key))),
-);
-
-/** 是否展示基础信息块 */
-const showBasicBlock = computed(() => isModuleShown('basic'));
-
-/** 配置台新建的表单模块 */
-const customFormModules = computed(() =>
-  tabModules.value.filter(
-    (m) => isCustomAgreeModule(String(m.key)) && m.widgetKind === 'form',
-  ),
-);
-
-/** 配置台新建的表格模块 */
-const customTableModules = computed(() =>
-  tabModules.value.filter(
-    (m) => isCustomAgreeModule(String(m.key)) && m.widgetKind === 'table',
-  ),
-);
-
-/** 当前展示的模块元数据（明细 Tab） */
-const currentModule = computed<AgreeModuleLayoutItem | undefined>(() =>
-  tabModules.value.find((m) => m.key === activeModule.value),
-);
-
-/** 当前 Tab 是否属于「更多」里的自定义 */
-const activeInMore = computed(() =>
-  moreTabModules.value.some((m) => m.key === activeModule.value),
-);
-
-/**
- * 当前 Tab 右侧是否显示「保存本模块」（编辑态且本块有改动时的次入口）
- */
-const showPaneSave = computed(() => {
-  if (!isEditing.value || !currentModule.value) return false;
-  return moduleDirty(currentModule.value.key);
-});
 
 /** 顶栏摘要指标（可点击跳转对应模块） */
 const summaryCards = computed<SummaryCardItem[]>(() => {
@@ -291,7 +204,7 @@ const summaryCards = computed<SummaryCardItem[]>(() => {
     {
       key: 'items',
       label: '补偿/奖励项',
-      value: `${d.compensationItems?.length ?? 0}/${d.rewardItems?.length ?? 0}`,
+      value: `${isModuleShown('compensation') ? (d.compensationItems?.length ?? 0) : '—'}/${isModuleShown('rewards') ? (d.rewardItems?.length ?? 0) : '—'}`,
       tone: 'green',
       target: isModuleShown('compensation')
         ? 'compensation'
@@ -299,7 +212,7 @@ const summaryCards = computed<SummaryCardItem[]>(() => {
           ? 'rewards'
           : undefined,
     },
-  ];
+  ].filter((card) => card.target);
 });
 
 /** 模块是否在当前页展示 */
@@ -339,106 +252,8 @@ function isSummaryActive(card: SummaryCardItem) {
   return card.target === activeModule.value;
 }
 
-watch(
-  tabModules,
-  (list) => {
-    if (list.length === 0) return;
-    if (!list.some((m) => m.key === activeModule.value)) {
-      const first = list[0];
-      if (first) activeModule.value = first.key;
-    }
-    nextTick(() => updatePillsScrollState());
-  },
-  { immediate: true },
-);
-
-/** 胶囊滚动容器 */
-const pillsRef = ref<HTMLElement | null>(null);
-/** 是否可向左滚 */
-const canScrollLeft = ref(false);
-/** 是否可向右滚 */
-const canScrollRight = ref(false);
-
-/**
- * 根据滚动位置更新左右箭头显隐（仅在值变化时写入，避免箭头占位抖动死循环）
- */
-function updatePillsScrollState() {
-  const el = pillsRef.value;
-  if (!el) {
-    if (canScrollLeft.value) canScrollLeft.value = false;
-    if (canScrollRight.value) canScrollRight.value = false;
-    return;
-  }
-  const max = el.scrollWidth - el.clientWidth;
-  const left = el.scrollLeft > 2;
-  const right = max > 2 && el.scrollLeft < max - 2;
-  if (canScrollLeft.value !== left) canScrollLeft.value = left;
-  if (canScrollRight.value !== right) canScrollRight.value = right;
-}
-
-/**
- * 横向滚动胶囊列表
- * @param dir -1 向左 / 1 向右
- */
-function scrollPills(dir: -1 | 1) {
-  const el = pillsRef.value;
-  if (!el) return;
-  const step = Math.max(160, Math.floor(el.clientWidth * 0.6));
-  el.scrollBy({ left: dir * step, behavior: 'smooth' });
-}
-
-/**
- * 把当前激活胶囊滚进可视区
- */
-function scrollActivePillIntoView() {
-  const root = pillsRef.value;
-  if (!root) return;
-  const active = root.querySelector(
-    '.agree-pill.is-active',
-  ) as HTMLElement | null;
-  active?.scrollIntoView({
-    behavior: 'smooth',
-    block: 'nearest',
-    inline: 'nearest',
-  });
-  nextTick(() => updatePillsScrollState());
-}
-
-watch(activeModule, () => {
-  nextTick(() => scrollActivePillIntoView());
-});
-
-onMounted(() => {
-  nextTick(() => updatePillsScrollState());
-  window.addEventListener('resize', updatePillsScrollState);
-});
-
-onBeforeUnmount(() => {
-  window.removeEventListener('resize', updatePillsScrollState);
-});
-
-/** 取某模块组件 ref */
 function moduleApi(key: AgreementModuleKey) {
-  switch (key) {
-    case 'basic': {
-      return basicRef.value;
-    }
-    case 'compensation': {
-      return compensationRef.value;
-    }
-    case 'houses': {
-      return housesRef.value;
-    }
-    case 'population': {
-      return populationRef.value;
-    }
-    case 'rewards': {
-      return rewardsRef.value;
-    }
-    default: {
-      return customApis.value[key];
-    }
-  }
+  return moduleApis.get(key);
 }
 
 function moduleDirty(key: AgreementModuleKey) {
@@ -468,20 +283,7 @@ function selectModule(key: AgreementModuleKey) {
     ElMessage.warning('当前场景未挂载或无权限查看该区域');
     return;
   }
-  if (key === 'basic') {
-    nextTick(() => {
-      document
-        .querySelector('#agree-basic-block')
-        ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-    return;
-  }
-  activeModule.value = key;
-  nextTick(() => {
-    document
-      .querySelector('#agree-detail-workspace')
-      ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  });
+  void layoutRef.value?.focusModule(key);
 }
 
 /**
@@ -520,14 +322,6 @@ async function cancelEdit() {
  * @param key 模块
  */
 function focusModule(key: AgreementModuleKey) {
-  if (key === 'basic') {
-    nextTick(() => {
-      document
-        .querySelector('#agree-basic-block')
-        ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-    return;
-  }
   selectModule(key);
 }
 
@@ -579,7 +373,7 @@ async function loadDetail() {
       });
       ElMessage.warning('详情接口暂不可用，已使用本地演示数据');
     }
-    // 基础信息已固定在上方，默认选中下方第一个 Tab，避免内容区全隐藏
+    // 按配置选择第一个标签；内容区模块始终展开。
     const firstTab = tabModules.value[0]?.key;
     if (firstTab) activeModule.value = firstTab;
     clearDirty();
@@ -593,40 +387,16 @@ async function loadDetail() {
 
 async function collectAll(): Promise<AgreementDetail | null> {
   if (!detail.value) return null;
-  const basic = await Promise.resolve(basicRef.value?.getValues());
-  const houses = await Promise.resolve(housesRef.value?.getValues());
-  const compensation = await Promise.resolve(
-    compensationRef.value?.getValues(),
-  );
-  const rewards = await Promise.resolve(rewardsRef.value?.getValues());
-  const population = await Promise.resolve(populationRef.value?.getValues());
-  const extraForms = { ...detail.value.extraForms };
-  const extraTables = { ...detail.value.extraTables };
-  for (const m of customFormModules.value) {
-    const customFormValues = await Promise.resolve(
-      customApis.value[m.key]?.getValues(),
-    );
-    const part = customFormValues?.extraForms;
-    if (part) Object.assign(extraForms, part);
+  const next = cloneJson(detail.value);
+  for (const item of visibleModules.value) {
+    const values = await Promise.resolve(moduleApi(item.key)?.getValues());
+    if (!values) continue;
+    const { extraForms, extraTables, ...fields } = values;
+    Object.assign(next, fields);
+    if (extraForms) next.extraForms = { ...next.extraForms, ...extraForms };
+    if (extraTables) next.extraTables = { ...next.extraTables, ...extraTables };
   }
-  for (const m of customTableModules.value) {
-    const customTableValues = await Promise.resolve(
-      customApis.value[m.key]?.getValues(),
-    );
-    const part = customTableValues?.extraTables;
-    if (part) Object.assign(extraTables, part);
-  }
-
-  return {
-    ...detail.value,
-    ...basic,
-    ...houses,
-    ...compensation,
-    ...rewards,
-    ...population,
-    extraForms,
-    extraTables,
-  } as AgreementDetail;
+  return next;
 }
 
 /**
@@ -813,9 +583,9 @@ watch(
                 query: { agreementNo },
               })
             "
-            >
-发起配置流程
-</ElButton>
+          >
+            发起配置流程
+          </ElButton>
           <template v-if="!isEditing">
             <ElButton
               v-if="canEnterEdit"
@@ -872,208 +642,39 @@ watch(
         </button>
       </div>
 
-      <ElEmpty
-        v-if="!visibleModules.length"
-        description="当前角色无权查看任何详情区域，请在角色管理勾选「区域-*」权限"
-      />
-
-      <!-- 基础信息：固定在上；随整页浏览/编辑切换 -->
-      <section
-        v-if="showBasicBlock"
-        id="agree-basic-block"
-        class="agree-basic-card mb-3"
+      <DetailLayout
+        ref="layoutRef"
+        v-model:active="activeModule"
+        :modules="visibleModules"
       >
-        <div class="agree-basic-card__head">
-          <span class="font-medium text-gray-800">基础信息</span>
-        </div>
-        <div class="agree-basic-card__body">
-          <BasicModule
-            ref="basicRef"
+        <template #badge="{ item }">
+          <span v-if="navBadge(item.key) !== ''" class="nav-badge">{{
+            navBadge(item.key)
+          }}</span>
+          <i v-if="moduleDirty(item.key)" class="dirty-dot" title="未保存"></i>
+        </template>
+        <template #actions="{ item }">
+          <ElButton
+            v-if="isEditing && moduleDirty(item.key)"
+            size="small"
+            type="primary"
+            plain
+            :loading="saving"
+            @click="saveModule(item.key)"
+            >
+保存本模块
+</ElButton>
+        </template>
+        <template #default="{ item }">
+          <DetailModule
+            :ref="(el) => bindModuleApi(item.key, el)"
+            :item="item"
             :detail="detail"
             :editable="isEditing"
-            @dirty="onModuleDirty('basic')"
+            @dirty="onModuleDirty(item.key)"
           />
-        </div>
-      </section>
-
-      <!-- 明细 Tab：主胶囊 + 更多；表格抽屉 / 表单块编辑 -->
-      <section
-        v-if="tabModules.length"
-        id="agree-detail-workspace"
-        class="agree-pane"
-      >
-        <header class="agree-pane-head">
-          <div class="agree-pills-wrap">
-            <button
-              type="button"
-              class="agree-pills-arrow"
-              :class="{ 'is-hidden': !canScrollLeft }"
-              aria-label="向左滚动模块"
-              @click="scrollPills(-1)"
-            >
-              ‹
-            </button>
-            <nav
-              ref="pillsRef"
-              class="agree-pills"
-              aria-label="协议明细模块"
-              @scroll.passive="updatePillsScrollState"
-            >
-              <button
-                v-for="m in primaryTabModules"
-                :key="m.key"
-                type="button"
-                class="agree-pill"
-                :class="{ 'is-active': activeModule === m.key }"
-                :title="m.label"
-                @click="selectModule(m.key)"
-              >
-                <span class="agree-pill__label">{{ m.label }}</span>
-                <span v-if="navBadge(m.key) !== ''" class="nav-badge">
-                  {{ navBadge(m.key) }}
-                </span>
-                <i
-                  v-if="moduleDirty(m.key)"
-                  class="dirty-dot"
-                  title="未保存"
-                ></i>
-              </button>
-              <ElDropdown
-                v-if="moreTabModules.length"
-                trigger="click"
-                @command="selectModule"
-              >
-                <button
-                  type="button"
-                  class="agree-pill"
-                  :class="{ 'is-active': activeInMore }"
-                >
-                  <span class="agree-pill__label">更多</span>
-                  <span class="nav-badge">{{ moreTabModules.length }}</span>
-                </button>
-                <template #dropdown>
-                  <ElDropdownMenu>
-                    <ElDropdownItem
-                      v-for="m in moreTabModules"
-                      :key="m.key"
-                      :command="m.key"
-                    >
-                      {{ m.label }}
-                      <span
-                        v-if="moduleDirty(m.key)"
-                        class="ml-1 text-orange-500"
-                      >
-                        ●
-                      </span>
-                    </ElDropdownItem>
-                  </ElDropdownMenu>
-                </template>
-              </ElDropdown>
-            </nav>
-            <button
-              type="button"
-              class="agree-pills-arrow"
-              :class="{ 'is-hidden': !canScrollRight }"
-              aria-label="向右滚动模块"
-              @click="scrollPills(1)"
-            >
-              ›
-            </button>
-          </div>
-          <div v-if="isEditing && currentModule" class="agree-pane-actions">
-            <i
-              v-if="moduleDirty(currentModule.key)"
-              class="dirty-dot"
-              title="未保存"
-            ></i>
-            <ElButton
-              v-if="showPaneSave"
-              size="small"
-              type="primary"
-              plain
-              :loading="saving"
-              @click="saveModule(currentModule.key)"
-            >
-              保存本模块
-            </ElButton>
-          </div>
-        </header>
-
-        <div class="agree-pane-body">
-          <div
-            v-if="isModuleShown('houses')"
-            v-show="activeModule === 'houses'"
-          >
-            <HousesModule
-              ref="housesRef"
-              :detail="detail"
-              :can-edit="isEditing"
-              @dirty="onModuleDirty('houses')"
-            />
-          </div>
-          <div
-            v-if="isModuleShown('compensation')"
-            v-show="activeModule === 'compensation'"
-          >
-            <CompensationModule
-              ref="compensationRef"
-              :detail="detail"
-              :can-edit="isEditing"
-              @dirty="onModuleDirty('compensation')"
-            />
-          </div>
-          <div
-            v-if="isModuleShown('rewards')"
-            v-show="activeModule === 'rewards'"
-          >
-            <RewardsModule
-              ref="rewardsRef"
-              :detail="detail"
-              :can-edit="isEditing"
-              @dirty="onModuleDirty('rewards')"
-            />
-          </div>
-          <div
-            v-if="isModuleShown('population')"
-            v-show="activeModule === 'population'"
-          >
-            <PopulationModule
-              ref="populationRef"
-              :detail="detail"
-              :editable="isEditing"
-              @dirty="onModuleDirty('population')"
-            />
-          </div>
-          <div
-            v-for="m in customFormModules"
-            :key="m.key"
-            v-show="activeModule === m.key"
-          >
-            <CustomFormModule
-              :ref="(el) => bindCustomApi(m.key, el)"
-              :detail="detail"
-              :module-key="m.key"
-              :label="m.label"
-              :editable="isEditing"
-              @dirty="onModuleDirty(m.key)"
-            />
-          </div>
-          <div
-            v-for="m in customTableModules"
-            :key="m.key"
-            v-show="activeModule === m.key"
-          >
-            <CustomTableModule
-              :ref="(el) => bindCustomApi(m.key, el)"
-              :detail="detail"
-              :module-key="m.key"
-              :label="m.label"
-              :can-edit="isEditing"
-              @dirty="onModuleDirty(m.key)"
-            />
-          </div>
-        </div>
-      </section>
+        </template>
+      </DetailLayout>
     </template>
   </Page>
 </template>
@@ -1143,153 +744,6 @@ watch(
   color: #111827;
 }
 
-.agree-basic-card {
-  overflow: hidden;
-  background: #fff;
-  border: 1px solid rgb(229 231 235 / 80%);
-  border-radius: 10px;
-}
-
-.agree-basic-card__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 14px;
-  border-bottom: 1px solid #f3f4f6;
-}
-
-.agree-basic-card__body {
-  padding: 12px 16px 16px;
-}
-
-.agree-pane {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  overflow: hidden;
-  background: #fff;
-  border: 1px solid rgb(229 231 235 / 80%);
-  border-radius: 10px;
-}
-
-.agree-pane-head {
-  display: flex;
-  flex-wrap: nowrap;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 12px;
-  border-bottom: 1px solid #f3f4f6;
-}
-
-/** 胶囊区：中间可滚，两侧箭头，与右侧保存按钮隔离 */
-.agree-pills-wrap {
-  display: flex;
-  flex: 1;
-  gap: 4px;
-  align-items: center;
-  min-width: 0;
-}
-
-.agree-pills-arrow {
-  display: inline-flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  font-size: 20px;
-  line-height: 1;
-  color: #4b5563;
-  cursor: pointer;
-  user-select: none;
-  background: #f8fafc;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-}
-
-.agree-pills-arrow:hover {
-  color: #1d4ed8;
-  background: #eff6ff;
-  border-color: rgb(37 99 235 / 25%);
-}
-
-/** 占位隐藏：避免 v-show 导致宽度跳动 → 滚动状态抖动 */
-.agree-pills-arrow.is-hidden {
-  visibility: hidden;
-  pointer-events: none;
-}
-
-.agree-pills {
-  display: flex;
-  flex: 1;
-  flex-wrap: nowrap;
-  gap: 6px;
-  min-width: 0;
-  padding: 2px 0;
-  overflow-x: auto;
-  scroll-behavior: smooth;
-  overscroll-behavior-x: contain;
-  scrollbar-width: none;
-}
-
-.agree-pills::-webkit-scrollbar {
-  display: none;
-}
-
-.agree-pill {
-  display: inline-flex;
-  flex-shrink: 0;
-  gap: 6px;
-  align-items: center;
-  max-width: 12em;
-  padding: 6px 12px;
-  font-size: 13px;
-  line-height: 1.3;
-  color: #374151;
-  white-space: nowrap;
-  cursor: pointer;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 999px;
-}
-
-.agree-pill:hover {
-  background: #f8fafc;
-}
-
-.agree-pill.is-active {
-  font-weight: 600;
-  color: #1d4ed8;
-  background: #eff6ff;
-  border-color: rgb(37 99 235 / 18%);
-}
-
-.agree-pill__label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.agree-pane-actions {
-  display: flex;
-  flex-shrink: 0;
-  gap: 8px;
-  align-items: center;
-  padding-left: 4px;
-  border-left: 1px solid #f3f4f6;
-}
-
-.agree-pane-body {
-  padding: 12px 16px 16px;
-}
-
-/* 外壳已是卡片，去掉子模块 SectionCard 外框避免套娃 */
-.agree-pane-body :deep(.agree-section) {
-  margin-bottom: 0;
-  border: none;
-}
-
 .nav-badge {
   min-width: 18px;
   padding: 0 6px;
@@ -1301,7 +755,7 @@ watch(
   border-radius: 999px;
 }
 
-.agree-pill.is-active .nav-badge {
+:deep(.detail-tab.is-active) .nav-badge {
   color: #1d4ed8;
   background: #dbeafe;
 }
@@ -1312,25 +766,5 @@ watch(
   height: 6px;
   background: #f59e0b;
   border-radius: 50%;
-}
-
-@media (max-width: 767px) {
-  .agree-pane-head {
-    flex-wrap: wrap;
-  }
-
-  .agree-pills-wrap {
-    width: 100%;
-  }
-
-  .agree-pane-actions {
-    justify-content: flex-end;
-    width: 100%;
-    padding-top: 4px;
-    padding-left: 0;
-    margin-left: auto;
-    border-top: 1px solid #f3f4f6;
-    border-left: none;
-  }
 }
 </style>

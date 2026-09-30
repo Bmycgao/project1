@@ -1,19 +1,21 @@
-<script lang="ts" setup>
-/**
- * 流程办理页协议正文：基础信息 + 房屋/补偿/奖励/人口
- * @param detail 绑定的协议详情
- * @param editable 当前节点是否允许编辑（填报可改，审批只读）
- * @param fieldAccess 节点字段权限，进一步收紧显隐/只读
- */
+<script setup lang="ts">
+import type { WorkflowDetailView } from '../../../../shared/workflow-runtime';
+
 import type { AgreementDetail } from '#/views/biz/agreement/types';
-import type { Ref } from 'vue';
+
 import { computed, provide, ref } from 'vue';
-import { ElTabPane, ElTabs } from 'element-plus';
+
 import { DEFAULT_AGREE_FIELD_RULES } from '#/views/biz/agreement/access/field-access';
+import {
+  buildAgreeModuleMounts,
+  resolveAgreeModulesForPage,
+} from '#/views/biz/agreement/access/module-access';
 import {
   AGREE_FIELD_RULES_KEY,
   useProvideAgreeDetailEditable,
 } from '#/views/biz/agreement/access/use-field-access';
+import DetailLayout from '#/views/biz/agreement/components/detail-layout.vue';
+import DetailModule from '#/views/biz/agreement/components/detail-module.vue';
 import {
   buildDefaultBasicModuleInner,
   buildDefaultCompensationModuleInner,
@@ -21,158 +23,114 @@ import {
   buildDefaultPopulationModuleInner,
   buildDefaultRewardsModuleInner,
 } from '#/views/biz/agreement/config/module-inner-config';
-import BasicModule from '#/views/biz/agreement/modules/basic-module.vue';
-import CompensationModule from '#/views/biz/agreement/modules/compensation-module.vue';
-import HousesModule from '#/views/biz/agreement/modules/houses-module.vue';
-import PopulationModule from '#/views/biz/agreement/modules/population-module.vue';
-import RewardsModule from '#/views/biz/agreement/modules/rewards-module.vue';
-import { cloneJson } from '#/views/biz/agreement/clone';
+
+import { projectWorkflowAgreement } from '../../../../shared/workflow-detail';
 import { agreeRulesFromWorkflowAccess } from './agree-rules';
 
 const props = defineProps<{
   detail: AgreementDetail;
+  detailView?: WorkflowDetailView;
   editable: boolean;
-  fieldAccess?: Record<string, 'edit' | 'readonly' | 'hidden'>;
+  fieldAccess?: Record<string, 'edit' | 'hidden' | 'readonly'>;
 }>();
 const emit = defineEmits<{ dirty: [] }>();
-
 const pageEditable = computed(() => props.editable);
-useProvideAgreeDetailEditable(pageEditable as unknown as Ref<boolean>);
-
-const fieldRules = computed(() => [
-  ...DEFAULT_AGREE_FIELD_RULES,
-  ...agreeRulesFromWorkflowAccess(props.fieldAccess),
-]);
-provide(AGREE_FIELD_RULES_KEY, fieldRules);
-
-const basicInner = ref(buildDefaultBasicModuleInner());
-const housesInner = ref(buildDefaultHousesModuleInner());
-const compensationInner = ref(buildDefaultCompensationModuleInner());
-const rewardsInner = ref(buildDefaultRewardsModuleInner());
-const populationInner = ref(buildDefaultPopulationModuleInner());
-provide('agreeModuleInnerBasic', basicInner);
-provide('agreeFcRules', ref({}));
-provide('agreeModuleInnerHouses', housesInner);
-provide('agreeModuleInnerCompensation', compensationInner);
-provide('agreeModuleInnerRewards', rewardsInner);
-provide('agreeModuleInnerPopulation', populationInner);
-
-const basicRef = ref<InstanceType<typeof BasicModule>>();
-const housesRef = ref<InstanceType<typeof HousesModule>>();
-const compensationRef = ref<InstanceType<typeof CompensationModule>>();
-const rewardsRef = ref<InstanceType<typeof RewardsModule>>();
-const populationRef = ref<InstanceType<typeof PopulationModule>>();
-const tab = ref('houses');
-
-function markDirty() {
-  emit('dirty');
+useProvideAgreeDetailEditable(pageEditable);
+provide(
+  AGREE_FIELD_RULES_KEY,
+  computed(() =>
+    props.detailView
+      ? []
+      : [
+          ...agreeRulesFromWorkflowAccess(props.fieldAccess),
+          ...DEFAULT_AGREE_FIELD_RULES,
+        ],
+  ),
+);
+provide('agreeModuleInnerBasic', ref(buildDefaultBasicModuleInner()));
+provide('agreeModuleInnerHouses', ref(buildDefaultHousesModuleInner()));
+provide(
+  'agreeModuleInnerCompensation',
+  ref(buildDefaultCompensationModuleInner()),
+);
+provide('agreeModuleInnerRewards', ref(buildDefaultRewardsModuleInner()));
+provide('agreeModuleInnerPopulation', ref(buildDefaultPopulationModuleInner()));
+provide('agreeModuleInnerCustom', ref({}));
+provide(
+  'agreeFcRules',
+  computed(() =>
+    Object.fromEntries(
+      (props.detailView?.modules || []).map((m) => [m.key, m.rules]),
+    ),
+  ),
+);
+const modules = computed(() =>
+  props.detailView
+    ? props.detailView.modules.map((m) => ({
+        ...m,
+        authCode: m.authCode || '',
+        desc: '',
+      }))
+    : resolveAgreeModulesForPage(buildAgreeModuleMounts(), ['Agree:*']),
+);
+const apis = new Map<string, InstanceType<typeof DetailModule>>();
+const layout = ref<InstanceType<typeof DetailLayout>>();
+function bindApi(key: string, value: any) {
+  if (value) apis.set(key, value);
+  else apis.delete(key);
 }
-
-/** 校验各模块必填 */
+function canEdit(key: string) {
+  return (
+    props.editable &&
+    (!props.detailView ||
+      props.detailView.modules.some((m) => m.key === key && !m.readonly))
+  );
+}
 async function validate() {
-  const parts = [
-    basicRef.value,
-    housesRef.value,
-    compensationRef.value,
-    rewardsRef.value,
-    populationRef.value,
-  ];
-  for (const part of parts) {
-    if (part && !(await part.validate())) return false;
+  for (const module of modules.value) {
+    if (!canEdit(module.key)) continue;
+    if (!(await apis.get(module.key)?.validate())) {
+      await layout.value?.focusModule(module.key);
+      return false;
+    }
   }
   return true;
 }
-
-/** 收集办理页上的协议整单，供回写 */
-async function collect(): Promise<AgreementDetail> {
-  const basic = await Promise.resolve(basicRef.value?.getValues());
-  const houses = await Promise.resolve(housesRef.value?.getValues());
-  const compensation = await Promise.resolve(
-    compensationRef.value?.getValues(),
-  );
-  const rewards = await Promise.resolve(rewardsRef.value?.getValues());
-  const population = await Promise.resolve(populationRef.value?.getValues());
-  return {
-    ...cloneJson(props.detail),
-    ...basic,
-    ...houses,
-    ...compensation,
-    ...rewards,
-    ...population,
-  } as AgreementDetail;
+async function collect(): Promise<Record<string, any>> {
+  const draft: Record<string, any> = props.detailView
+    ? {}
+    : { ...props.detail };
+  for (const module of modules.value) {
+    if (!canEdit(module.key)) continue;
+    const values = await apis.get(module.key)?.getValues();
+    if (!values) continue;
+    const { extraForms, extraTables, ...parts } = values;
+    Object.assign(draft, parts);
+    if (extraForms) draft.extraForms = { ...draft.extraForms, ...extraForms };
+    if (extraTables)
+      draft.extraTables = { ...draft.extraTables, ...extraTables };
+  }
+  return props.detailView
+    ? projectWorkflowAgreement(draft, props.detailView, true)
+    : draft;
 }
-
 defineExpose({ validate, collect });
 </script>
-
 <template>
-  <div class="agree-panel">
-    <section class="agree-block">
-      <div class="agree-block-head">基础信息</div>
-      <BasicModule
-        ref="basicRef"
-        :detail="detail"
-        :editable="editable"
-        @dirty="markDirty"
-      />
-    </section>
-    <ElTabs v-model="tab" class="agree-tabs">
-      <ElTabPane label="房屋信息" name="houses">
-        <HousesModule
-          ref="housesRef"
-          :detail="detail"
-          :can-edit="editable"
-          @dirty="markDirty"
-        />
-      </ElTabPane>
-      <ElTabPane label="补偿安置" name="compensation">
-        <CompensationModule
-          ref="compensationRef"
-          :detail="detail"
-          :can-edit="editable"
-          @dirty="markDirty"
-        />
-      </ElTabPane>
-      <ElTabPane label="奖励补贴" name="rewards">
-        <RewardsModule
-          ref="rewardsRef"
-          :detail="detail"
-          :can-edit="editable"
-          @dirty="markDirty"
-        />
-      </ElTabPane>
-      <ElTabPane label="人口信息" name="population">
-        <PopulationModule
-          ref="populationRef"
-          :detail="detail"
-          :editable="editable"
-          @dirty="markDirty"
-        />
-      </ElTabPane>
-    </ElTabs>
-  </div>
+  <DetailLayout ref="layout" :modules="modules">
+    <template #actions="{ item }">
+<span class="text-xs text-gray-400">{{
+        canEdit(item.key) ? '本节点可编辑' : '只读'
+      }}</span>
 </template>
-
-<style scoped>
-.agree-block {
-  margin-bottom: 16px;
-  overflow: hidden;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 10px;
-}
-
-.agree-block-head {
-  padding: 10px 14px;
-  font-size: 13px;
-  font-weight: 600;
-  background: var(--el-fill-color-light);
-}
-
-.agree-block :deep(.agree-kv-form) {
-  padding: 12px 14px;
-}
-
-.agree-tabs {
-  margin-top: 4px;
-}
-</style>
+    <template #default="{ item }">
+      <DetailModule
+        :ref="(el) => bindApi(item.key, el)"
+        :item="item"
+        :detail="detail"
+        :editable="canEdit(item.key)"
+        @dirty="emit('dirty')"
+      />
+    </template>
+  </DetailLayout>
+</template>

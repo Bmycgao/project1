@@ -32,6 +32,7 @@ const state = await vi.hoisted(async () => {
 vi.mock('./mock-persist', () => ({ DATA_DIR: state.directory }));
 vi.mock('./mock-fc-schema', () => ({
   findFcSchema: (id: string) => state.forms[id],
+  fcSchemaUsage: (schema: { usage?: string }) => schema.usage,
 }));
 vi.mock('./mock-page-schema', () => ({
   findPageSchema: (id: string) => state.pages[id],
@@ -272,18 +273,226 @@ describe('publication and frozen form validation', () => {
       )!.readonly,
     ).toBe(true);
   });
+  it('freezes page modules and applies different module access at each node', () => {
+    const doc = document();
+    const task = doc.nodes[1]!;
+    const approval = doc.nodes[2]!;
+    task.detailMode = 'override';
+    task.detailViewId = 'page';
+    approval.detailMode = 'override';
+    approval.detailViewId = 'page';
+    approval.moduleAccess = { basic: 'readonly', houses: 'hidden' };
+    state.pages.page = {
+      id: 'page',
+      title: '协议详情',
+      status: 1,
+      modules: [
+        { key: 'basic', enabled: true, order: 10, region: 'content' },
+        { key: 'houses', enabled: true, order: 20, region: 'tabs' },
+      ],
+      fcRules: {
+        basic: [
+          { type: 'input', field: 'compensatee', title: '被征收人' },
+          { type: 'inputNumber', field: 'amount', title: '协议金额' },
+        ],
+        houses: [
+          {
+            type: 'tableForm',
+            field: 'houses',
+            title: '房屋信息',
+            props: {
+              columns: [
+                {
+                  rule: [
+                    { type: 'input', field: 'address', title: '房屋地址' },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+    const saved = saveWorkflow(doc, 'demo');
+    const published = publishChecked(saved.id, saved.revision, 'demo');
+    // 发布后修改共用页面，不得影响已经发布的流程版本。
+    state.pages.page.modules = [];
+    let context = startInstance(
+      {
+        definitionId: published.id,
+        agreementNo: seedAgreement(),
+        title: '节点资料权限',
+        requestId: newId('start'),
+      },
+      actor,
+      [actor],
+    );
+    expect(context.detailView?.modules.map((module) => module.key)).toEqual([
+      'basic',
+      'houses',
+    ]);
+    context = actOnInstance(
+      context.instance.id,
+      {
+        taskId: context.task!.id,
+        revision: context.instance.revision,
+        requestId: newId('action'),
+        action: 'submit',
+      },
+      actor,
+      [actor],
+    );
+    expect(context.viewNodeId).toBe(approval.id);
+    expect(context.detailView?.modules.map((module) => module.key)).toEqual([
+      'basic',
+    ]);
+    expect(context.detailView?.modules[0]?.readonly).toBe(true);
+    expect(context.agreement).not.toHaveProperty('houses');
+    expect(() =>
+      actOnInstance(
+        context.instance.id,
+        {
+          taskId: context.task!.id,
+          revision: context.instance.revision,
+          requestId: newId('action'),
+          action: 'pass',
+          agreement: { houses: [] },
+        },
+        actor,
+        [actor],
+      ),
+    ).toThrow('不可编辑');
+  });
+  it('inherits the workflow detail view and freezes a separate node supplement form', () => {
+    const doc = document();
+    const task = doc.nodes[1]!;
+    doc.defaultDetailViewId = 'page';
+    task.supplementFormId = 'supplement';
+    state.pages.page = {
+      id: 'page',
+      title: '流程默认详情',
+      status: 1,
+      modules: [{ key: 'basic', enabled: true, order: 10 }],
+      fcRules: {
+        basic: [{ type: 'input', field: 'compensatee', title: '被征收人' }],
+      },
+    };
+    state.forms.supplement = {
+      status: 1,
+      kind: 'form',
+      rule: [{ type: 'textarea', field: 'reviewNote', title: '补充说明' }],
+    };
+    const frozen = freezeWorkflowForms(doc);
+    expect(frozen.issues).toEqual([]);
+    expect(frozen.forms[task.id]?.detailView?.schemaId).toBe('page');
+    expect(
+      frozen.forms[task.id]?.fields.some((field) => field.key === 'reviewNote'),
+    ).toBe(true);
+    expect(frozen.forms[task.id]?.presentation).toBe('detail');
+  });
+  it('supports an explicit form-only node without exposing agreement editing', () => {
+    const doc = document();
+    const task = doc.nodes[1]!;
+    task.detailMode = 'formOnly';
+    task.supplementFormId = 'standalone';
+    state.forms.standalone = {
+      status: 1,
+      kind: 'form',
+      rule: [
+        {
+          type: 'input',
+          field: 'standaloneNote',
+          title: '独立办理说明',
+          validate: [{ required: true, type: 'string' }],
+        },
+      ],
+    };
+    const saved = saveWorkflow(doc, 'demo');
+    const published = publishChecked(saved.id, saved.revision, 'demo');
+    const agreementNo = seedAgreement(5);
+    const context = startInstance(
+      {
+        definitionId: published.id,
+        agreementNo,
+        title: '仅表单办理',
+        requestId: 'start-form-only',
+      },
+      actor,
+      [actor],
+    );
+    expect(context.form.presentation).toBe('formOnly');
+    expect(context.detailView).toBeUndefined();
+    expect(context.agreement).toBeUndefined();
+    expect(
+      context.form.fields.some((field) => field.key === 'agreementNo'),
+    ).toBe(false);
+    expect(context.agreementEditable).toBe(false);
+    expect(() =>
+      actOnInstance(
+        context.instance.id,
+        {
+          taskId: context.task!.id,
+          revision: context.instance.revision,
+          requestId: 'form-only-agreement-patch',
+          action: 'save',
+          data: { standaloneNote: '可以保存的节点字段' },
+          agreement: { basic: { compensatee: '越权修改' } },
+        },
+        actor,
+        [actor],
+      ),
+    ).toThrow('仅允许提交独立办理表单');
+    const savedContext = actOnInstance(
+      context.instance.id,
+      {
+        taskId: context.task!.id,
+        revision: context.instance.revision,
+        requestId: 'form-only-save',
+        action: 'save',
+        data: { standaloneNote: '可以保存的节点字段' },
+      },
+      actor,
+      [actor],
+    );
+    expect(savedContext.instance.data.standaloneNote).toBe(
+      '可以保存的节点字段',
+    );
+    expect(
+      (getOrCreateAgreementDetail(agreementNo).flowFields || {}).standaloneNote,
+    ).toBe('可以保存的节点字段');
+  });
   it('blocks page module rules that the normalized renderer cannot preserve', () => {
     const doc = document();
     doc.nodes[1]!.form = { type: 'page', id: 'page' };
     state.pages.page = {
       status: 1,
       modules: [{ key: 'basic', enabled: true }],
-      moduleInner: { basic: { sections: [{}] } },
+      moduleInner: {
+        basic: {
+          sections: [
+            {
+              key: 'legacy',
+              label: '旧版内嵌资料',
+              enabled: true,
+              order: 10,
+              fields: [
+                {
+                  key: 'legacyField',
+                  label: '旧版字段',
+                  enabled: true,
+                  order: 10,
+                  custom: true,
+                },
+              ],
+            },
+          ],
+        },
+      },
       fcRules: { basic: [{ type: 'input', field: 'reason' }] },
     };
     expect(
       freezeWorkflowForms(doc).issues.some((i) =>
-        i.message.includes('独立模块内部配置'),
+        i.message.includes('迁移为独立表格模块'),
       ),
     ).toBe(true);
   });
@@ -369,29 +578,90 @@ describe('publication and frozen form validation', () => {
       ),
     ).toBe(true);
   });
-  it('freezes catalog extras referenced by fieldAccess without a bound form', () => {
+  it('rejects field permissions for fields missing from the page and supplement form', () => {
     const doc = document();
     doc.nodes.find((n) => n.name === '科长审核')!.fieldAccess = {
       legalOpinion: 'edit',
     };
     const saved = saveWorkflow(doc, 'demo');
+    expect(
+      publicationCheck(saved.id).issues.some((issue) =>
+        issue.message.includes(
+          '字段权限引用了当前详情页或节点补充表单中不存在的字段',
+        ),
+      ),
+    ).toBe(true);
+  });
+  it('accepts field permissions after the field is defined by a workflow supplement', () => {
+    const doc = document();
+    const review = doc.nodes.find((n) => n.name === '科长审核')!;
+    review.supplementFormId = 'legal-review';
+    review.fieldAccess = { legalOpinion: 'edit' };
+    state.forms['legal-review'] = {
+      status: 1,
+      usage: 'workflowSupplement',
+      rule: [
+        {
+          type: 'textarea',
+          field: 'legalOpinion',
+          title: '法务意见',
+        },
+      ],
+    };
+    const saved = saveWorkflow(doc, 'demo');
     expect(publicationCheck(saved.id).issues).toEqual([]);
-    const published = publishChecked(saved.id, saved.revision, 'demo');
-    const form =
-      published.frozenForms![
-        published.nodes.find((n) => n.name === '科长审核')!.id
-      ];
-    expect(form?.fields.some((f) => f.key === 'legalOpinion')).toBe(true);
+  });
+  it('rejects agreement module templates used as node supplements', () => {
+    const doc = document();
+    doc.nodes[1]!.supplementFormId = 'rewards';
+    state.forms.rewards = {
+      status: 1,
+      usage: 'agreementModule',
+      rule: [{ type: 'tableForm', field: 'rewardItems', title: '奖励补贴' }],
+    };
+    const saved = saveWorkflow(doc, 'demo');
+    expect(
+      publicationCheck(saved.id).issues.some((issue) =>
+        issue.message.includes('不能使用协议详情模块模板'),
+      ),
+    ).toBe(true);
   });
   it('publishes data actions that assign or copy existing fields', () => {
     const doc = document();
     const fill = doc.nodes.find((n) => n.type === 'task')!;
+    state.forms['accept-supplement'] = {
+      id: 'accept-supplement',
+      kind: 'form',
+      name: '受理补充表单',
+      status: 1,
+      usage: 'workflowSupplement',
+      rule: [
+        {
+          type: 'textarea',
+          field: 'acceptOpinion',
+          title: '受理意见',
+        },
+      ],
+    };
+    fill.supplementFormId = 'accept-supplement';
     fill.dataActions = [
       { when: 'arrive', kind: 'set', field: 'acceptOpinion', value: '待填报' },
       { when: 'submit', kind: 'copy', field: 'remark', from: 'houseAddress' },
     ];
     const saved = saveWorkflow(doc, 'demo');
     expect(publicationCheck(saved.id).issues).toEqual([]);
+  });
+  it('rejects data actions that try to create an undeclared field', () => {
+    const doc = document();
+    doc.nodes.find((n) => n.type === 'task')!.dataActions = [
+      { when: 'arrive', kind: 'set', field: 'ghostField', value: 'x' },
+    ];
+    const saved = saveWorkflow(doc, 'demo');
+    expect(
+      publicationCheck(saved.id)
+        .issues.map((issue) => issue.message)
+        .join(' '),
+    ).toContain('必须存在于当前节点表单且已接入数据存储');
   });
   it('blocks data actions that miss fields or use the wrong button timing', () => {
     const missing = document();

@@ -1,6 +1,7 @@
 import type { WorkflowRecord } from './workflow';
 
 export interface RuntimeField {
+  moduleKey?: string;
   key: string;
   label: string;
   type:
@@ -29,7 +30,29 @@ export interface RuntimeField {
   maxItems?: number;
   dateMode?: 'date' | 'datetime';
 }
+export interface WorkflowDetailModule {
+  key: string;
+  label: string;
+  widgetKind: 'form' | 'table';
+  region: 'content' | 'tabs';
+  span: number;
+  order: number;
+  authCode?: string;
+  rules: Record<string, any>[];
+  fields: RuntimeField[];
+  readonly?: boolean;
+}
+export interface WorkflowDetailView {
+  schemaId?: string;
+  title: string;
+  modules: WorkflowDetailModule[];
+}
 export interface RuntimeForm {
+  /** 此节点真实存在且已接入持久化的数据动作目标字段。 */
+  actionFields?: string[];
+  detailView?: WorkflowDetailView;
+  /** 仅表单模式显式标记；缺省兼容旧发布版本的默认协议详情。 */
+  presentation?: 'detail' | 'formOnly';
   title: string;
   fields: RuntimeField[];
 }
@@ -100,8 +123,8 @@ export interface WorkflowInstance {
   data: Record<string, unknown>;
   tasks: WorkflowTask[];
   events: WorkflowEvent[];
-  returnStack: { returnNodeId: string; targetNodeId: string; }[];
-  requests: { actorId: string; fingerprint: string; id: string; }[];
+  returnStack: { returnNodeId: string; targetNodeId: string }[];
+  requests: { actorId: string; fingerprint: string; id: string }[];
   /** 并行汇聚已到达的流入连线（joinNodeId → edgeId[]） */
   joinArrivals?: Record<string, string[]>;
   /** 作为子流程被拉起时指向父实例 */
@@ -117,7 +140,10 @@ export interface WorkflowContext {
   buttons: { code: string; enabled: boolean; label: string; reason?: string }[];
   rejectTargets: { id: string; name: string }[];
   canAct: boolean;
-  /** 绑定协议的完整详情，供办理页嵌协议模块 */
+  /** 实际用于展示的任务节点（并行/已办不能用实例的单一 currentNodeId）。 */
+  viewNodeId?: string;
+  detailView?: WorkflowDetailView;
+  /** 仅含当前视图获准读取的协议字段。 */
   agreement?: Record<string, unknown>;
   /** 当前节点是否允许改协议正文（填报可改，审批默认只读） */
   agreementEditable?: boolean;
@@ -343,18 +369,6 @@ export function extraFieldsFromKeys(keys: string[]): RuntimeField[] {
 }
 
 /**
- * 把节点 fieldAccess / 数据动作里尚未出现在默认协议头中的字段编进冻结表单
- * @param fieldAccess 节点字段权限
- * @param extraKeys 额外字段（如数据动作目标/来源）
- */
-export function extraFieldsFromAccess(
-  fieldAccess?: Record<string, 'edit' | 'hidden' | 'readonly'>,
-  extraKeys: string[] = [],
-): RuntimeField[] {
-  return extraFieldsFromKeys([...Object.keys(fieldAccess || {}), ...extraKeys]);
-}
-
-/**
  * 按触发时机执行数据动作：赋固定值或抄已有字段，不支持公式
  * @param data 当前实例数据
  * @param actions 节点上配置的动作
@@ -366,6 +380,7 @@ export function applyWorkflowDataActions(
   actions: import('./workflow').WorkflowDataAction[] | undefined,
   when: import('./workflow').WorkflowDataActionWhen,
   fields: RuntimeField[],
+  context: { firstArrival?: boolean } = {},
 ): { data: Record<string, unknown>; written: string[] } {
   const list = (actions || []).filter((action) => action.when === when);
   if (list.length === 0) return { data, written: [] };
@@ -375,6 +390,15 @@ export function applyWorkflowDataActions(
   for (const action of list) {
     const field = String(action.field || '').trim();
     if (!field) throw new Error('数据动作缺少目标字段');
+    if (action.policy === 'firstArrival' && context.firstArrival === false)
+      continue;
+    if (
+      action.policy === 'empty' &&
+      next[field] !== undefined &&
+      next[field] !== null &&
+      next[field] !== ''
+    )
+      continue;
     const target = byKey.get(field);
     if (target?.type === 'table')
       throw new Error(`数据动作不能写入表格字段「${field}」`);
@@ -410,6 +434,11 @@ function coerceDataActionValue(
     const value = typeof raw === 'number' ? raw : Number(raw);
     if (!Number.isFinite(value))
       throw new Error(`数据动作无法把「${key}」写成数字`);
+    if (
+      (field?.min !== undefined && value < field.min) ||
+      (field?.max !== undefined && value > field.max)
+    )
+      throw new Error(`数据动作写入「${key}」的数值超出允许范围`);
     return value;
   }
   if (type === 'boolean') {
@@ -418,7 +447,34 @@ function coerceDataActionValue(
     if (raw === 'false' || raw === '0' || raw === '') return false;
     throw new Error(`数据动作无法把「${key}」写成布尔值`);
   }
-  return String(raw);
+  if (type === 'select') {
+    const option = field?.options?.find(
+      (item) => item.value === raw || String(item.value) === String(raw),
+    );
+    if (!option) throw new Error(`数据动作写入「${key}」的值不在允许选项中`);
+    return option.value;
+  }
+  const value = String(raw);
+  if (
+    value.length > (field?.maxLength ?? 5000) ||
+    value.length < (field?.minLength ?? 0)
+  )
+    throw new Error(`数据动作写入「${key}」的文本长度不合法`);
+  if (type === 'date') {
+    const pattern =
+      field?.dateMode === 'datetime'
+        ? /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/
+        : /^\d{4}-\d{2}-\d{2}$/;
+    const parsed = new Date(`${value.slice(0, 10)}T00:00:00Z`);
+    if (
+      !pattern.test(value) ||
+      !Number.isFinite(Date.parse(value)) ||
+      !Number.isFinite(parsed.getTime()) ||
+      parsed.toISOString().slice(0, 10) !== value.slice(0, 10)
+    )
+      throw new Error(`数据动作写入「${key}」的日期格式不正确`);
+  }
+  return value;
 }
 
 export const ACTION_LABELS: Record<string, string> = {

@@ -11,6 +11,8 @@ export interface FcSchema {
   name: string;
   /** 表单 or 表格表单 */
   kind: 'form' | 'table';
+  /** 协议详情模块模板，或流程节点新增数据模板；旧数据未分类时兼容两处。 */
+  usage?: 'agreementModule' | 'workflowSupplement';
   remark?: string;
   status: 0 | 1;
   /** FormCreate getRule 结构 */
@@ -181,6 +183,7 @@ const MOCK_FC_SCHEMAS: FcSchema[] = [
     id: FC_SCHEMA_IDS.basic,
     name: '协议基础信息表单',
     kind: 'form',
+    usage: 'agreementModule',
     status: 1,
     rule: SEED_RULES[FC_SCHEMA_IDS.basic] || [],
     updatedAt: '2026-01-01T00:00:00.000Z',
@@ -189,6 +192,7 @@ const MOCK_FC_SCHEMAS: FcSchema[] = [
     id: FC_SCHEMA_IDS.population,
     name: '协议人口表单',
     kind: 'form',
+    usage: 'agreementModule',
     status: 1,
     rule: SEED_RULES[FC_SCHEMA_IDS.population] || [],
     updatedAt: '2026-01-01T00:00:00.000Z',
@@ -197,6 +201,7 @@ const MOCK_FC_SCHEMAS: FcSchema[] = [
     id: FC_SCHEMA_IDS.houses,
     name: '房屋信息表格',
     kind: 'table',
+    usage: 'agreementModule',
     status: 1,
     rule: SEED_RULES[FC_SCHEMA_IDS.houses] || [],
     updatedAt: '2026-01-01T00:00:00.000Z',
@@ -205,6 +210,7 @@ const MOCK_FC_SCHEMAS: FcSchema[] = [
     id: FC_SCHEMA_IDS.compensation,
     name: '补偿安置表格',
     kind: 'table',
+    usage: 'agreementModule',
     status: 1,
     rule: SEED_RULES[FC_SCHEMA_IDS.compensation] || [],
     updatedAt: '2026-01-01T00:00:00.000Z',
@@ -213,6 +219,7 @@ const MOCK_FC_SCHEMAS: FcSchema[] = [
     id: FC_SCHEMA_IDS.rewards,
     name: '奖励补贴表格',
     kind: 'table',
+    usage: 'agreementModule',
     status: 1,
     rule: SEED_RULES[FC_SCHEMA_IDS.rewards] || [],
     updatedAt: '2026-01-01T00:00:00.000Z',
@@ -279,6 +286,13 @@ export function findFcSchema(id: string) {
   return fcSchemaStore.find((s) => String(s.id) === String(id)) || null;
 }
 
+/** 内置模板即使来自旧落盘数据，也固定视为协议详情模块模板。 */
+export function fcSchemaUsage(schema: Pick<FcSchema, 'id' | 'usage'>) {
+  if (Object.values(FC_SCHEMA_IDS).some((id) => id === schema.id))
+    return 'agreementModule' as const;
+  return schema.usage;
+}
+
 /**
  * 列表（可选 kind / keyword 过滤）
  */
@@ -286,6 +300,7 @@ export function listFcSchemas(query?: {
   keyword?: string;
   kind?: string;
   status?: string;
+  usage?: string;
 }) {
   let list = structuredClone(fcSchemaStore);
   if (query?.keyword) {
@@ -303,6 +318,11 @@ export function listFcSchemas(query?: {
   if (['0', '1'].includes(String(query?.status))) {
     list = list.filter((s) => s.status === Number(query?.status));
   }
+  if (
+    query?.usage === 'agreementModule' ||
+    query?.usage === 'workflowSupplement'
+  )
+    list = list.filter((s) => fcSchemaUsage(s) === query.usage);
   return list;
 }
 
@@ -317,6 +337,10 @@ export function createFcSchema(
     id,
     name: data.name || '未命名模板',
     kind: data.kind === 'table' ? 'table' : 'form',
+    usage:
+      data.usage === 'workflowSupplement'
+        ? 'workflowSupplement'
+        : 'agreementModule',
     remark: data.remark || '',
     status: (data.status ?? 1) as 0 | 1,
     rule: Array.isArray(data.rule) && data.rule.length > 0 ? data.rule : [],
@@ -340,6 +364,12 @@ export function updateFcSchema(id: string, data: Partial<FcSchema>) {
     ...current,
     ...data,
     id: current.id,
+    usage:
+      data.usage === undefined
+        ? current.usage
+        : data.usage === 'workflowSupplement'
+          ? 'workflowSupplement'
+          : 'agreementModule',
     rule: data.rule === undefined ? current.rule : data.rule,
     updatedAt: new Date().toISOString(),
   };

@@ -20,6 +20,11 @@ import {
 import { join } from 'node:path';
 
 import { newId, ratioPassCount } from '../../shared/workflow';
+import {
+  detailHeaderAccess,
+  effectiveDetailView,
+  projectWorkflowAgreement,
+} from '../../shared/workflow-detail';
 import { evaluateCondition } from '../../shared/workflow-expression';
 import {
   ACTION_LABELS,
@@ -41,7 +46,12 @@ import {
   syncAgreementFromWorkflow,
   workflowDataFromAgreement,
 } from './workflow-agreement';
-import { findPublishedWorkflow, getWorkflow } from './workflow-store';
+import { applyDetailPatch } from './workflow-detail';
+import {
+  findPublishedWorkflow,
+  getWorkflow,
+  listWorkflows,
+} from './workflow-store';
 
 export class WorkflowError extends Error {
   constructor(
@@ -78,10 +88,13 @@ function read(): State {
   if (!Array.isArray(state.notices)) state.notices = [];
   return state;
 }
-/** 读库并刷新超时/临期通知 */
-function load() {
+/**
+ * 读实例库并刷新超时/临期通知
+ * @param definitions 已读入的流程；不传则内部读一次
+ */
+function load(definitions?: Map<string, WorkflowRecord>) {
   const state = read();
-  if (refreshSla(state)) write(state);
+  if (refreshSla(state, definitions)) write(state);
   return state;
 }
 function write(state: State) {
@@ -142,19 +155,22 @@ const SYSTEM_ACTOR: RuntimeActor = {
   roleIds: [],
   codes: [],
 };
+/** 一次读入全部流程，列表和时限扫描按 id 查找，避免每个实例重读 workflow.json */
+function workflowMap() {
+  return new Map(listWorkflows().map((item) => [item.id, item]));
+}
 /** 扫描在途待办：临期/超时发通知，超时策略为催办时写催办记录 */
-function refreshSla(state: State) {
+function refreshSla(
+  state: State,
+  definitions: Map<string, WorkflowRecord> = workflowMap(),
+) {
   let dirty = false;
   const at = Date.now();
   const atIso = new Date(at).toISOString();
   for (const instance of state.instances) {
     if (instance.status !== 'running') continue;
-    let definition;
-    try {
-      definition = getWorkflow(instance.definitionId);
-    } catch {
-      continue;
-    }
+    const definition = definitions.get(instance.definitionId);
+    if (!definition) continue;
     for (const task of instance.tasks.filter((t) => t.status === 'pending')) {
       if (!task.dueAt) continue;
       const node = definition.nodes.find((n) => n.id === task.nodeId);
@@ -342,6 +358,7 @@ function runDataActions(
   when: 'arrive' | 'pass' | 'save' | 'submit',
   fields: RuntimeField[],
   written: Set<string>,
+  firstArrival?: boolean,
 ) {
   try {
     const result = applyWorkflowDataActions(
@@ -349,6 +366,7 @@ function runDataActions(
       node.dataActions,
       when,
       fields,
+      { firstArrival: when === 'arrive' ? firstArrival : false },
     );
     instance.data = result.data;
     for (const key of result.written) written.add(key);
@@ -404,7 +422,10 @@ function enter(
       for (const f of fields)
         if (instance.data[f.key] === undefined && f.defaultValue !== undefined)
           instance.data[f.key] = clone(f.defaultValue);
-      runDataActions(instance, node, 'arrive', fields, written);
+      const firstArrival = !instance.tasks.some(
+        (task) => task.nodeId === node.id,
+      );
+      runDataActions(instance, node, 'arrive', fields, written, firstArrival);
       const arrivedAt = now();
       const sequential =
         node.type === 'approve' && node.approveMode === 'sequential';
@@ -784,13 +805,20 @@ export function effectiveForm(
 ): RuntimeForm {
   const source = definition.frozenForms?.[node.id];
   if (!source) return { title: '协议资料', fields: [] };
+  const detailView = source.detailView
+    ? effectiveDetailView(source.detailView, node, actor, canAct)
+    : undefined;
   function fieldAccess(field: RuntimeField): RuntimeField {
     const mode = node.fieldAccess?.[field.key];
+    const moduleAccess = detailView
+      ? detailHeaderAccess(detailView, field.key)
+      : undefined;
     const { defaultValue: _default, ...metadata } = clone(field);
     return {
       ...metadata,
       hidden:
         field.hidden ||
+        moduleAccess?.hidden ||
         mode === 'hidden' ||
         !matches(actor.codes, field.visibleCodes) ||
         field.visibleCodeGroups?.some(
@@ -798,6 +826,7 @@ export function effectiveForm(
         ) === true,
       readonly:
         field.readonly ||
+        moduleAccess?.readonly ||
         !canAct ||
         (node.type === 'approve' && mode !== 'edit') ||
         mode === 'readonly' ||
@@ -810,6 +839,8 @@ export function effectiveForm(
   }
   return {
     title: source.title,
+    detailView,
+    presentation: source.presentation,
     fields: source.fields
       .map(fieldAccess)
       .filter((f) => !f.hidden)
@@ -862,11 +893,11 @@ function isRatio(node: WorkflowNode) {
   return node.type === 'approve' && node.approveMode === 'ratio';
 }
 /** 已通过且不是转办转回的办结，才计入会签或依次票数 */
-function isVote(task: { handoff?: boolean; status: string; }) {
+function isVote(task: { handoff?: boolean; status: string }) {
   return task.status === 'completed' && !task.handoff;
 }
 /** 比例会签席位：当前待办和已通过的票；转办作废、转回办结不占人数 */
-function isRatioSeat(task: { handoff?: boolean; status: string; }) {
+function isRatioSeat(task: { handoff?: boolean; status: string }) {
   return task.status === 'pending' || isVote(task);
 }
 /**
@@ -977,10 +1008,20 @@ function buildContext(
     (t) => t.status === 'pending' && t.assigneeIds.includes(actor.id),
   );
   const anyPending = instance.tasks.find((t) => t.status === 'pending');
-  const task = pendingForActor || anyPending;
+  const lastOwn = [...instance.tasks]
+    .toReversed()
+    .find(
+      (t) => t.assigneeIds.includes(actor.id) || t.completedBy === actor.id,
+    );
+  // 运行中先展示当前待办；没有待办时再回看当前用户最近办理的节点。
+  const task =
+    pendingForActor ||
+    (instance.status === 'running' ? anyPending : undefined) ||
+    lastOwn;
   const viewId =
     pendingForActor?.nodeId ||
     (instance.status === 'running' ? anyPending?.nodeId : undefined) ||
+    lastOwn?.nodeId ||
     instance.currentNodeId;
   const node = definition.nodes.find((n) => n.id === viewId)!;
   const canAct = !!pendingForActor && instance.status === 'running';
@@ -1033,6 +1074,21 @@ function buildContext(
       return [f.key, visibleValue(f, value)];
     }),
   );
+  if (agreement && form.presentation === 'formOnly') {
+    agreement = undefined;
+  } else if (agreement && form.detailView) {
+    agreement = projectWorkflowAgreement(agreement, form.detailView);
+    // 节点字段仅从已按权限过滤的表单值返回，不能经 flowFields 泄露隐藏项。
+    agreement.flowFields = Object.fromEntries(
+      form.fields
+        .filter(
+          (field) =>
+            !field.moduleKey &&
+            !BUSINESS_FIELDS.some((business) => business.key === field.key),
+        )
+        .map((field) => [field.key, data[field.key]]),
+    );
+  }
   const {
     requests: _requests,
     returnStack: _returnStack,
@@ -1075,7 +1131,10 @@ function buildContext(
             .flatMap((t) => t.assigneeNames),
           mode: 'all' as const,
         }
-      : isSequential(viewNode) && sequentialOrdered.length > 1
+      : // 依次审批离开本节点后不再显示进度，避免已办完仍显示 0/人数
+        isSequential(viewNode) &&
+          sequentialOrdered.length > 1 &&
+          sequentialRound.some((t) => t.status === 'pending')
         ? {
             passed: sequentialRound.filter((t) => isVote(t)).length,
             total: sequentialOrdered.length,
@@ -1084,7 +1143,10 @@ function buildContext(
               .flatMap((t) => t.assigneeNames),
             mode: 'sequential' as const,
           }
-        : isRatio(viewNode) && ratioSeats.length > 1
+        : // 比例会签离开本节点后不再按剩余人数重算，避免已办完显示成 2/1
+          isRatio(viewNode) &&
+            ratioSeats.length > 1 &&
+            ratioSeats.some((t) => t.status === 'pending')
           ? {
               passed: ratioSeats.filter((t) => isVote(t)).length,
               total: ratioSeats.length,
@@ -1157,7 +1219,14 @@ function buildContext(
     canAct,
     rejectTargets,
     agreement,
-    agreementEditable: canAct && viewNode.type === 'task',
+    viewNodeId: viewNode.id,
+    detailView: form.detailView,
+    agreementEditable:
+      canAct &&
+      form.presentation !== 'formOnly' &&
+      (form.detailView
+        ? form.detailView.modules.some((m) => !m.readonly)
+        : viewNode.type === 'task'),
     countersign,
     transferWillReturn: !!(
       canAct &&
@@ -1400,9 +1469,17 @@ export function interveneInstance(
 /**
  * 把实例压成列表行（办理页与监控页共用）
  * @param instance 流程实例
+ * @param definitions 本次请求已读入的流程，按 id 查找节点名和时限
  */
-function toInstanceRow(instance: WorkflowInstance) {
+function toInstanceRow(
+  instance: WorkflowInstance,
+  definitions: Map<string, WorkflowRecord>,
+) {
   const pending = instance.tasks.filter((t) => t.status === 'pending');
+  const definition = definitions.get(instance.definitionId);
+  if (!definition) throw new Error('流程不存在或已删除');
+  const nodeName = (nodeId?: string) =>
+    definition.nodes.find((n) => n.id === nodeId)?.name;
   return {
     id: instance.id,
     definitionName: instance.definitionName,
@@ -1416,21 +1493,10 @@ function toInstanceRow(instance: WorkflowInstance) {
     createdAt: instance.createdAt,
     currentNodeName:
       pending.length > 0
-        ? [
-            ...new Set(
-              pending.map(
-                (t) =>
-                  getWorkflow(instance.definitionId).nodes.find(
-                    (n) => n.id === t.nodeId,
-                  )?.name || '',
-              ),
-            ),
-          ]
+        ? [...new Set(pending.map((t) => nodeName(t.nodeId) || ''))]
             .filter(Boolean)
             .join('、')
-        : getWorkflow(instance.definitionId).nodes.find(
-            (n) => n.id === instance.currentNodeId,
-          )?.name,
+        : nodeName(instance.currentNodeId),
     taskArrivedAt: pending[0]?.arrivedAt,
     pendingAssigneeNames: [...new Set(pending.flatMap((t) => t.assigneeNames))],
     urged: pending.some((t) =>
@@ -1445,9 +1511,7 @@ function toInstanceRow(instance: WorkflowInstance) {
         .map((t) => t.dueAt)
         .filter(Boolean)
         .toSorted()[0];
-      const node = getWorkflow(instance.definitionId).nodes.find(
-        (n) => n.id === pending[0]?.nodeId,
-      );
+      const node = definition.nodes.find((n) => n.id === pending[0]?.nodeId);
       const bucket = slaBucket(dueAt, node?.sla?.warnHours);
       return bucket === 'none' ? undefined : bucket;
     })(),
@@ -1460,13 +1524,16 @@ function toInstanceRow(instance: WorkflowInstance) {
  * @param tab todo | done | started | cc | monitor
  */
 export function listInstances(actor: RuntimeActor, tab: string) {
-  const state = load();
+  const definitions = workflowMap();
+  const state = load(definitions);
+  const row = (instance: WorkflowInstance) =>
+    toInstanceRow(instance, definitions);
   if (tab === 'monitor') {
     if (!hasWorkflowMonitorAccess(actor.codes))
       throw new WorkflowError('无流程监控权限', 403);
     return state.instances
       .toSorted((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .map(toInstanceRow);
+      .map(row);
   }
   return state.instances
     .filter((i) => mayRead(i, actor))
@@ -1487,7 +1554,7 @@ export function listInstances(actor: RuntimeActor, tab: string) {
               ),
     )
     .toSorted((a, b) => b.createdAt.localeCompare(a.createdAt))
-    .map(toInstanceRow);
+    .map(row);
 }
 /** 解析发起入参中的协议编号（兼容旧字段 businessNo） */
 function startAgreementNo(input: {
@@ -1664,6 +1731,23 @@ function validateValue(field: RuntimeField, value: unknown, required: boolean) {
     }
   }
 }
+function normalizeModuleValidationValue(field: RuntimeField, value: any): any {
+  if (field.type === 'table' && Array.isArray(value))
+    return value.map((row) =>
+      Object.fromEntries(
+        (field.children || []).map((child) => [
+          child.key,
+          normalizeModuleValidationValue(child, row[child.key]),
+        ]),
+      ),
+    );
+  if (
+    (field.type === 'text' || field.type === 'textarea') &&
+    typeof value === 'number'
+  )
+    return String(value);
+  return value;
+}
 function mergeData(
   instance: WorkflowInstance,
   form: RuntimeForm,
@@ -1676,6 +1760,7 @@ function mergeData(
     const field = form.fields.find((f) => f.key === key);
     if (
       !field ||
+      field.moduleKey ||
       field.hidden ||
       (field.readonly && !same(value, instance.data[key]))
     )
@@ -1694,7 +1779,10 @@ function mergeData(
     instance.data[key] = value;
   }
   if (required)
-    for (const field of form.fields.filter((f) => !f.hidden && !f.readonly))
+    for (const field of form.fields.filter(
+      (candidate) =>
+        !candidate.moduleKey && !candidate.hidden && !candidate.readonly,
+    ))
       validateValue(field, instance.data[field.key], true);
 }
 export function actOnInstance(
@@ -1854,13 +1942,29 @@ export function actOnInstance(
   const form = effectiveForm(definition, node, actor, true, actors);
   let nextAgreement: ReturnType<typeof loadWorkflowAgreement> | undefined;
   if (instance.bizId && input.agreement) {
+    if (form.presentation === 'formOnly')
+      throw new WorkflowError('当前节点仅允许提交独立办理表单', 403);
     try {
       const current = loadWorkflowAgreement(instance.bizId);
-      nextAgreement = applyAgreementPatch(current, input.agreement, {
-        canAct: true,
-        nodeType: node.type,
-        fieldAccess: node.fieldAccess,
-      });
+      nextAgreement = (
+        form.detailView
+          ? applyDetailPatch(
+              current as unknown as Record<string, any>,
+              input.agreement,
+              form.detailView,
+              (field, value) =>
+                validateValue(
+                  field,
+                  normalizeModuleValidationValue(field, value),
+                  ['pass', 'submit'].includes(input.action),
+                ),
+            )
+          : applyAgreementPatch(current, input.agreement, {
+              canAct: true,
+              nodeType: node.type,
+              fieldAccess: node.fieldAccess,
+            })
+      ) as ReturnType<typeof loadWorkflowAgreement>;
       instance.data = {
         ...instance.data,
         ...projectAgreementToWorkflowData(nextAgreement),
@@ -1870,6 +1974,24 @@ export function actOnInstance(
         error instanceof Error ? error.message : '协议资料不合法',
       );
     }
+  }
+  if (
+    instance.bizId &&
+    form.detailView &&
+    !input.agreement &&
+    ['pass', 'submit'].includes(input.action)
+  ) {
+    applyDetailPatch(
+      loadWorkflowAgreement(instance.bizId) as unknown as Record<string, any>,
+      {},
+      form.detailView,
+      (field, value) =>
+        validateValue(
+          field,
+          normalizeModuleValidationValue(field, value),
+          true,
+        ),
+    );
   }
   mergeData(
     instance,
@@ -2092,11 +2214,23 @@ export function actOnInstance(
         detail = loadWorkflowAgreement(instance.bizId);
       }
       persistWorkflowAgreement(
-        applyUnlockedFlowFields(detail, instance.data, {
-          nodeType: node.type,
-          fieldAccess: node.fieldAccess,
-          unlockKeys: [...written],
-        }),
+        applyUnlockedFlowFields(
+          detail,
+          Object.fromEntries(
+            Object.entries(instance.data).filter(
+              ([key]) =>
+                written.has(key) ||
+                form.fields.some(
+                  (f) => f.key === key && !f.readonly && !f.hidden,
+                ),
+            ),
+          ),
+          {
+            nodeType: node.type,
+            fieldAccess: node.fieldAccess,
+            unlockKeys: [...written],
+          },
+        ),
       );
     } catch (error) {
       throw new WorkflowError(

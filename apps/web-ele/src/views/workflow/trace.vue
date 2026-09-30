@@ -1,14 +1,18 @@
 <script setup lang="ts">
 import type { WorkflowContext } from '../../../../shared/workflow-runtime';
+
 import { computed, ref, useId } from 'vue';
+
 import { ElButton, ElDialog, ElEmpty, ElMessage, ElTag } from 'element-plus';
+
+import { ACTION_LABELS } from '../../../../shared/workflow-runtime';
 import {
   edgeCaption,
   edgeGeometry,
   edgeLabelBox,
 } from '../system/workflow/model';
 import { printWorkflowChart } from '../system/workflow/print-chart';
-import { ACTION_LABELS } from '../../../../shared/workflow-runtime';
+import { traceNodeStatus } from './trace-status';
 const props = defineProps<{ context: WorkflowContext }>();
 const selected = ref('');
 const visible = ref(false);
@@ -17,12 +21,52 @@ const arrowId = `workflow-arrow-${useId()}`;
 const visited = computed(
   () => new Set(props.context.instance.events.map((e) => e.nodeId)),
 );
+/** 每个节点的运行图颜色；并行按各自待办，汇聚未到齐单独等待 */
+const nodeStatuses = computed(() => {
+  const instance = props.context.instance;
+  const pending = new Set(
+    instance.tasks
+      .filter((task) => task.status === 'pending')
+      .map((task) => task.nodeId),
+  );
+  return new Map(
+    props.context.definition.nodes.map((node) => {
+      const incoming = props.context.definition.edges.filter(
+        (edge) => edge.target === node.id && edge.type !== 'reject',
+      );
+      return [
+        node.id,
+        traceNodeStatus({
+          nodeId: node.id,
+          nodeType: node.type,
+          instanceStatus: instance.status,
+          currentNodeId: instance.currentNodeId,
+          pending: pending.has(node.id),
+          visited: visited.value.has(node.id),
+          incomingCount: incoming.length,
+          arrivedCount: instance.joinArrivals?.[node.id]?.length,
+        }),
+      ] as const;
+    }),
+  );
+});
+/** 取节点运行图状态，缺省按未到达 */
+function statusOf(id: string) {
+  return (
+    nodeStatuses.value.get(id) ?? {
+      fill: 'var(--el-bg-color)',
+      stroke: '#94a3b8',
+      width: 1.5,
+      label: '未到达',
+    }
+  );
+}
 const traversed = computed(
   () => new Set(props.context.instance.events.flatMap((e) => e.edgeIds)),
 );
 const bounds = computed(() => {
   const n = props.context.definition.nodes;
-  if (!n.length) return '0 0 800 400';
+  if (n.length === 0) return '0 0 800 400';
   const x = Math.min(...n.map((i) => i.x)) - 120;
   const y = Math.min(...n.map((i) => i.y)) - 80;
   // 底部留出驳回弧线和线上的文字
@@ -40,43 +84,13 @@ const edgeViews = computed(() =>
 const selectedEvents = computed(() =>
   props.context.instance.events.filter((e) => e.nodeId === selected.value),
 );
-/**
- * 运行图上的节点状态
- * @param id 节点 id
- */
-function nodeStatus(id: string) {
-  const active =
-    props.context.instance.currentNodeId === id &&
-    (props.context.instance.status === 'running' ||
-      props.context.instance.status === 'suspended');
-  if (active)
-    return {
-      fill: '#e8f3ff',
-      stroke: '#3478d4',
-      width: 3.5,
-      label: '办理中',
-    };
-  if (visited.value.has(id))
-    return {
-      fill: '#e7f6ef',
-      stroke: '#15976c',
-      width: 2.5,
-      label: '已完成',
-    };
-  return {
-    fill: 'var(--el-bg-color)',
-    stroke: '#94a3b8',
-    width: 1.5,
-    label: '未到达',
-  };
-}
 function select(id: string) {
   selected.value = id;
   visible.value = true;
 }
-/** 打印运行中的流程图，含已到达、当前节点和驳回红线 */
+/** 打印运行中的流程图，含已完成、办理中、等待汇聚和驳回红线 */
 function printChart() {
-  if (!chart.value || !props.context.definition.nodes.length) {
+  if (!chart.value || props.context.definition.nodes.length === 0) {
     ElMessage.warning('没有可打印的流程图');
     return;
   }
@@ -84,7 +98,8 @@ function printChart() {
     printWorkflowChart(chart.value, {
       title: props.context.instance.title || props.context.definition.name,
       subtitle: `${props.context.definition.name} · 运行流程图`,
-      legend: '绿色已完成，蓝色办理中，灰色未到达，红色虚线为已发生驳回',
+      legend:
+        '绿色已完成，蓝色办理中，橙色等待汇聚，灰色未到达，红色虚线为已发生驳回',
     });
   } catch (error) {
     ElMessage.warning(error instanceof Error ? error.message : '无法打印');
@@ -96,6 +111,7 @@ function printChart() {
     <div class="trace-legend">
       <span class="legend-done">● 已完成</span>
       <span class="legend-current">● 办理中</span>
+      <span class="legend-join">● 等待汇聚</span>
       <span class="legend-wait">● 未到达</span>
       <span style="color: #dc5964">┄ 已发生驳回</span>
       <span>点击节点查看记录</span>
@@ -152,9 +168,9 @@ function printChart() {
         <path
           v-if="node.type === 'condition'"
           d="M -82 0 L 0 -48 L 82 0 L 0 48 Z"
-          :fill="nodeStatus(node.id).fill"
-          :stroke="nodeStatus(node.id).stroke"
-          :stroke-width="nodeStatus(node.id).width"
+          :fill="statusOf(node.id).fill"
+          :stroke="statusOf(node.id).stroke"
+          :stroke-width="statusOf(node.id).width"
         />
         <rect
           v-else
@@ -163,9 +179,9 @@ function printChart() {
           width="164"
           height="72"
           :rx="['start', 'end'].includes(node.type) ? 36 : 12"
-          :fill="nodeStatus(node.id).fill"
-          :stroke="nodeStatus(node.id).stroke"
-          :stroke-width="nodeStatus(node.id).width"
+          :fill="statusOf(node.id).fill"
+          :stroke="statusOf(node.id).stroke"
+          :stroke-width="statusOf(node.id).width"
         />
         <text
           x="0"
@@ -183,9 +199,9 @@ function printChart() {
           text-anchor="middle"
           font-size="12"
           font-weight="650"
-          :fill="nodeStatus(node.id).stroke"
+          :fill="statusOf(node.id).stroke"
         >
-          {{ nodeStatus(node.id).label }}
+          {{ statusOf(node.id).label }}
         </text>
       </g>
       <g
@@ -216,7 +232,8 @@ function printChart() {
       v-model="visible"
       :title="context.definition.nodes.find((n) => n.id === selected)?.name"
       width="560px"
-      ><div
+      >
+<div
         v-for="task in context.instance.tasks.filter(
           (t) => t.nodeId === selected,
         )"
@@ -228,13 +245,15 @@ function printChart() {
         <p v-if="task.completedAt">
           办理：{{ new Date(task.completedAt).toLocaleString('zh-CN') }}
         </p>
-        <ElTag size="small">{{
+        <ElTag size="small">
+{{
           task.status === 'pending'
             ? '待办理'
             : task.status === 'rejected'
               ? '已驳回'
               : '已办理'
-        }}</ElTag>
+        }}
+</ElTag>
       </div>
       <div v-for="event in selectedEvents" :key="event.id" class="task-record">
         <b>{{ event.actorName }} · {{ ACTION_LABELS[event.action] }}</b>
@@ -247,7 +266,8 @@ function printChart() {
           !context.instance.tasks.some((t) => t.nodeId === selected)
         "
         description="尚未到达此节点"
-    /></ElDialog>
+    />
+</ElDialog>
   </div>
 </template>
 <style scoped>
@@ -283,6 +303,11 @@ function printChart() {
 .legend-current {
   font-weight: 650;
   color: #3478d4;
+}
+
+.legend-join {
+  font-weight: 650;
+  color: #d97706;
 }
 
 .legend-wait {

@@ -123,6 +123,35 @@ describe('workflow agreement binding', () => {
     );
     expect(remarked.basic.remark).toBe('填报备注');
   });
+  it('writes system-action header fields into the agreement without changing its key', () => {
+    const row = createAgreeListRow({
+      compensatee: '动作前人员',
+      houseAddress: '动作前地址',
+    });
+    const current = getOrCreateAgreementDetail(row.agreementNo, row);
+    const next = applyUnlockedFlowFields(
+      current,
+      {
+        agreementNo: 'ILLEGAL-NEW-KEY',
+        BuChangJinE: 880_000,
+        compensatee: '动作后人员',
+        houseAddress: '动作后地址',
+      },
+      {
+        nodeType: 'approve',
+        unlockKeys: [
+          'agreementNo',
+          'BuChangJinE',
+          'compensatee',
+          'houseAddress',
+        ],
+      },
+    );
+    expect(next.agreementNo).toBe(current.agreementNo);
+    expect(next.basic.compensatee).toBe('动作后人员');
+    expect(next.houses[0]?.address).toBe('动作后地址');
+    expect(next.basic.amount).toBe(880_000);
+  });
   it('restores locked houseAddress even if the body tries to rewrite houses', () => {
     const row = createAgreeListRow({
       compensatee: '锁地址人',

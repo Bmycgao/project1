@@ -1,9 +1,13 @@
 import type { WorkflowNode } from '../../shared/workflow';
-import type { RuntimeActor } from '../../shared/workflow-runtime';
+import type { RuntimeActor, RuntimeForm } from '../../shared/workflow-runtime';
 
 import { validateWorkflow } from '../../shared/workflow';
 import { evaluateCondition } from '../../shared/workflow-expression';
-import { WORKFLOW_PERSON_FIELDS } from '../../shared/workflow-runtime';
+import {
+  applyWorkflowDataActions,
+  WORKFLOW_FIELD_CATALOG,
+  WORKFLOW_PERSON_FIELDS,
+} from '../../shared/workflow-runtime';
 import { findDeptNode, leaderUserIdsOf, MOCK_DEPT_TREE } from './mock-dept';
 import { roleStore } from './rbac-store';
 import { freezeWorkflowForms } from './workflow-forms';
@@ -81,18 +85,27 @@ function checkPeople(
 function checkDataActions(
   node: WorkflowNode,
   add: (message: string) => void,
-  allowedFields: Set<string>,
+  form: RuntimeForm | undefined,
+  sourceFields: Set<string>,
 ) {
+  const targetFields = new Set(form?.actionFields || []);
   for (const action of node.dataActions || []) {
     const field = String(action.field || '').trim();
     if (!field) add('请填写数据动作目标字段');
-    else if (!allowedFields.has(field))
-      add(`数据动作字段「${field}」必须存在于流程表单中`);
+    else if (!targetFields.has(field))
+      add(`数据动作目标字段「${field}」必须存在于当前节点表单且已接入数据存储`);
+    else if (action.kind === 'set') {
+      try {
+        applyWorkflowDataActions({}, [action], action.when, form?.fields || []);
+      } catch (error) {
+        add(error instanceof Error ? error.message : '数据动作固定值不合法');
+      }
+    }
     if (action.kind === 'copy') {
       const from = String(action.from || '').trim();
       if (!from) add('请填写数据动作抄贝来源');
-      else if (!allowedFields.has(from))
-        add(`数据动作来源字段「${from}」必须存在于流程表单中`);
+      else if (!sourceFields.has(from))
+        add(`数据动作来源字段「${from}」必须是流程中真实存在的字段`);
       else if (from === field) add('数据动作来源不能与目标相同');
     }
     if (action.when !== 'arrive' && !node.buttons.includes(action.when))
@@ -101,6 +114,8 @@ function checkDataActions(
       add('提交时数据动作仅用于填报节点');
     if (action.when === 'pass' && node.type !== 'approve')
       add('通过时数据动作仅用于审批节点');
+    if (action.policy === 'firstArrival' && action.when !== 'arrive')
+      add('“仅首次到达”策略只能用于到达节点时的数据动作');
   }
 }
 
@@ -113,11 +128,12 @@ export function publicationCheck(id: string) {
     issues.push({ message: '当前办理层支持协议业务，请将业务表设为 XieYi' });
   if (!doc.nodes.some((n) => ['approve', 'task'].includes(n.type)))
     issues.push({ message: '流程至少需要一个人工办理节点' });
-  const allowedFields = new Set(
-    Object.values(frozen.forms).flatMap((form) =>
-      form.fields.filter((f) => f.type !== 'table').map((f) => f.key),
+  const sourceFields = new Set([
+    ...WORKFLOW_FIELD_CATALOG.filter((field) => field.persist !== 'flow').map(
+      (field) => field.key,
     ),
-  );
+    ...Object.values(frozen.forms).flatMap((form) => form.actionFields || []),
+  ]);
   if (doc.status !== 'draft')
     issues.push({ message: '此版本已发布，不能重复发布' });
   const actors = workflowActors();
@@ -167,7 +183,7 @@ export function publicationCheck(id: string) {
       node.sla.warnHours >= node.sla.durationHours
     )
       add('临期提醒应小于办理时限');
-    checkDataActions(node, add, allowedFields);
+    checkDataActions(node, add, frozen.forms[node.id], sourceFields);
   }
   for (const node of doc.nodes.filter((n) => n.type === 'cc')) {
     const add = (message: string) =>
@@ -206,7 +222,7 @@ export function publicationCheck(id: string) {
     (e) => e.type === 'condition' && !e.isDefault,
   )) {
     try {
-      evaluateCondition(edge.condition, {}, true, allowedFields);
+      evaluateCondition(edge.condition, {}, true, sourceFields);
     } catch (error) {
       issues.push({
         edgeId: edge.id,

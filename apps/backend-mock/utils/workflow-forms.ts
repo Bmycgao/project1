@@ -1,11 +1,22 @@
 import type { WorkflowDocument, WorkflowIssue } from '../../shared/workflow';
-import type { RuntimeField, RuntimeForm } from '../../shared/workflow-runtime';
-
-import {
-  BUSINESS_FIELDS,
-  extraFieldsFromAccess,
+import type {
+  RuntimeField,
+  RuntimeForm,
+  WorkflowDetailView,
 } from '../../shared/workflow-runtime';
-import { findFcSchema } from './mock-fc-schema';
+
+import { buildDefaultFcRuleMap } from '../../shared/agreement-default-rules';
+import {
+  effectiveWorkflowDetailViewId,
+  workflowNodeDetailMode,
+  workflowNodeSupplementFormId,
+} from '../../shared/workflow';
+import {
+  DEFAULT_WORKFLOW_MODULES,
+  WORKFLOW_DETAIL_FIELD_ALIASES,
+} from '../../shared/workflow-detail';
+import { BUSINESS_FIELDS } from '../../shared/workflow-runtime';
+import { fcSchemaUsage, findFcSchema } from './mock-fc-schema';
 import { findPageSchema } from './mock-page-schema';
 
 /** Convert supported field metadata to an immutable, server-validatable view. No script execution. */
@@ -19,16 +30,10 @@ export function freezeWorkflowForms(doc: WorkflowDocument): {
   for (const node of doc.nodes.filter((n) =>
     ['approve', 'task'].includes(n.type),
   )) {
-    const fields: RuntimeField[] = [
-      ...JSON.parse(JSON.stringify(BUSINESS_FIELDS)),
-      ...extraFieldsFromAccess(node.fieldAccess, [
-        ...(node.dataActions || []).flatMap((action) => [
-          action.field,
-          action.from || '',
-        ]),
-        node.assignee.type === 'field' ? node.assignee.field : '',
-      ]),
-    ];
+    let detailView: undefined | WorkflowDetailView;
+    const fields: RuntimeField[] = JSON.parse(JSON.stringify(BUSINESS_FIELDS));
+    const actionFields = new Set<string>();
+    const permissionFields = new Set<string>();
     const fail = (message: string) =>
       issues.push({ nodeId: node.id, message: `${node.name}：${message}` });
     function parse(rules: Record<string, any>[], prefix = ''): RuntimeField[] {
@@ -203,72 +208,174 @@ export function freezeWorkflowForms(doc: WorkflowDocument): {
       }
       return result;
     }
-    if (node.form.id) {
-      if (node.form.type === 'form') {
-        const schema = findFcSchema(node.form.id);
-        if (!schema || schema.status !== 1) fail('绑定的表单不存在或已停用');
-        else fields.push(...parse(schema.rule));
-      } else {
-        const page = findPageSchema(node.form.id);
-        if (!page || page.status !== 1) fail('绑定的页面视图不存在或已停用');
-        else {
-          const moduleKeys = page.modules
-            ? page.modules
-                .filter((m) => m.enabled)
-                .toSorted((a, b) => (a.order || 0) - (b.order || 0))
-                .map((m) => m.key)
-            : [
-                ...new Set([
-                  ...Object.keys(page.fcBindings || {}),
-                  ...Object.keys(page.fcRules || {}),
-                ]),
-              ];
-          if (moduleKeys.length === 0)
-            fail(
-              '此页面没有详情表单，请绑定带详情模块的页面或 FormCreate 模板',
-            );
-          for (const key of moduleKeys) {
-            if (page.moduleInner?.[key]?.sections.length)
-              fail(
-                `详情模块「${key}」包含独立模块内部配置，当前请改绑静态 FormCreate 模板，避免丢失模块字段规则`,
-              );
-            const ref = page.fcBindings?.[key];
-            const schema = ref ? findFcSchema(ref) : undefined;
-            const rules =
-              schema?.status === 1 ? schema.rule : page.fcRules?.[key];
-            if (!rules?.length) {
-              fail(`详情模块「${key}」缺少可用 FormCreate 模板，请先绑定模板`);
-              continue;
-            }
-            const moduleFields = parse(rules, key === 'basic' ? '' : `${key}.`);
-            const authCode = page.modules?.find((m) => m.key === key)?.authCode;
-            if (authCode)
-              for (const field of moduleFields)
-                field.visibleCodeGroups = [[authCode]];
-            fields.push(...moduleFields);
+    const detailMode = workflowNodeDetailMode(node);
+    const pageId = effectiveWorkflowDetailViewId(doc, node);
+    const supplementFormId = workflowNodeSupplementFormId(node);
+    if (detailMode === 'formOnly')
+      for (const field of fields.filter((candidate) =>
+        BUSINESS_FIELDS.some((business) => business.key === candidate.key),
+      )) {
+        field.hidden = true;
+        field.readonly = true;
+      }
+    if (detailMode === 'override' && !pageId)
+      fail('请选择节点覆盖的办理详情视图');
+    if (detailMode === 'formOnly' && !supplementFormId)
+      fail('仅独立表单模式必须选择节点表单');
+    if (detailMode !== 'formOnly') {
+      const page = pageId ? findPageSchema(pageId) : undefined;
+      if (pageId && (!page || page.status !== 1))
+        fail('办理详情视图不存在或已停用');
+      const defaultRules = buildDefaultFcRuleMap();
+      const mounts = page
+        ? (page.modules || []).filter((m) => m.enabled)
+        : DEFAULT_WORKFLOW_MODULES.map((m, index) => ({
+            ...m,
+            enabled: true,
+            order: index * 10,
+          }));
+      detailView = {
+        schemaId: page?.id,
+        title: page?.title || '协议资料',
+        modules: [],
+      };
+      if (mounts.length === 0) fail('此页面没有详情模块，请先配置页面详情视图');
+      const columnTemplate = page?.columnTemplateId
+        ? findPageSchema(page.columnTemplateId)
+        : undefined;
+      for (const mount of mounts) {
+        const key = mount.key;
+        if (
+          !DEFAULT_WORKFLOW_MODULES.some((m) => m.key === key) &&
+          !/^custom_(form|table)_[A-Za-z0-9_]+$/.test(key)
+        ) {
+          fail(`模块「${key}」尚未注册业务数据绑定`);
+          continue;
+        }
+        const builtin = DEFAULT_WORKFLOW_MODULES.find((m) => m.key === key);
+        const config = mount as NonNullable<
+          ReturnType<typeof findPageSchema>
+        >['modules'] extends (infer T)[] | undefined
+          ? T
+          : never;
+        const kind = builtin?.widgetKind || config.widgetKind || 'form';
+        const templateId = page?.fcBindings?.[key];
+        const template = templateId ? findFcSchema(templateId) : undefined;
+        if (template && fcSchemaUsage(template) === 'workflowSupplement')
+          fail(`详情模块「${key}」不能使用流程节点补充模板`);
+        const rules = page
+          ? template?.status === 1
+            ? template.rule
+            : page.fcRules?.[key]
+          : defaultRules[key];
+        if (!rules?.length) {
+          fail(`详情模块「${key}」缺少可用模板`);
+          continue;
+        }
+        if (template && template.kind && template.kind !== kind)
+          fail(`模块「${key}」与模板类型不匹配`);
+        if (
+          key === 'basic' &&
+          page?.moduleInner?.basic?.sections.some((section) =>
+            section.fields?.some((field) => field.custom && field.enabled),
+          )
+        )
+          fail(
+            '基础信息含旧版自定义子表，请先将子表迁移为独立表格模块后绑定流程',
+          );
+        const moduleFields = parse(rules);
+        if (
+          kind === 'table' &&
+          (moduleFields.length !== 1 || moduleFields[0]?.type !== 'table')
+        )
+          fail(`表格模块「${key}」需要且仅支持一个明细表`);
+        if (kind === 'form' && moduleFields.some((f) => f.type === 'table'))
+          fail(`表单模块「${key}」中的明细表请拆成独立表格模块`);
+        function applyAccess(field: RuntimeField) {
+          if (
+            key === 'basic' &&
+            ['agreementNo', 'statusValue'].includes(field.key)
+          )
+            field.readonly = true;
+          const accessRules = [
+            ...(page?.fieldRules || []),
+            ...(columnTemplate?.fieldRules || []),
+          ].filter(
+            (r) => r.field === field.key || r.field === `${key}.${field.key}`,
+          );
+          for (const access of accessRules) {
+            field.hidden ||= !!access.hidden;
+            if (access.visibleCodes?.length)
+              (field.visibleCodeGroups ||= []).push(access.visibleCodes);
+            if (access.editableCodes?.length)
+              (field.editableCodeGroups ||= []).push(access.editableCodes);
           }
-          const template = page.columnTemplateId
-            ? findPageSchema(page.columnTemplateId)
-            : undefined;
-          function applyAccess(field: RuntimeField) {
-            const accessRules = [
-              ...(page!.fieldRules || []),
-              ...(template?.fieldRules || []),
-            ].filter(
-              (r) =>
-                r.field === field.key ||
-                r.field === field.key.split('.').at(-1),
-            );
-            for (const access of accessRules) {
-              field.hidden ||= !!access.hidden;
-              if (access.visibleCodes?.length)
-                (field.visibleCodeGroups ||= []).push(access.visibleCodes);
-              if (access.editableCodes?.length)
-                (field.editableCodeGroups ||= []).push(access.editableCodes);
-            }
-            field.children?.forEach(applyAccess);
+          field.children?.forEach(applyAccess);
+        }
+        moduleFields.forEach(applyAccess);
+        for (const field of moduleFields) {
+          const path = `${key}.${field.key}`;
+          const alias = WORKFLOW_DETAIL_FIELD_ALIASES[path];
+          permissionFields.add(alias || path);
+          if (alias && alias !== 'agreementNo' && field.type !== 'table')
+            actionFields.add(alias);
+          for (const child of field.children || []) {
+            const childPath = `${key}.${child.key}`;
+            const childAlias = WORKFLOW_DETAIL_FIELD_ALIASES[childPath];
+            permissionFields.add(childAlias || childPath);
+            if (childAlias && childAlias !== 'agreementNo')
+              actionFields.add(childAlias);
           }
-          fields.forEach(applyAccess);
+        }
+        detailView.modules.push({
+          key,
+          label: config.label || builtin?.label || key,
+          widgetKind: kind,
+          region:
+            config.region === 'content' || config.region === 'tabs'
+              ? config.region
+              : key === 'basic'
+                ? 'content'
+                : 'tabs',
+          span: [8, 12, 16, 24].includes(config.span || 24)
+            ? config.span || 24
+            : 24,
+          order: config.order || 0,
+          authCode: config.authCode,
+          rules: JSON.parse(JSON.stringify(rules)),
+          fields: moduleFields,
+        });
+        fields.push(
+          ...moduleFields.map((field) => ({
+            ...field,
+            key: key === 'basic' ? field.key : `${key}.${field.key}`,
+            moduleKey: key,
+          })),
+        );
+      }
+      detailView.modules.sort((a, b) => a.order - b.order);
+      for (const [key, mode] of Object.entries(node.moduleAccess || {})) {
+        if (!detailView.modules.some((m) => m.key === key))
+          fail(`模块权限引用了视图中不存在或未启用的模块：${key}`);
+        if (!['edit', 'hidden', 'inherit', 'readonly'].includes(mode))
+          fail('模块权限配置不合法');
+      }
+    } else if (Object.keys(node.moduleAccess || {}).length > 0) {
+      fail('仅独立表单模式不使用模块权限，请先清除模块配置');
+    }
+    if (supplementFormId) {
+      const schema = findFcSchema(supplementFormId);
+      if (!schema || schema.status !== 1) fail('节点补充表单不存在或已停用');
+      else if (fcSchemaUsage(schema) === 'agreementModule')
+        fail('节点补充表单不能使用协议详情模块模板');
+      else {
+        const supplementFields = parse(schema.rule);
+        fields.push(...supplementFields);
+        for (const field of supplementFields) {
+          permissionFields.add(field.key);
+          if (field.type !== 'table') actionFields.add(field.key);
+          for (const child of field.children || [])
+            permissionFields.add(child.key);
         }
       }
     }
@@ -306,10 +413,19 @@ export function freezeWorkflowForms(doc: WorkflowDocument): {
       } else unique.set(field.key, field);
     }
     for (const key of Object.keys(node.fieldAccess || {}))
-      if (!unique.has(key)) fail(`字段权限引用了视图中不存在的字段：${key}`);
+      if (!permissionFields.has(key))
+        fail(`字段权限引用了当前详情页或节点补充表单中不存在的字段：${key}`);
     forms[node.id] = {
-      title: node.form.id ? '节点表单' : '协议资料',
+      actionFields: [...actionFields],
+      title:
+        detailMode === 'formOnly'
+          ? '节点办理表单'
+          : supplementFormId
+            ? '协议资料与节点补充表单'
+            : '协议资料',
       fields: [...unique.values()],
+      presentation: detailMode === 'formOnly' ? 'formOnly' : 'detail',
+      ...(detailView ? { detailView } : {}),
     };
   }
   return { forms, issues };

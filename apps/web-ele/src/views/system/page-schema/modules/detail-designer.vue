@@ -1,38 +1,19 @@
-<script lang="ts" setup>
-import type {
-  AgreeModuleMeta,
-  AgreeModuleWidgetKind,
-} from '../../../biz/agreement/access/module-access';
-import type {
-  ModuleInnerCellType,
-  ModuleInnerConfig,
-  ModuleInnerControlType,
-  ModuleInnerFieldItem,
-  ModuleInnerSection,
-} from '../../../biz/agreement/config/module-inner-config';
-/**
- * 协议详情设计器：组装模块（挂载/排序），每块选择 FormCreate 模板
- */
-import type { AgreementModuleKey } from '../../../biz/agreement/types';
+<script setup lang="ts">
+import type { AgreeModuleWidgetKind } from '../../../biz/agreement/access/module-access';
+import type { ModuleInnerConfig } from '../../../biz/agreement/config/module-inner-config';
+import type { FcRuleMap } from '../../../biz/agreement/fc/types';
 import type { ModuleLayoutEditRow } from './module-layout-editor.vue';
 
 import type { FcBindingsMap, FcSchemaApi } from '#/api';
 
-import {
-  computed,
-  nextTick,
-  onBeforeUnmount,
-  onMounted,
-  ref,
-  watch,
-} from 'vue';
+import { computed, onMounted, ref } from 'vue';
 
 import { GripVertical } from '@vben/icons';
 
 import {
+  ElAlert,
   ElButton,
   ElInput,
-  ElInputNumber,
   ElMessage,
   ElOption,
   ElSelect,
@@ -43,29 +24,16 @@ import {
 import { getFcSchemaList } from '#/api';
 
 import {
-  AGREE_DETAIL_MODULES,
   createCustomAgreeModule,
-  inferCustomWidgetKind,
-  isCustomAgreeModule,
-  metaFromMount,
+  normalizeModuleRegion,
+  normalizeModuleSpan,
 } from '../../../biz/agreement/access/module-access';
 import {
   buildDefaultCustomFormInner,
   buildDefaultCustomTableInner,
-  FORM_CONTROL_OPTIONS,
-  FORM_SPAN_OPTIONS,
-  isCustomBasicSection,
-  normalizeFieldSpan,
-  resolveEnabledFields,
-  resolveEnabledSections,
-  snapFieldSpan,
-  TABLE_CELL_OPTIONS,
 } from '../../../biz/agreement/config/module-inner-config';
-import {
-  buildSectionFromFcForm,
-  buildSectionFromFcTable,
-} from '../../../biz/agreement/fc/rule-to-inner';
-import { isFcRule } from '../../../biz/agreement/fc/types';
+import { cloneFcRule, isFcRule } from '../../../biz/agreement/fc/types';
+import DetailPreview from './detail-preview.vue';
 
 const layouts = defineModel<ModuleLayoutEditRow[]>('layouts', {
   required: true,
@@ -85,2179 +53,639 @@ const rewardsInner = defineModel<ModuleInnerConfig>('rewardsInner', {
 const populationInner = defineModel<ModuleInnerConfig>('populationInner', {
   required: true,
 });
-/** 自定义业务组件内部配置：key → 子块字段 */
 const customInners = defineModel<Record<string, ModuleInnerConfig>>(
   'customInners',
   { default: () => ({}) },
 );
-/** 各块引用的 FormCreate 模板 id */
 const fcBindings = defineModel<FcBindingsMap>('fcBindings', {
   default: () => ({}),
 });
-
-const newComponentName = ref('');
-const newComponentKind = ref<AgreeModuleWidgetKind>('form');
-/** 模板库选项（列表页维护） */
-const fcSchemaList = ref<FcSchemaApi.FcSchema[]>([]);
-/** 组装：只挂模块；编辑：只编当前块的字段/列 */
-const designerStep = ref<'assemble' | 'edit'>('assemble');
-
-const selectedKey = ref<AgreementModuleKey>('basic');
-/** 当前点中的子块（表格多表时用） */
-const selectedSectionKey = ref('');
-/** 当前点中的字段/列 */
-const selectedFieldKey = ref('');
-const tabListRef = ref<HTMLElement | null>(null);
-const canvasPageRef = ref<HTMLElement | null>(null);
-/** 表格编辑态：左侧「列控件」面板根节点 */
-const columnPaletteRef = ref<HTMLElement | null>(null);
-let tabSortable: null | { destroy: () => void } = null;
-const formSortables: { destroy: () => void }[] = [];
-/** 表头列拖拽排序 / 接收左侧克隆 */
-const tableSortables: { destroy: () => void }[] = [];
-let columnPaletteSortable: null | { destroy: () => void } = null;
-
-/** 左侧可拖入画布的列类型（对标 starfish 控件面板） */
-const columnPaletteItems = TABLE_CELL_OPTIONS.map((opt) => ({
-  ...opt,
-  tip:
-    opt.value === 'text'
-      ? '文本输入列'
-      : opt.value === 'select'
-        ? '下拉选项列'
-        : '是否开关列',
-}));
-
-const palette = computed<AgreeModuleMeta[]>(() => {
-  const customs = layouts.value
-    .filter((r) => r.custom || isCustomAgreeModule(String(r.key)))
-    .map((r) =>
-      metaFromMount({
-        key: r.key,
-        enabled: r.enabled,
-        order: r.order,
-        span: r.span,
-        label: r.label,
-        desc: r.desc,
-        widgetKind: r.widgetKind,
-        custom: true,
-        authCode: r.authCode,
-      }),
-    );
-  return [...AGREE_DETAIL_MODULES, ...customs];
-});
-
+const selectedKey = ref('basic');
+const selected = computed(() =>
+  layouts.value.find((m) => m.key === selectedKey.value),
+);
+const search = ref('');
+const newName = ref('');
+const newKind = ref<AgreeModuleWidgetKind>('form');
+const templates = ref<FcSchemaApi.FcSchema[]>([]);
+const templatesLoading = ref(false);
+const templatesError = ref(false);
+const preview = ref(false);
+const previewLoading = ref(false);
+const previewRules = ref<FcRuleMap>({});
+const dragKey = ref('');
+const regions = [
+  { key: 'content', label: '内容区', hint: '直接展开 · 支持整行、半行布局' },
+  { key: 'tabs', label: '标签页区', hint: '按顺序切换查看 · 每个标签独占整行' },
+] as const;
+const palette = computed(() =>
+  layouts.value.filter((m) => m.label.includes(search.value.trim())),
+);
 const mounted = computed(() =>
-  [...layouts.value].filter((r) => r.enabled).sort((a, b) => a.order - b.order),
+  layouts.value.filter((m) => m.enabled).toSorted((a, b) => a.order - b.order),
 );
-
-const basicOnCanvas = computed(() =>
-  mounted.value.find((r) => r.key === 'basic'),
+const inners = computed(() => ({
+  ...customInners.value,
+  basic: basicInner.value,
+  houses: housesInner.value,
+  compensation: compensationInner.value,
+  rewards: rewardsInner.value,
+  population: populationInner.value,
+}));
+const selectedTemplates = computed(() =>
+  templates.value.filter(
+    (t) =>
+      t.kind === (selected.value?.widgetKind || 'form') &&
+      t.status === 1 &&
+      t.usage !== 'workflowSupplement',
+  ),
 );
-
-watch(
-  mounted,
-  (list) => {
-    if (list.length === 0) return;
-    if (!list.some((r) => r.key === selectedKey.value)) {
-      const first = list[0];
-      if (first) selectedKey.value = first.key;
-      selectedFieldKey.value = '';
-    }
-  },
-  { immediate: true },
-);
-
-function metaOf(key: string): AgreeModuleMeta | undefined {
-  return palette.value.find((m) => m.key === key);
+function regionOf(row: ModuleLayoutEditRow) {
+  return normalizeModuleRegion(row.key, row.region);
 }
-
-function isMounted(key: AgreementModuleKey) {
-  return layouts.value.some((r) => r.key === key && r.enabled);
+function rowsIn(region: string) {
+  return mounted.value.filter((m) => regionOf(m) === region);
 }
-
-function isTableWidget(key: AgreementModuleKey) {
-  const row = layouts.value.find((r) => r.key === key);
-  if (row?.widgetKind) return row.widgetKind === 'table';
-  return metaOf(key)?.widgetKind === 'table';
+function patch(key: string, value: Partial<ModuleLayoutEditRow>) {
+  layouts.value = layouts.value.map((m) =>
+    m.key === key ? { ...m, ...value } : m,
+  );
 }
-
-/**
- * 当前选中模块的内部配置
- */
-const selectedInner = computed({
-  get(): ModuleInnerConfig {
-    return innerOf(selectedKey.value);
-  },
-  set(val: ModuleInnerConfig) {
-    assignInner(selectedKey.value, val);
-  },
-});
-
-const selectedSections = computed(() =>
-  resolveEnabledSections(selectedInner.value),
-);
-
-const currentSection = computed(() => {
-  const secs = selectedSections.value;
+function templateName(key: string) {
+  const id = fcBindings.value[key];
   return (
-    secs.find((s) => s.key === selectedSectionKey.value) || secs[0] || null
+    templates.value.find((t) => t.id === id)?.name ||
+    (id ? '模板不可用，请重新选择' : '请选择模板')
   );
-});
-
-const currentField = computed(() => {
-  const sec = currentSection.value;
-  if (!sec || !selectedFieldKey.value) return null;
-  return sec.fields.find((f) => f.key === selectedFieldKey.value) || null;
-});
-
-function addToCanvas(key: AgreementModuleKey) {
-  const maxOrder = Math.max(0, ...layouts.value.map((r) => r.order || 0));
-  layouts.value = layouts.value.map((row) =>
-    row.key === key ? { ...row, enabled: true, order: maxOrder + 10 } : row,
-  );
-  selectBlock(key);
 }
-
-function removeFromCanvas(key: AgreementModuleKey) {
-  layouts.value = layouts.value.map((row) =>
-    row.key === key ? { ...row, enabled: false } : row,
-  );
-  if (designerStep.value === 'edit' && selectedKey.value === key) {
-    backToAssemble();
-  }
-}
-
-/**
- * 左侧组件：未挂则挂上；已挂则选中（组装步不进入字段编辑）
- * @param key 模块
- */
-function onPaletteClick(key: AgreementModuleKey) {
-  if (!isMounted(key)) {
-    addToCanvas(key);
-    return;
-  }
-  selectBlock(key);
-}
-
-/**
- * 当前模块绑定的模板 id
- * @param key 模块 key
- */
-function bindingOf(key: AgreementModuleKey) {
-  return fcBindings.value[key] || '';
-}
-
-/**
- * 更新模块模板引用
- * @param key 模块 key
- * @param schemaId 模板 id
- */
-function setBinding(
-  key: AgreementModuleKey,
-  schemaId: boolean | number | string,
-) {
+function setBinding(id: unknown) {
   fcBindings.value = {
     ...fcBindings.value,
-    [key]: String(schemaId || '') || undefined,
+    [selectedKey.value]: String(id || '') || undefined,
   };
 }
-
-/**
- * 按形态过滤可选模板
- * @param key 模块 key
- */
-function fcSchemaOptionsFor(key: AgreementModuleKey) {
-  const kind = isTableWidget(key) ? 'table' : 'form';
-  return fcSchemaList.value.filter((s) => s.kind === kind && s.status === 1);
+function move(key: string, direction: number) {
+  const row = layouts.value.find((m) => m.key === key);
+  if (!row) return;
+  const list = rowsIn(regionOf(row));
+  const index = list.findIndex((m) => m.key === key);
+  const target = index + direction;
+  if (target < 0 || target >= list.length) return;
+  const keys = list.map((m) => m.key);
+  keys.splice(target, 0, keys.splice(index, 1)[0]!);
+  const order = new Map(keys.map((id, i) => [id, (i + 1) * 10]));
+  layouts.value = layouts.value.map((m) =>
+    order.has(m.key) ? { ...m, order: order.get(m.key)! } : m,
+  );
 }
-
-/**
- * 当前绑定模板名称
- * @param key 模块 key
- */
-function boundSchemaName(key: AgreementModuleKey) {
-  const id = bindingOf(key);
-  if (!id) return '未选择';
-  return fcSchemaList.value.find((s) => s.id === id)?.name || id;
+function drop(region: 'content' | 'tabs', before?: string) {
+  const key = dragKey.value;
+  dragKey.value = '';
+  if (!key || before === key) return;
+  const ids = rowsIn(region)
+    .filter((m) => m.key !== key)
+    .map((m) => m.key);
+  const index = before ? ids.indexOf(before) : ids.length;
+  ids.splice(index < 0 ? ids.length : index, 0, key);
+  const order = new Map(ids.map((id, i) => [id, (i + 1) * 10]));
+  layouts.value = layouts.value.map((m) =>
+    order.has(m.key) ? { ...m, region, order: order.get(m.key)! } : m,
+  );
 }
-
-/**
- * 选中模块（组装步）
- * @param key 模块
- */
-function enterEdit(key: AgreementModuleKey) {
-  if (!isMounted(key)) addToCanvas(key);
-  selectBlock(key);
+function changeRegion(region: unknown) {
+  if (!selected.value || (region !== 'content' && region !== 'tabs')) return;
+  patch(selectedKey.value, {
+    region,
+    order: Math.max(0, ...rowsIn(region).map((m) => m.order)) + 10,
+  });
 }
-
-/** 回到详情组装（只拖模块，不改字段） */
-function backToAssemble() {
-  designerStep.value = 'assemble';
-  selectedFieldKey.value = '';
-}
-
-/**
- * 已挂模块的形态文案
- * @param key 模块
- */
-function widgetLabelOf(key: AgreementModuleKey) {
-  return isTableWidget(key) ? '表格' : '表单';
-}
-
-/**
- * 开关值转 boolean（ElSwitch change 可能是 string | number | boolean）
- * @param v 开关回调值
- */
-function asSwitchOn(v: boolean | number | string) {
-  if (v === 'false' || v === '0') return false;
-  return v !== false && v !== 0 && v !== '';
-}
-
-/**
- * 新建业务组件并挂上画布
- */
-function createCustomComponent() {
-  const label = newComponentName.value.trim();
-  if (!label) {
-    ElMessage.warning('请填写组件名称');
+function createModule() {
+  if (!newName.value.trim()) {
+    ElMessage.warning('请填写模块名称');
     return;
   }
-  const maxOrder = Math.max(0, ...layouts.value.map((r) => r.order || 0));
   const mount = createCustomAgreeModule({
-    label,
-    widgetKind: newComponentKind.value,
-    order: maxOrder + 10,
+    label: newName.value,
+    widgetKind: newKind.value,
+    order: Math.max(0, ...layouts.value.map((m) => m.order)) + 10,
   });
   layouts.value = [
     ...layouts.value,
     {
-      key: mount.key,
-      label: mount.label || label,
-      authCode: mount.authCode || 'Agree:Module:custom',
-      enabled: true,
-      order: mount.order ?? maxOrder + 10,
+      ...mount,
+      label: mount.label!,
+      authCode: mount.authCode!,
+      order: mount.order!,
       span: 24,
-      widgetKind: mount.widgetKind,
-      custom: true,
-      desc: mount.desc,
+      region: 'tabs',
     },
   ];
   customInners.value = {
     ...customInners.value,
     [mount.key]:
-      mount.widgetKind === 'table'
-        ? buildDefaultCustomTableInner(label)
-        : buildDefaultCustomFormInner(label),
+      newKind.value === 'table'
+        ? buildDefaultCustomTableInner(mount.label!)
+        : buildDefaultCustomFormInner(mount.label!),
   };
-  newComponentName.value = '';
-  selectBlock(mount.key);
-  designerStep.value = 'assemble';
-  ElMessage.success(`已创建「${label}」，请在右侧选择表单模板`);
+  selectedKey.value = mount.key;
+  newName.value = '';
+  ElMessage.success('模块已添加，请选择对应模板');
 }
-
-/**
- * 彻底删除自定义业务组件
- * @param key 模块
- */
-function deleteCustomComponent(key: AgreementModuleKey) {
-  layouts.value = layouts.value.filter((r) => r.key !== key);
-  customInners.value = Object.fromEntries(
-    Object.entries(customInners.value).filter(([k]) => k !== key),
-  );
-  fcBindings.value = Object.fromEntries(
-    Object.entries(fcBindings.value).filter(([k]) => k !== key),
-  );
-  if (selectedKey.value === key) {
-    selectedKey.value = layouts.value.find((r) => r.enabled)?.key || 'basic';
-    backToAssemble();
+async function loadTemplates() {
+  templatesLoading.value = true;
+  templatesError.value = false;
+  try {
+    templates.value = await getFcSchemaList({ status: 1 });
+  } catch {
+    templatesError.value = true;
+  } finally {
+    templatesLoading.value = false;
   }
 }
-
-/**
- * 选中整块（清空字段点选）
- * @param key 模块
- */
-function selectBlock(key: AgreementModuleKey) {
-  selectedKey.value = key;
-  selectedFieldKey.value = '';
-  selectedSectionKey.value = resolveEnabledSections(innerOf(key))[0]?.key || '';
-}
-
-/**
- * 点选字段/列
- * @param moduleKey 模块
- * @param sectionKey 子块
- * @param fieldKey 字段
- */
-function selectField(
-  moduleKey: AgreementModuleKey,
-  sectionKey: string,
-  fieldKey: string,
-) {
-  selectedKey.value = moduleKey;
-  selectedSectionKey.value = sectionKey;
-  selectedFieldKey.value = fieldKey;
-}
-
-/**
- * 按场景 fcBindings 取已绑模板 rule（设计器预览用）
- * @param key 模块 key
- */
-function boundFcRule(key: AgreementModuleKey) {
-  const id = fcBindings.value[key];
-  if (!id) return null;
-  const schema = fcSchemaList.value.find((s) => s.id === id);
-  if (!schema || !isFcRule(schema.rule)) return null;
-  return schema.rule;
-}
-
-/**
- * 已绑 FormCreate 模板时，用模板列/字段生成预览配置
- * @param key 模块 key
- */
-function innerFromFcBinding(key: AgreementModuleKey): ModuleInnerConfig | null {
-  const fcRule = boundFcRule(key);
-  if (!fcRule) return null;
-  const label = metaOf(key)?.label || '组件';
-  const section = isTableWidget(key)
-    ? buildSectionFromFcTable(fcRule, label)
-    : buildSectionFromFcForm(fcRule, label);
-  if (!section) return null;
-  // 内置表单块不走 custom 子表逻辑
-  const normalized =
-    key === 'basic' || key === 'population'
-      ? { ...section, custom: false }
-      : section;
-  return { sections: [normalized] };
-}
-
-function innerOf(key: AgreementModuleKey): ModuleInnerConfig {
-  if (key === 'basic') {
-    const fromFc = innerFromFcBinding('basic');
-    if (fromFc) {
-      const customSecs = (basicInner.value.sections || []).filter((s) =>
-        isCustomBasicSection(s),
-      );
-      return { sections: [...fromFc.sections, ...customSecs] };
+async function openPreview() {
+  if (
+    mounted.value.some(
+      (m) =>
+        !fcBindings.value[m.key] ||
+        !templates.value.some(
+          (t) =>
+            t.id === fcBindings.value[m.key] &&
+            t.status === 1 &&
+            t.usage !== 'workflowSupplement' &&
+            t.kind === (m.widgetKind || 'form'),
+        ),
+    )
+  ) {
+    ElMessage.warning('请先为所有显示的模块选择可用且类型匹配的模板');
+    return;
+  }
+  previewLoading.value = true;
+  try {
+    const rules: FcRuleMap = {};
+    for (const module of mounted.value) {
+      const rule = templates.value.find(
+        (t) => t.id === fcBindings.value[module.key],
+      )?.rule;
+      if (!isFcRule(rule)) throw new Error('模板规则不可用');
+      rules[module.key] = cloneFcRule(rule);
     }
-    return basicInner.value;
-  }
-  const fromFc = innerFromFcBinding(key);
-  if (fromFc) return fromFc;
-  if (key === 'houses') return housesInner.value;
-  if (key === 'compensation') return compensationInner.value;
-  if (key === 'rewards') return rewardsInner.value;
-  if (key === 'population') return populationInner.value;
-  const row = layouts.value.find((r) => r.key === key);
-  const kind = row?.widgetKind || inferCustomWidgetKind(String(key));
-  const existing = customInners.value[key];
-  if (existing) return existing;
-  return kind === 'table'
-    ? buildDefaultCustomTableInner(row?.label || '自定义表格')
-    : buildDefaultCustomFormInner(row?.label || '自定义表单');
-}
-
-function previewSections(key: AgreementModuleKey) {
-  return resolveEnabledSections(innerOf(key));
-}
-
-function previewFields(section: ModuleInnerSection) {
-  return resolveEnabledFields(section).filter((f) => f.key !== '_selection');
-}
-
-/** 表单子块（排除自定义表格） */
-function formSectionsOf(key: AgreementModuleKey) {
-  return previewSections(key).filter((s) => !isCustomBasicSection(s));
-}
-
-/** 基础信息里残留的自定义表格子块 */
-function customSectionsOf(key: AgreementModuleKey) {
-  return previewSections(key).filter((s) => isCustomBasicSection(s));
-}
-
-/**
- * 属性面板是否按表格展示（整模块是表，或当前点中自定义表）
- */
-function isTableContext() {
-  if (isTableWidget(selectedKey.value)) return true;
-  return currentSection.value?.custom === true;
-}
-
-/**
- * 写回指定模块内部配置
- * @param key 模块
- * @param next 下一份
- */
-function assignInner(key: AgreementModuleKey, next: ModuleInnerConfig) {
-  const cloned: ModuleInnerConfig = {
-    sections: next.sections.map((s) => ({
-      ...s,
-      fields: [...s.fields],
-    })),
-  };
-  if (key === 'basic') basicInner.value = cloned;
-  else if (key === 'houses') housesInner.value = cloned;
-  else if (key === 'compensation') compensationInner.value = cloned;
-  else if (key === 'rewards') rewardsInner.value = cloned;
-  else if (key === 'population') populationInner.value = cloned;
-  else {
-    customInners.value = { ...customInners.value, [key]: cloned };
+    previewRules.value = rules;
+    preview.value = true;
+  } catch {
+    ElMessage.error('预览加载失败，请稍后重试');
+  } finally {
+    previewLoading.value = false;
   }
 }
-
-/**
- * 按画布 DOM 顺序写回字段 order
- * @param el 栅格容器
- */
-function syncFieldOrderFromGrid(el: HTMLElement) {
-  const moduleKey = el.dataset.moduleKey as AgreementModuleKey;
-  const sectionKey = el.dataset.sectionKey || '';
-  if (!moduleKey || !sectionKey) return;
-  const keys = [...el.querySelectorAll('.form-cell')]
-    .map((n) => (n as HTMLElement).dataset.fieldKey)
-    .filter(Boolean) as string[];
-  const src = innerOf(moduleKey);
-  const next: ModuleInnerConfig = {
-    sections: src.sections.map((s) => {
-      if (s.key !== sectionKey) return s;
-      const byKey = new Map(s.fields.map((f) => [f.key, f]));
-      const seen = new Set(keys);
-      const ordered = keys
-        .map((k, i) => {
-          const f = byKey.get(k);
-          return f ? { ...f, order: (i + 1) * 10 } : null;
-        })
-        .filter(Boolean) as ModuleInnerFieldItem[];
-      const rest = s.fields
-        .filter((f) => !seen.has(f.key))
-        .map((f, i) => ({ ...f, order: 1000 + i * 10 }));
-      return { ...s, fields: [...ordered, ...rest] };
-    }),
-  };
-  assignInner(moduleKey, next);
-}
-
-/**
- * 给每个表单栅格挂拖拽排序
- */
-async function initFormSortable() {
-  formSortables.forEach((s) => s.destroy());
-  formSortables.length = 0;
-  if (designerStep.value !== 'edit') return;
-  const root = canvasPageRef.value;
-  if (!root) return;
-  const Sortable = await loadSortable();
-  if (!Sortable?.create) return;
-  root.querySelectorAll('.form-grid').forEach((node) => {
-    formSortables.push(
-      Sortable.create(node, {
-        animation: 180,
-        handle: '.cell-drag',
-        draggable: '.form-cell',
-        onEnd() {
-          syncFieldOrderFromGrid(node as HTMLElement);
-        },
-      }),
-    );
-  });
-}
-
-/**
- * 根据表头 DOM 顺序写回列 order（勾选列固定最前）
- * @param el 表头行容器 .table-col-row
- */
-function syncColumnOrderFromHeader(el: HTMLElement) {
-  const moduleKey = el.dataset.moduleKey as AgreementModuleKey;
-  const sectionKey = el.dataset.sectionKey || '';
-  if (!moduleKey || !sectionKey) return;
-  const keys = [...el.querySelectorAll('.table-col')]
-    .map((n) => (n as HTMLElement).dataset.fieldKey)
-    .filter(Boolean) as string[];
-  if (keys.length === 0) return;
-  const src = innerOf(moduleKey);
-  const next: ModuleInnerConfig = {
-    sections: src.sections.map((s) => {
-      if (s.key !== sectionKey) return s;
-      const byKey = new Map(s.fields.map((f) => [f.key, f]));
-      const seen = new Set(keys);
-      const ordered = keys
-        .map((k, i) => {
-          const f = byKey.get(k);
-          return f ? { ...f, order: (i + 1) * 10 } : null;
-        })
-        .filter(Boolean) as ModuleInnerFieldItem[];
-      /** 未出现在 DOM 的列（如被过滤）缀后，勾选列强制最前 */
-      const rest = s.fields
-        .filter((f) => !seen.has(f.key))
-        .map((f, i) => ({ ...f, order: 1000 + i * 10 }));
-      const merged = [...ordered, ...rest];
-      const selection = merged.filter((f) => f.key === '_selection');
-      const others = merged.filter((f) => f.key !== '_selection');
-      return {
-        ...s,
-        fields: [...selection, ...others].map((f, i) => ({
-          ...f,
-          order: (i + 1) * 10,
-        })),
-      };
-    }),
-  };
-  assignInner(moduleKey, next);
-}
-
-/**
- * 表头列拖排序 + 接收左侧列控件克隆
- */
-async function initTableSortable() {
-  tableSortables.forEach((s) => s.destroy());
-  tableSortables.length = 0;
-  if (designerStep.value !== 'edit') return;
-  const root = canvasPageRef.value;
-  if (!root) return;
-  const Sortable = await loadSortable();
-  if (!Sortable?.create) return;
-  root.querySelectorAll('.table-col-row').forEach((node) => {
-    const el = node as HTMLElement;
-    tableSortables.push(
-      Sortable.create(el, {
-        animation: 180,
-        group: 'agree-table-cols',
-        handle: '.col-drag',
-        draggable: '.table-col:not(.is-fixed)',
-        ghostClass: 'table-col-ghost',
-        onAdd(evt: { item: HTMLElement; newIndex: number | undefined }) {
-          const cellType = (evt.item.dataset.cellType ||
-            'text') as ModuleInnerCellType;
-          const sectionKey = el.dataset.sectionKey || '';
-          const moduleKey = el.dataset.moduleKey as AgreementModuleKey;
-          evt.item.remove();
-          if (moduleKey) selectedKey.value = moduleKey;
-          if (sectionKey) selectedSectionKey.value = sectionKey;
-          /** newIndex 相对可拖节点；勾选列不在 draggable 内，下标即插入位 */
-          addTableColumnWithType(
-            cellType,
-            evt.newIndex ?? undefined,
-            sectionKey,
-          );
-        },
-        onEnd(evt: {
-          from: HTMLElement;
-          pullMode?: boolean | string;
-          to: HTMLElement;
-        }) {
-          /** 来自面板的克隆已在 onAdd 处理；同表头内排序写回 */
-          if (evt.pullMode === 'clone') return;
-          if (evt.from === evt.to) syncColumnOrderFromHeader(el);
-        },
-      }),
-    );
-  });
-}
-
-/**
- * 左侧列控件：拖出克隆到表头
- */
-async function initColumnPaletteSortable() {
-  columnPaletteSortable?.destroy();
-  columnPaletteSortable = null;
-  if (designerStep.value !== 'edit' || !isTableContext()) return;
-  const el = columnPaletteRef.value;
-  if (!el) return;
-  const Sortable = await loadSortable();
-  if (!Sortable?.create) return;
-  columnPaletteSortable = Sortable.create(el, {
-    animation: 160,
-    group: { name: 'agree-table-cols', pull: 'clone', put: false },
-    sort: false,
-    draggable: '.col-palette-item',
-  });
-}
-
-/**
- * 拖右侧把手改占宽（吸附 8/12/16/24）
- * @param e 鼠标按下
- * @param moduleKey 模块
- * @param sectionKey 子块
- * @param fieldKey 字段
- */
-function onSpanResizeStart(
-  e: MouseEvent,
-  moduleKey: AgreementModuleKey,
-  sectionKey: string,
-  fieldKey: string,
-) {
-  e.preventDefault();
-  const grid = (e.currentTarget as HTMLElement).closest(
-    '.form-grid',
-  ) as HTMLElement | null;
-  if (!grid) return;
-  const field = innerOf(moduleKey)
-    .sections.find((s) => s.key === sectionKey)
-    ?.fields.find((f) => f.key === fieldKey);
-  if (!field) return;
-  const startX = e.clientX;
-  const startSpan = normalizeFieldSpan(field.span);
-  const colWidth = Math.max(grid.clientWidth / 24, 8);
-  selectField(moduleKey, sectionKey, fieldKey);
-  const onMove = (ev: MouseEvent) => {
-    const next = snapFieldSpan(startSpan + (ev.clientX - startX) / colWidth);
-    patchFieldAt(moduleKey, sectionKey, fieldKey, { span: next });
-  };
-  const onUp = () => {
-    window.removeEventListener('mousemove', onMove);
-    window.removeEventListener('mouseup', onUp);
-  };
-  window.addEventListener('mousemove', onMove);
-  window.addEventListener('mouseup', onUp);
-}
-
-/**
- * 改指定字段属性（不依赖当前选中）
- */
-function patchFieldAt(
-  moduleKey: AgreementModuleKey,
-  sectionKey: string,
-  fieldKey: string,
-  patch: Partial<ModuleInnerFieldItem>,
-) {
-  const src = innerOf(moduleKey);
-  assignInner(moduleKey, {
-    sections: src.sections.map((s) => {
-      if (s.key !== sectionKey) return s;
-      return {
-        ...s,
-        fields: s.fields.map((f) =>
-          f.key === fieldKey ? { ...f, ...patch } : f,
-        ),
-      };
-    }),
-  });
-}
-
-/**
- * 写回当前模块内部配置
- * @param next 下一份
- */
-function commitInner(next: ModuleInnerConfig) {
-  selectedInner.value = {
-    sections: next.sections.map((s) => ({
-      ...s,
-      fields: [...s.fields],
-    })),
-  };
-}
-
-/**
- * 更新当前字段若干属性
- * @param patch 局部属性
- */
-function patchField(patch: Partial<ModuleInnerFieldItem>) {
-  const secKey = currentSection.value?.key;
-  const fieldKey = selectedFieldKey.value;
-  if (!secKey || !fieldKey) return;
-  const next: ModuleInnerConfig = {
-    sections: selectedInner.value.sections.map((s) => {
-      if (s.key !== secKey) return s;
-      return {
-        ...s,
-        fields: s.fields.map((f) =>
-          f.key === fieldKey ? { ...f, ...patch } : f,
-        ),
-      };
-    }),
-  };
-  commitInner(next);
-}
-
-function setFieldEnabled(
-  sectionKey: string,
-  fieldKey: string,
-  enabled: boolean,
-) {
-  const next: ModuleInnerConfig = {
-    sections: selectedInner.value.sections.map((s) => {
-      if (s.key !== sectionKey) return s;
-      return {
-        ...s,
-        fields: s.fields.map((f) =>
-          f.key === fieldKey ? { ...f, enabled } : f,
-        ),
-      };
-    }),
-  };
-  commitInner(next);
-}
-
-/**
- * 按单元格类型插入一列（可指定插入位置）
- * @param cellType 单元格类型
- * @param insertIndex 插入下标（相对可拖列，不含勾选列）；缺省追加到末尾
- * @param sectionKey 目标子块；缺省当前选中
- */
-function addTableColumnWithType(
-  cellType: ModuleInnerCellType,
-  insertIndex?: number,
-  sectionKey?: string,
-) {
-  const targetKey =
-    sectionKey ||
-    currentSection.value?.key ||
-    selectedInner.value.sections[0]?.key;
-  if (!targetKey) return;
-  const sec = selectedInner.value.sections.find((s) => s.key === targetKey);
-  if (!sec) return;
-
-  const label =
-    TABLE_CELL_OPTIONS.find((o) => o.value === cellType)?.label || '新列';
-  const key = `col_${Date.now()}`;
-  const newField: ModuleInnerFieldItem = {
-    key,
-    label: `新${label}列`,
-    enabled: true,
-    order: 0,
-    minWidth: 120,
-    custom: true,
-    cellType,
-  };
-
-  const next: ModuleInnerConfig = {
-    sections: selectedInner.value.sections.map((s) => {
-      if (s.key !== targetKey) return s;
-      const fixed = s.fields.filter((f) => f.key === '_selection');
-      const movable = s.fields.filter((f) => f.key !== '_selection');
-      const at =
-        typeof insertIndex === 'number'
-          ? Math.max(0, Math.min(insertIndex, movable.length))
-          : movable.length;
-      const merged = [
-        ...fixed,
-        ...movable.slice(0, at),
-        newField,
-        ...movable.slice(at),
-      ].map((f, i) => ({ ...f, order: (i + 1) * 10 }));
-      return { ...s, fields: merged };
-    }),
-  };
-  commitInner(next);
-  selectedSectionKey.value = targetKey;
-  selectedFieldKey.value = key;
-}
-
-/** 表格：插入文本列（兼容右侧按钮） */
-function addTableColumn() {
-  addTableColumnWithType('text');
-}
-
-/**
- * 单元格类型展示文案
- * @param field 列配置
- */
-function cellTypeLabel(field: ModuleInnerFieldItem) {
-  if (field.key === '_selection') return '勾选';
-  const t = field.cellType || field.controlType || 'text';
-  if (t === 'select') return '下拉';
-  if (t === 'yesno') return '是否';
-  return '文本';
-}
-
-/**
- * 表单：新增扩展字段（如「用户名」），保存后详情页按 schema 渲染
- */
-function addFormField() {
-  const sec = currentSection.value;
-  if (!sec || isTableContext()) return;
-  const maxOrder = Math.max(0, ...sec.fields.map((f) => f.order));
-  const key = `ext_${Date.now()}`;
-  const next: ModuleInnerConfig = {
-    sections: selectedInner.value.sections.map((s) => {
-      if (s.key !== sec.key) return s;
-      return {
-        ...s,
-        fields: [
-          ...s.fields,
-          {
-            key,
-            label: '新字段',
-            enabled: true,
-            order: maxOrder + 10,
-            custom: true,
-            controlType: 'input',
-            span: 8,
-          },
-        ],
-      };
-    }),
-  };
-  commitInner(next);
-  selectedFieldKey.value = key;
-}
-
-/**
- * 删除当前字段：自定义直接去掉；内置写入 removedFieldKeys，normalize 不再补回
- */
-function removeCurrentField() {
-  const sec = currentSection.value;
-  const field = currentField.value;
-  if (!sec || !field || field.key === '_selection') return;
-  const next: ModuleInnerConfig = {
-    sections: selectedInner.value.sections.map((s) => {
-      if (s.key !== sec.key) return s;
-      const removed = new Set(s.removedFieldKeys || []);
-      if (!field.custom) removed.add(field.key);
-      return {
-        ...s,
-        removedFieldKeys: [...removed],
-        fields: s.fields.filter((f) => f.key !== field.key),
-      };
-    }),
-  };
-  commitInner(next);
-  selectedFieldKey.value = '';
-}
-
-/**
- * 自定义字段可改数据 key（如 username），便于详情保存到 basic/population 扩展值
- * @param raw 新 key
- */
-function renameCustomFieldKey(raw: string) {
-  const sec = currentSection.value;
-  const field = currentField.value;
-  const nextKey = String(raw || '')
-    .trim()
-    .replaceAll(/\s+/g, '_');
-  if (!sec || !field?.custom || !nextKey || nextKey === field.key) return;
-  if (sec.fields.some((f) => f.key === nextKey)) return;
-  const next: ModuleInnerConfig = {
-    sections: selectedInner.value.sections.map((s) => {
-      if (s.key !== sec.key) return s;
-      return {
-        ...s,
-        fields: s.fields.map((f) =>
-          f.key === field.key ? { ...f, key: nextKey } : f,
-        ),
-      };
-    }),
-  };
-  commitInner(next);
-  selectedFieldKey.value = nextKey;
-}
-
-function patchTableOptions(patch: {
-  allowAdd?: boolean;
-  allowRemove?: boolean;
-  minRows?: number;
-}) {
-  const sec = currentSection.value;
-  if (!sec) return;
-  const next: ModuleInnerConfig = {
-    sections: selectedInner.value.sections.map((s) => {
-      if (s.key !== sec.key) return s;
-      return {
-        ...s,
-        tableOptions: {
-          allowAdd: s.tableOptions?.allowAdd ?? true,
-          allowRemove: s.tableOptions?.allowRemove ?? true,
-          minRows: s.tableOptions?.minRows ?? 1,
-          ...patch,
-        },
-      };
-    }),
-  };
-  commitInner(next);
-}
-
-function controlPreview(field: ModuleInnerFieldItem) {
-  const t = field.controlType || 'input';
-  if (t === 'select' || t === 'yesno') return '下拉';
-  if (t === 'textarea') return '多行';
-  if (t === 'date') return '日期';
-  if (t === 'radio') return '单选';
-  return '输入';
-}
-
-function colSpan(field: ModuleInnerFieldItem) {
-  return normalizeFieldSpan(field.span);
-}
-
-function syncTabOrderFromDom() {
-  const el = tabListRef.value;
-  if (!el) return;
-  const keys = [...el.children]
-    .map((n) => (n as HTMLElement).dataset.key)
-    .filter(Boolean) as AgreementModuleKey[];
-  const orderByKey = new Map(keys.map((k, i) => [k, (i + 1) * 10]));
-  layouts.value = layouts.value.map((row) => {
-    const next = orderByKey.get(row.key);
-    return next === undefined ? row : { ...row, order: next };
-  });
-}
-
-async function loadSortable() {
-  const mod = await import(
-    // @ts-expect-error sortable 完整包
-    'sortablejs/modular/sortable.complete.esm.js'
-  );
-  return mod?.default;
-}
-
-async function initTabSortable() {
-  tabSortable?.destroy();
-  tabSortable = null;
-  const el = tabListRef.value;
-  if (!el) return;
-  const Sortable = await loadSortable();
-  if (!Sortable?.create) return;
-  tabSortable = Sortable.create(el, {
-    animation: 180,
-    handle: '.tab-drag',
-    draggable: '.canvas-pill',
-    onEnd() {
-      syncTabOrderFromDom();
-    },
-  });
-}
-
-onMounted(() => {
-  void getFcSchemaList({ status: 1 })
-    .then((list) => {
-      fcSchemaList.value = list;
-    })
-    .catch(() => {
-      fcSchemaList.value = [];
-    });
-  void nextTick().then(() => {
-    void initTabSortable();
-    void initFormSortable();
-    void initTableSortable();
-    void initColumnPaletteSortable();
-  });
-});
-
-onBeforeUnmount(() => {
-  tabSortable?.destroy();
-  formSortables.forEach((s) => s.destroy());
-  tableSortables.forEach((s) => s.destroy());
-  columnPaletteSortable?.destroy();
-});
-
-watch(
-  () => mounted.value.map((r) => r.key).join(','),
-  () => {
-    void nextTick().then(() => initTabSortable());
-  },
-);
-
-watch(
-  () =>
-    [
-      designerStep.value,
-      selectedKey.value,
-      selectedSectionKey.value,
-      isTableContext() ? 'table' : 'form',
-      mounted.value.map((r) => r.key).join(','),
-      selectedInner.value.sections
-        .flatMap((s) => s.fields.map((f) => `${f.key}:${f.cellType || ''}`))
-        .join(','),
-    ].join('|'),
-  () => {
-    void nextTick().then(() => {
-      void initTabSortable();
-      void initFormSortable();
-      void initTableSortable();
-      void initColumnPaletteSortable();
-    });
-  },
-);
+onMounted(loadTemplates);
 </script>
 
 <template>
-  <div class="detail-designer">
-    <aside class="designer-pane designer-palette">
-      <!-- 组装：挂业务组件 -->
-      <template v-if="designerStep === 'assemble'">
-        <div class="pane-title">业务组件</div>
-        <p class="pane-hint">
-          点组件挂到本场景；已挂的在右侧选择「表单模板」。改字段请到系统管理 →
-          表单模板。
-        </p>
-        <button
-          v-for="item in palette"
-          :key="item.key"
-          type="button"
-          class="palette-item"
-          :class="{ 'is-on': isMounted(item.key) }"
-          @click="onPaletteClick(item.key)"
-        >
-          <div class="flex items-center justify-between gap-1">
-            <span class="font-medium">{{ item.label }}</span>
-            <ElTag
-              size="small"
-              :type="item.widgetKind === 'table' ? 'success' : 'primary'"
-            >
-              {{ item.widgetKind === 'table' ? '表格' : '表单' }}
-            </ElTag>
-          </div>
-          <div class="mt-0.5 text-[11px] text-gray-400">{{ item.desc }}</div>
-        </button>
-        <div class="palette-create">
-          <div class="mb-1 text-xs font-medium text-gray-600">新建业务组件</div>
-          <ElInput
-            v-model="newComponentName"
-            size="small"
-            class="mb-1.5"
-            placeholder="名称，如评估信息"
-          />
-          <ElSelect
-            v-model="newComponentKind"
-            size="small"
-            class="mb-1.5 w-full"
-          >
-            <ElOption label="空白表单" value="form" />
-            <ElOption label="空白表格" value="table" />
-          </ElSelect>
-          <ElButton
-            type="primary"
-            size="small"
-            class="w-full"
-            @click="createCustomComponent"
-          >
-            创建并挂到场景
-          </ElButton>
-        </div>
-      </template>
-
-      <!-- 表格编辑：列控件面板（拖入表头或点击新增） -->
-      <template v-else-if="isTableContext()">
-        <div class="pane-title">列控件</div>
-        <p class="pane-hint">
-          拖到中间表头即可加列，也可点击新增；表头内左右拖改顺序，右侧改显示名/列宽。
-        </p>
-        <div ref="columnPaletteRef" class="col-palette-list">
-          <button
-            v-for="item in columnPaletteItems"
-            :key="item.value"
-            type="button"
-            class="col-palette-item"
-            :data-cell-type="item.value"
-            @click="addTableColumnWithType(item.value)"
-          >
-            <GripVertical class="size-3.5 shrink-0 text-gray-400" />
-            <div class="min-w-0 flex-1 text-left">
-              <div class="text-xs font-medium">{{ item.label }}列</div>
-              <div class="text-[11px] text-gray-400">{{ item.tip }}</div>
-            </div>
-          </button>
-        </div>
-        <ElButton
-          class="mt-3 w-full"
-          size="small"
-          type="primary"
-          plain
-          @click="addTableColumn"
-        >
-          快速插入文本列
-        </ElButton>
-      </template>
-
-      <!-- 表单编辑：提示（基础信息走 FormCreate 模板） -->
-      <template v-else>
-        <div class="pane-title">表单字段</div>
-        <p class="pane-hint">
-          {{
-            selectedKey === 'basic'
-              ? '基础信息请在「FC 表单模板」中配置并绑定到本场景；此处仅保留自定义子表时切到表格列面板。'
-              : '中间画布拖格子改顺序/占宽；右侧改显示名与控件。也可用右侧「新增字段」。'
-          }}
-        </p>
-        <div
-          class="rounded-md border border-dashed border-gray-200 bg-gray-50 px-2 py-3 text-[11px] text-gray-500"
-        >
-          表单控件请用 FormCreate 模板库维护；当前画布以模块组装 +
-          右侧属性为主。
-        </div>
-      </template>
-    </aside>
-
-    <div class="designer-pane designer-canvas">
-      <div class="flex items-start justify-between gap-2">
-        <div>
-          <div class="pane-title">
-            {{
-              designerStep === 'assemble'
-                ? '详情组装'
-                : isTableWidget(selectedKey)
-                  ? '表格设计'
-                  : '表单设计'
-            }}
-          </div>
-          <p class="pane-hint">
-            {{
-              designerStep === 'assemble'
-                ? '拖胶囊改模块顺序；每块选择表单模板库中的模板。'
-                : isTableWidget(selectedKey)
-                  ? '从左侧拖列到表头，或表头内拖排序；点列后右侧改显示名/列宽/单元格类型。'
-                  : '拖格子改字段顺序和占宽，右侧改显示名/控件。'
-            }}
-          </p>
-        </div>
-        <ElButton
-          v-if="designerStep === 'edit'"
-          size="small"
-          @click="backToAssemble"
-        >
-          返回组装
-        </ElButton>
+  <div class="view-designer">
+    <header class="designer-toolbar">
+      <div>
+        <strong>详情视图</strong><span class="toolbar-note">{{ mounted.length }} 个显示 ·
+          {{ layouts.length - mounted.length }} 个隐藏</span>
       </div>
-
-      <div ref="canvasPageRef" class="canvas-page">
-        <div class="canvas-header">
-          <span class="text-xs font-semibold">XY-2024-0025</span>
-          <ElTag size="small" type="warning">待复核</ElTag>
-          <span class="ml-auto text-[11px] text-gray-400">
-            示意，不是某条真实协议
-          </span>
-        </div>
-        <div v-if="designerStep === 'assemble'" class="canvas-summary">
-          <div v-for="n in 4" :key="n" class="summary-mini">
-            示意指标 {{ n }}
-          </div>
-        </div>
-
-        <nav
-          v-if="designerStep === 'assemble' && mounted.length"
-          ref="tabListRef"
-          class="canvas-pills"
-          aria-label="画布模块胶囊"
+      <ElButton v-if="preview" @click="preview = false">返回配置</ElButton>
+      <ElButton
+        v-else
+        type="primary"
+        plain
+        :loading="previewLoading"
+        @click="openPreview"
         >
-          <button
-            v-for="row in mounted"
-            :key="row.key"
-            type="button"
-            class="canvas-pill"
-            :class="{ 'is-selected': selectedKey === row.key }"
-            :data-key="row.key"
-            @click="selectBlock(row.key)"
-            @dblclick="enterEdit(row.key)"
-          >
-            <GripVertical class="tab-drag size-3.5 text-gray-400" />
-            <span>{{ metaOf(row.key)?.label || row.label }}</span>
-          </button>
-        </nav>
-
-        <!-- 组装：模块卡片，不展示字段栅格 -->
-        <div v-if="designerStep === 'assemble'" class="assemble-list">
-          <div
-            v-for="row in mounted"
-            :key="row.key"
-            class="assemble-card"
-            :class="{ 'is-selected': selectedKey === row.key }"
-            @click="selectBlock(row.key)"
-          >
-            <div class="assemble-card__main">
-              <div class="flex items-center gap-1">
-                <span class="text-xs font-semibold">
-                  {{ metaOf(row.key)?.label || row.label }}
-                </span>
-                <ElTag
-                  size="small"
-                  :type="isTableWidget(row.key) ? 'success' : 'primary'"
-                >
-                  {{ widgetLabelOf(row.key) }}
-                </ElTag>
-              </div>
-              <div class="mt-0.5 text-[11px] text-gray-400">
-                模板：{{ boundSchemaName(row.key) }}
-              </div>
-            </div>
-            <ElSelect
-              :model-value="bindingOf(row.key)"
-              class="assemble-card__select"
-              placeholder="选择模板"
-              size="small"
-              filterable
-              @click.stop
-              @update:model-value="setBinding(row.key, $event)"
-            >
-              <ElOption
-                v-for="opt in fcSchemaOptionsFor(row.key)"
-                :key="opt.id"
-                :label="opt.name"
-                :value="opt.id"
-              />
-            </ElSelect>
-          </div>
-          <div
-            v-if="!mounted.length"
-            class="py-10 text-center text-xs text-gray-400"
-          >
-            从左侧把组件挂到本场景
-          </div>
-        </div>
-
-        <!-- 编辑：只渲染当前模块的表单或表格 -->
-        <template v-else>
-          <div
-            v-if="basicOnCanvas && selectedKey === 'basic'"
-            class="canvas-block"
-            :class="{
-              'is-selected': selectedKey === 'basic' && !selectedFieldKey,
-            }"
-            @click.stop="selectBlock('basic')"
-          >
-            <div class="canvas-block__head">基础信息</div>
-            <!-- 基础信息表单走 FormCreate 模板绑定，画布仅管理自定义子表 -->
-            <div
-              class="fc-basic-hint mb-3 rounded-md border border-dashed border-blue-200 bg-blue-50/60 px-3 py-3 text-xs text-gray-600"
-            >
-              <div class="mb-1 font-medium text-gray-800">
-                基础信息的字段在「表单模板」里改
-              </div>
-              <div>
-                在这里选择要用哪一套表单模板。字段的增删和占宽，请到系统管理 →
-                表单模板里调整，再回到本页点确认保存。
-              </div>
-            </div>
-            <div
-              v-for="sec in customSectionsOf('basic')"
-              :key="sec.key"
-              class="mb-2"
-            >
-              <div class="mb-1 text-[11px] text-gray-500">{{ sec.label }}</div>
-              <div class="canvas-table-preview">
-                <div
-                  class="table-col-row"
-                  data-module-key="basic"
-                  :data-section-key="sec.key"
-                >
-                  <button
-                    v-for="f in previewFields(sec)"
-                    :key="f.key"
-                    type="button"
-                    class="table-col"
-                    :class="{
-                      'is-hit':
-                        selectedKey === 'basic' &&
-                        selectedSectionKey === sec.key &&
-                        selectedFieldKey === f.key,
-                      'is-fixed': f.key === '_selection',
-                    }"
-                    :data-field-key="f.key"
-                    :style="{ minWidth: `${f.minWidth || 80}px` }"
-                    @click.stop="selectField('basic', sec.key, f.key)"
-                  >
-                    <GripVertical
-                      v-if="f.key !== '_selection'"
-                      class="col-drag size-3.5 shrink-0 text-gray-400"
-                    />
-                    <div class="min-w-0 flex-1 text-left">
-                      <div class="truncate">{{ f.label }}</div>
-                      <div class="mt-0.5 text-[10px] font-normal text-gray-400">
-                        {{ cellTypeLabel(f) }}
-                      </div>
-                    </div>
-                  </button>
-                </div>
-                <div class="table-row-ghost">自定义表格 · 可拖列排序</div>
-              </div>
-            </div>
-          </div>
-
-          <div
-            v-if="selectedKey !== 'basic' && isMounted(selectedKey)"
-            class="canvas-tabs-wrap"
-          >
-            <div class="canvas-block__head">
-              {{ metaOf(selectedKey)?.label || selectedKey }}
-            </div>
-            <!-- 表单栅格：每子块一格，可拖顺序/占宽 -->
-            <div v-if="!isTableWidget(selectedKey)">
-              <template
-                v-for="sec in formSectionsOf(selectedKey)"
-                :key="sec.key"
-              >
-                <div class="mb-1 text-[11px] text-gray-500">
-                  {{ sec.label }}
-                </div>
-                <div
-                  class="form-grid mb-2"
-                  :data-module-key="selectedKey"
-                  :data-section-key="sec.key"
-                >
-                  <button
-                    v-for="f in previewFields(sec)"
-                    :key="f.key"
-                    type="button"
-                    class="form-cell"
-                    :class="{
-                      'is-hit':
-                        selectedSectionKey === sec.key &&
-                        selectedFieldKey === f.key,
-                    }"
-                    :data-field-key="f.key"
-                    :style="{ gridColumn: `span ${colSpan(f)}` }"
-                    @click.stop="selectField(selectedKey, sec.key, f.key)"
-                  >
-                    <GripVertical class="cell-drag size-3.5 text-gray-400" />
-                    <div class="min-w-0 flex-1">
-                      <div class="text-[11px] text-gray-500">
-                        {{ f.label }}
-                        <span v-if="f.required" class="text-red-500">*</span>
-                        <span class="ml-1 text-gray-300">{{ colSpan(f) }}</span>
-                      </div>
-                      <div class="form-ctrl">{{ controlPreview(f) }}</div>
-                    </div>
-                    <i
-                      class="span-handle"
-                      title="拖动改占宽"
-                      @mousedown.stop="
-                        onSpanResizeStart($event, selectedKey, sec.key, f.key)
-                      "
-                    ></i>
-                  </button>
-                </div>
-              </template>
-            </div>
-            <!-- 表格表头：可拖排序 / 接收左侧列控件 -->
-            <div v-else>
-              <div
-                v-for="sec in previewSections(selectedKey)"
-                :key="sec.key"
-                class="mb-3"
-              >
-                <div class="mb-1 text-[11px] text-gray-500">
-                  {{ sec.label }}
-                </div>
-                <div class="canvas-table-preview">
-                  <div
-                    class="table-col-row"
-                    :data-module-key="selectedKey"
-                    :data-section-key="sec.key"
-                  >
-                    <button
-                      v-for="f in previewFields(sec)"
-                      :key="f.key"
-                      type="button"
-                      class="table-col"
-                      :class="{
-                        'is-hit':
-                          selectedSectionKey === sec.key &&
-                          selectedFieldKey === f.key,
-                        'is-fixed': f.key === '_selection',
-                      }"
-                      :data-field-key="f.key"
-                      :style="{ minWidth: `${f.minWidth || 80}px` }"
-                      @click.stop="selectField(selectedKey, sec.key, f.key)"
-                    >
-                      <GripVertical
-                        v-if="f.key !== '_selection'"
-                        class="col-drag size-3.5 shrink-0 text-gray-400"
-                      />
-                      <div class="min-w-0 flex-1 text-left">
-                        <div class="truncate">
-                          {{ f.label }}
-                          <span v-if="f.required" class="text-red-500">*</span>
-                        </div>
-                        <div
-                          class="mt-0.5 text-[10px] font-normal text-gray-400"
-                        >
-                          {{ cellTypeLabel(f) }}
-                        </div>
-                      </div>
-                    </button>
-                    <div
-                      v-if="
-                        !previewFields(sec).filter(
-                          (f) => f.key !== '_selection',
-                        ).length
-                      "
-                      class="table-col-drop-hint"
-                    >
-                      将左侧列控件拖到此处
-                    </div>
-                  </div>
-                  <div class="table-row-ghost">
-                    示例行 · 左侧拖入加列 · 表头拖排序
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </template>
-      </div>
+预览详情
+</ElButton>
+    </header>
+    <div v-if="preview" class="preview-surface">
+      <DetailPreview
+        :modules="layouts"
+        :rules="previewRules"
+        :inners="inners"
+      />
     </div>
-
-    <aside class="designer-pane designer-props">
-      <template v-if="designerStep === 'assemble'">
-        <div class="pane-title">模块</div>
-        <p class="pane-hint">
-          {{ metaOf(selectedKey)?.label || '未选择' }} ·
-          {{ widgetLabelOf(selectedKey) }} · 本场景独立配置
-        </p>
-        <template v-if="isMounted(selectedKey)">
-          <div class="mb-2 text-xs text-gray-500">
-            {{ widgetLabelOf(selectedKey) }}模板
-          </div>
-          <ElSelect
-            :model-value="bindingOf(selectedKey)"
-            class="mb-2 w-full"
-            placeholder="选择模板"
-            filterable
-            @update:model-value="setBinding(selectedKey, $event)"
+    <div v-else class="designer-columns">
+      <aside class="module-library">
+        <h3>业务模块</h3>
+        <p class="hint">选择模块设置属性；隐藏后可随时恢复。</p>
+        <ElInput
+          v-model="search"
+          clearable
+          placeholder="搜索模块"
+          aria-label="搜索模块"
+        />
+        <div class="library-list">
+          <button
+            v-for="item in palette"
+            :key="item.key"
+            class="library-item"
+            :class="{ selected: selectedKey === item.key }"
+            @click="selectedKey = item.key"
           >
-            <ElOption
-              v-for="opt in fcSchemaOptionsFor(selectedKey)"
-              :key="opt.id"
-              :label="`${opt.name} (${opt.id})`"
-              :value="opt.id"
-            />
-          </ElSelect>
-          <RouterLink
-            class="mb-2 block text-xs text-primary"
-            target="_blank"
-            :to="{ name: 'SystemFcSchema' }"
-          >
-            去表单模板管理新建 / 编辑 →
-          </RouterLink>
-          <ElButton
-            size="small"
-            class="mb-2 w-full"
-            @click="removeFromCanvas(selectedKey)"
-          >
-            卸下本场景
-          </ElButton>
-          <ElButton
-            v-if="isCustomAgreeModule(String(selectedKey))"
-            size="small"
-            type="danger"
-            plain
-            class="w-full"
-            @click="deleteCustomComponent(selectedKey)"
-          >
-            删除组件
-          </ElButton>
-        </template>
-        <div v-else class="text-xs text-gray-400">从左侧点组件挂到本场景</div>
-      </template>
-      <template v-else>
-        <div class="flex items-center justify-between gap-2">
-          <div class="pane-title mb-0">
-            {{ isTableContext() ? '表格属性' : '表单属性' }}
-          </div>
-          <ElButton
-            v-if="isMounted(selectedKey)"
-            link
-            type="danger"
-            size="small"
-            @click="removeFromCanvas(selectedKey)"
-          >
-            卸下
-          </ElButton>
-          <ElButton
-            v-if="isCustomAgreeModule(String(selectedKey))"
-            link
-            type="danger"
-            size="small"
-            @click="deleteCustomComponent(selectedKey)"
-          >
-            删除组件
-          </ElButton>
+            <span>{{ item.label }}</span><ElTag size="small" :type="item.enabled ? 'success' : 'info'">
+{{
+              item.enabled ? '显示' : '隐藏'
+            }}
+</ElTag>
+          </button>
         </div>
-        <p class="pane-hint">
-          {{ metaOf(selectedKey)?.label }} ·
-          {{
-            selectedKey === 'basic' && !isTableContext()
-              ? '表单字段请用「FC 表单模板」绑定；自定义子表仍可在此配列'
-              : isTableContext()
-                ? '左侧拖列 / 表头排序；点列后改显示名、列宽、单元格'
-                : '可新增或删除字段（如删签约日期、加用户名）'
-          }}
-        </p>
-
-        <template v-if="isMounted(selectedKey)">
-          <!-- 基础信息表单：改走 FormCreate，右侧不再编内置字段 -->
-          <div
-            v-if="selectedKey === 'basic' && !isTableContext()"
-            class="prop-card text-xs text-gray-600"
-          >
-            关闭本面板后，请到「系统管理 / FC
-            表单模板」维护基础信息表单，并在本场景模块绑定中选择对应模板。
+        <div class="create-module">
+          <h3>添加自定义模块</h3>
+          <ElInput
+            v-model="newName"
+            placeholder="例如：评估信息"
+            aria-label="新模块名称"
+            @keyup.enter="createModule"
+          />
+          <ElSelect v-model="newKind" aria-label="新模块类型">
+<ElOption value="form" label="表单模块" /><ElOption
+              value="table"
+              label="表格模块"
+          />
+</ElSelect>
+          <ElButton class="w-full" @click="createModule">添加模块</ElButton>
+        </div>
+      </aside>
+      <main class="layout-canvas">
+        <div class="canvas-page-head">
+          <strong>协议详情</strong><span>页头与操作按钮由业务页面提供</span>
+        </div>
+        <section
+          v-for="region in regions"
+          :key="region.key"
+          class="region"
+          @dragover.prevent
+          @drop.prevent="drop(region.key)"
+        >
+          <div class="region-heading">
+            <h3>{{ region.label }}</h3>
+            <span>{{ region.hint }}</span>
           </div>
-
-          <!-- 表格：整表行操作 -->
-          <div v-else-if="isTableContext()" class="prop-card">
-            <div class="prop-label">行操作</div>
-            <div class="mb-2 flex items-center justify-between text-xs">
-              <span>允许新增行</span>
-              <ElSwitch
-                size="small"
-                :model-value="currentSection?.tableOptions?.allowAdd !== false"
-                @change="
-                  (v: boolean | number | string) =>
-                    patchTableOptions({ allowAdd: asSwitchOn(v) })
-                "
-              />
-            </div>
-            <div class="mb-2 flex items-center justify-between text-xs">
-              <span>允许删除行</span>
-              <ElSwitch
-                size="small"
-                :model-value="
-                  currentSection?.tableOptions?.allowRemove !== false
-                "
-                @change="
-                  (v: boolean | number | string) =>
-                    patchTableOptions({ allowRemove: asSwitchOn(v) })
-                "
-              />
-            </div>
-            <div class="flex items-center justify-between gap-2 text-xs">
-              <span>至少保留</span>
-              <ElInputNumber
-                size="small"
-                :min="0"
-                :max="9"
-                :model-value="currentSection?.tableOptions?.minRows ?? 1"
-                @change="
-                  (v: number | undefined) =>
-                    patchTableOptions({ minRows: v ?? 1 })
-                "
-              />
-            </div>
-            <ElButton
-              class="mt-2"
-              size="small"
-              type="primary"
-              plain
-              @click="addTableColumn"
+          <div class="region-grid">
+            <article
+              v-for="(item, index) in rowsIn(region.key)"
+              :key="item.key"
+              class="module-tile"
+              :class="{ selected: selectedKey === item.key }"
+              :style="{
+                gridColumn: `span ${region.key === 'tabs' ? 24 : normalizeModuleSpan(item.span)}`,
+              }"
+              @click="selectedKey = item.key"
+              @dragover.prevent.stop
+              @drop.prevent.stop="drop(region.key, item.key)"
             >
-              插入文本列
-            </ElButton>
-            <p class="mt-2 text-[11px] text-gray-400">
-              也可从左侧「列控件」拖入表头，或拖表头把手改顺序。
-            </p>
-          </div>
-
-          <div v-else-if="selectedKey !== 'basic'" class="prop-card">
-            <div class="prop-label">字段操作</div>
-            <ElButton size="small" type="primary" plain @click="addFormField">
-              新增字段
-            </ElButton>
-            <p class="mt-1 text-[11px] text-gray-400">
-              新增后改显示名/控件；删除内置字段（如签约日期）保存后不会再补回来。
-            </p>
-          </div>
-
-          <!-- 未点字段：列出可点项（基础信息表单字段改由 FC 模板，跳过） -->
-          <div
-            v-if="
-              !currentField && !(selectedKey === 'basic' && !isTableContext())
-            "
-            class="prop-card"
-          >
-            <div class="prop-label">
-              {{
-                isTableContext()
-                  ? '列（点击画布表头）'
-                  : '字段（拖格子 / 点选）'
-              }}
-            </div>
-            <button
-              v-for="sec in selectedSections"
-              :key="sec.key"
-              class="hidden"
-              type="button"
-            ></button>
-            <div v-for="sec in selectedSections" :key="sec.key" class="mb-2">
-              <div class="mb-1 text-[11px] text-gray-400">{{ sec.label }}</div>
-              <div class="flex flex-wrap gap-1">
-                <button
-                  v-for="f in sec.fields"
-                  :key="f.key"
-                  type="button"
-                  class="mini-chip"
-                  :class="{ 'is-off': !f.enabled }"
-                  @click="selectField(selectedKey, sec.key, f.key)"
-                >
-                  {{ f.label }}
-                </button>
+              <div class="tile-heading">
+                <span
+                  draggable="true"
+                  class="drag-handle"
+                  title="拖动调整顺序或移动到另一区域"
+                  @dragstart="
+                    dragKey = item.key;
+                    $event.dataTransfer?.setData('text/plain', item.key);
+                  "
+                  @dragend="dragKey = ''"
+                  ><GripVertical class="size-4" /></span>
+                <strong>{{ item.label }}</strong><ElTag size="small" type="info">
+{{
+                  item.widgetKind === 'table' ? '表格' : '表单'
+                }}
+</ElTag>
               </div>
-            </div>
+              <p class="template-caption">{{ templateName(item.key) }}</p>
+              <div class="tile-actions">
+                <ElButton
+                  link
+                  size="small"
+                  :disabled="index === 0"
+                  @click.stop="move(item.key, -1)"
+                  >
+上移
+</ElButton>
+                <ElButton
+                  link
+                  size="small"
+                  :disabled="index === rowsIn(region.key).length - 1"
+                  @click.stop="move(item.key, 1)"
+                  >
+下移
+</ElButton>
+                <ElButton
+                  link
+                  size="small"
+                  @click.stop="
+                    selectedKey = item.key;
+                    patch(item.key, { enabled: false });
+                  "
+                  >
+隐藏
+</ElButton>
+              </div>
+            </article>
           </div>
-
-          <!-- 点中某一项（基础信息内置表单字段不在此编辑） -->
-          <div
-            v-else-if="
-              currentField && !(selectedKey === 'basic' && !isTableContext())
-            "
-            class="prop-card"
-          >
-            <div class="mb-2 flex items-center justify-between">
-              <div class="prop-label mb-0">{{ currentField.label }}</div>
-              <ElSwitch
-                size="small"
-                :model-value="currentField.enabled"
-                @change="
-                  (v: boolean | number | string) => {
-                    const sec = currentSection;
-                    const field = currentField;
-                    if (!sec || !field) return;
-                    setFieldEnabled(sec.key, field.key, asSwitchOn(v));
-                  }
-                "
-              />
-            </div>
-            <div class="prop-label">显示名</div>
-            <ElInput
-              size="small"
-              class="mb-2"
-              :model-value="currentField.label"
-              @update:model-value="(v: string) => patchField({ label: v })"
-            />
-            <div class="text-[11px] text-gray-400 mb-2">
-              编码 {{ currentField.key }}
-            </div>
-            <template v-if="currentField.custom">
-              <div class="prop-label">数据字段名</div>
-              <ElInput
-                size="small"
-                class="mb-2"
-                :model-value="currentField.key"
-                placeholder="如 username"
-                @change="(v: string) => renameCustomFieldKey(v)"
-              />
-            </template>
-            <ElButton
-              v-if="currentField.key !== '_selection'"
-              class="mb-2"
-              size="small"
-              type="danger"
-              plain
-              @click="removeCurrentField"
+          <p v-if="!rowsIn(region.key).length" class="drop-hint">
+            拖动模块到这里，或在右侧设置显示区域
+          </p>
+        </section>
+      </main>
+      <aside class="module-properties">
+        <template v-if="selected">
+          <h3>模块属性</h3>
+          <p class="hint">仅影响当前页面视图；隐藏不删除资料。</p>
+          <label class="property"><span>显示此模块</span><ElSwitch
+              :model-value="selected.enabled"
+              @change="patch(selectedKey, { enabled: !!$event })"
+          /></label>
+          <label class="property"><span>显示名称</span><ElInput
+              :model-value="selected.label"
+              @change="
+                patch(selectedKey, {
+                  label: String($event).trim() || selected.label,
+                })
+              "
+          /></label>
+          <label class="property"><span>显示区域</span><ElSelect :model-value="regionOf(selected)" @change="changeRegion"><ElOption value="content" label="内容区 · 直接展开" /><ElOption
+                value="tabs"
+                label="标签页区 · 切换查看"
+/></ElSelect></label>
+          <label v-if="regionOf(selected) === 'content'" class="property"><span>模块宽度</span><ElSelect
+              :model-value="selected.span"
+              @change="patch(selectedKey, { span: Number($event) })"
+              ><ElOption :value="24" label="整行" /><ElOption
+                :value="12"
+                label="半行"
+/><ElOption
+                :value="16"
+                label="三分之二"
+/><ElOption
+                :value="8"
+                label="三分之一"
+/></ElSelect></label>
+          <p class="hint">小屏幕自动使用整行；排序在各区域内生效。</p>
+          <label class="property"><span>{{ selected.widgetKind === 'table' ? '表格' : '表单' }}模板</span>
+            <ElSelect
+              :model-value="fcBindings[selectedKey]"
+              :loading="templatesLoading"
+              filterable
+              placeholder="选择模板"
+              @change="setBinding"
+              ><ElOption
+                v-for="t in selectedTemplates"
+                :key="t.id"
+                :label="t.name"
+                :value="t.id"
+            /></ElSelect>
+          </label>
+          <ElAlert
+            v-if="templatesError"
+            title="模板加载失败"
+            type="error"
+            :closable="false"
             >
-              删除{{ isTableContext() ? '本列' : '本字段' }}
-            </ElButton>
-
-            <template v-if="!isTableContext()">
-              <div class="prop-label">控件</div>
-              <ElSelect
-                size="small"
-                class="mb-2 w-full"
-                :model-value="currentField.controlType || 'input'"
-                @change="
-                  (v: string | number) =>
-                    patchField({
-                      controlType: String(v) as ModuleInnerControlType,
-                    })
-                "
-              >
-                <ElOption
-                  v-for="opt in FORM_CONTROL_OPTIONS"
-                  :key="opt.value"
-                  :label="opt.label"
-                  :value="opt.value"
-                />
-              </ElSelect>
-              <div class="prop-label">占宽</div>
-              <ElSelect
-                size="small"
-                class="mb-2 w-full"
-                :model-value="currentField ? colSpan(currentField) : 8"
-                @change="
-                  (v: string | number) => patchField({ span: Number(v) })
-                "
-              >
-                <ElOption
-                  v-for="opt in FORM_SPAN_OPTIONS"
-                  :key="opt.value"
-                  :label="opt.label"
-                  :value="opt.value"
-                />
-              </ElSelect>
-              <div class="mb-2 flex items-center justify-between text-xs">
-                <span>必填</span>
-                <ElSwitch
-                  size="small"
-                  :model-value="!!currentField.required"
-                  @change="
-                    (v: boolean | number | string) =>
-                      patchField({ required: asSwitchOn(v) })
-                  "
-                />
-              </div>
-              <div class="prop-label">占位提示</div>
-              <ElInput
-                size="small"
-                :model-value="currentField.placeholder || ''"
-                @update:model-value="
-                  (v: string) => patchField({ placeholder: v })
-                "
-              />
-            </template>
-
-            <template v-else>
-              <div class="prop-label">列宽</div>
-              <ElInputNumber
-                size="small"
-                class="mb-2"
-                :min="60"
-                :max="400"
-                :step="20"
-                :model-value="currentField.minWidth || 120"
-                @change="
-                  (v: number | undefined) => patchField({ minWidth: v || 120 })
-                "
-              />
-              <div class="prop-label">单元格</div>
-              <ElSelect
-                size="small"
-                class="mb-2 w-full"
-                :model-value="
-                  currentField.cellType ||
-                  (currentField.controlType === 'yesno' ||
-                  currentField.controlType === 'select'
-                    ? currentField.controlType
-                    : 'text')
-                "
-                @change="
-                  (v: ModuleInnerCellType) =>
-                    patchField({
-                      cellType: v,
-                      controlType: v === 'text' ? 'input' : v,
-                    })
-                "
-              >
-                <ElOption
-                  v-for="opt in TABLE_CELL_OPTIONS"
-                  :key="opt.value"
-                  :label="opt.label"
-                  :value="opt.value"
-                />
-              </ElSelect>
-              <div class="flex items-center justify-between text-xs">
-                <span>必填</span>
-                <ElSwitch
-                  size="small"
-                  :model-value="!!currentField.required"
-                  @change="
-                    (v: boolean | number | string) =>
-                      patchField({ required: asSwitchOn(v) })
-                  "
-                />
-              </div>
-            </template>
-          </div>
+<ElButton link @click="loadTemplates">重新加载</ElButton>
+</ElAlert>
+          <RouterLink
+            :to="{ name: 'SystemFcSchema' }"
+            target="_blank"
+            class="template-link"
+            >
+管理表单模板 ↗
+</RouterLink>
+          <ElButton
+            link
+            size="small"
+            :loading="templatesLoading"
+            @click="loadTemplates"
+            >
+刷新模板列表
+</ElButton>
+          <p class="hint">
+            共用模板修改会影响引用它的页面。需要独立字段时，请新建模板再绑定。
+          </p>
+          <details class="module-identity">
+            <summary>模块标识与数据</summary>
+            <p>{{ selected.key }}</p>
+            <p>
+              改名、隐藏、移动均保留此标识与已有业务数据，便于后续节点引用。
+            </p>
+          </details>
         </template>
-        <div v-else class="text-xs text-gray-400">请先放到画布</div>
-      </template>
-    </aside>
+        <p v-else class="hint">选择左侧模块开始配置</p>
+      </aside>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.detail-designer {
-  display: grid;
-  grid-template-columns: 190px minmax(0, 1fr) 280px;
-  gap: 10px;
-  min-height: 640px;
+.view-designer {
+  overflow: hidden;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 12px;
 }
 
-.designer-pane {
+.designer-toolbar {
   display: flex;
-  flex-direction: column;
-  min-height: 0;
-  padding: 10px;
-  overflow: auto;
-  background: #fff;
-  border: 1px solid #e5e7eb;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.toolbar-note {
+  margin-left: 16px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.designer-columns {
+  display: grid;
+  grid-template-columns: 210px minmax(320px, 1fr) 270px;
+  min-height: 580px;
+}
+
+h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.module-library,
+.module-properties {
+  padding: 16px;
+  background: var(--el-bg-color);
+}
+
+.module-library {
+  border-right: 1px solid var(--el-border-color-lighter);
+}
+
+.module-properties {
+  border-left: 1px solid var(--el-border-color-lighter);
+}
+
+.hint {
+  margin: 8px 0 12px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--el-text-color-secondary);
+}
+
+.library-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.library-item {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px;
+  text-align: left;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+}
+
+.selected {
+  background: var(--el-color-primary-light-9);
+  border-color: var(--el-color-primary) !important;
+}
+
+.create-module {
+  display: grid;
+  gap: 10px;
+  padding-top: 16px;
+  margin-top: 24px;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+.layout-canvas,
+.preview-surface {
+  padding: 20px;
+  background: var(--el-fill-color-light);
+}
+
+.canvas-page-head {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 16px;
+  background: var(--el-bg-color);
+  border-radius: 8px;
+}
+
+.canvas-page-head span,
+.region-heading span {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.region {
+  padding: 16px;
+  margin-top: 16px;
+  border: 1px dashed var(--el-border-color);
   border-radius: 10px;
 }
 
-.pane-title {
+.region-heading {
+  margin-bottom: 12px;
+}
+
+.region-heading h3 {
   margin-bottom: 4px;
-  font-size: 13px;
-  font-weight: 600;
 }
 
-.pane-hint {
-  margin: 0 0 8px;
-  font-size: 11px;
-  line-height: 1.4;
-  color: #6b7280;
-}
-
-.palette-item {
-  width: 100%;
-  padding: 8px;
-  margin-bottom: 8px;
-  text-align: left;
-  cursor: pointer;
-  background: #f9fafb;
-  border: 1px dashed #d1d5db;
-  border-radius: 8px;
-}
-
-.palette-item.is-on {
-  background: #eff6ff;
-  border-color: #93c5fd;
-  border-style: solid;
-}
-
-.palette-create {
-  position: sticky;
-  bottom: 0;
-  z-index: 1;
-  padding-top: 10px;
-  margin-top: auto;
-  background: #fff;
-  border-top: 1px dashed #e5e7eb;
-}
-
-.assemble-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.assemble-card {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  padding: 10px 12px;
-  cursor: pointer;
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-}
-
-.assemble-card__main {
-  flex: 1 1 auto;
-  min-width: 140px;
-}
-
-.assemble-card__select {
-  flex: 0 0 200px;
-  width: 200px;
-}
-
-.assemble-card :deep(.el-select) {
-  width: 200px;
-  max-width: 100%;
-}
-
-.assemble-card.is-selected {
-  border-color: #2563eb;
-  box-shadow: 0 0 0 1px #2563eb;
-}
-
-.canvas-pills {
-  display: flex;
-  flex-wrap: nowrap;
-  gap: 6px;
-  padding: 6px;
-  margin-bottom: 8px;
-  overflow-x: auto;
-  scrollbar-width: thin;
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-}
-
-.canvas-pill {
-  display: inline-flex;
-  flex-shrink: 0;
-  gap: 4px;
-  align-items: center;
-  padding: 6px 12px;
-  font-size: 12px;
-  white-space: nowrap;
-  cursor: pointer;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 999px;
-}
-
-.canvas-pill:hover {
-  background: #f8fafc;
-}
-
-.canvas-pill.is-selected {
-  font-weight: 600;
-  color: #1d4ed8;
-  background: #eff6ff;
-  border-color: rgb(37 99 235 / 18%);
-}
-
-.canvas-page {
-  padding: 10px;
-  background: #f3f4f6;
-  border-radius: 8px;
-}
-
-.canvas-header {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  padding: 8px 10px;
-  margin-bottom: 8px;
-  background: #fff;
-  border-radius: 8px;
-}
-
-.canvas-summary {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px;
-  margin-bottom: 8px;
-}
-
-.summary-mini {
-  padding: 8px;
-  font-size: 11px;
-  color: #6b7280;
-  background: #fff;
-  border-left: 3px solid #93c5fd;
-  border-radius: 6px;
-}
-
-.canvas-block {
-  padding: 8px;
-  margin-bottom: 8px;
-  cursor: pointer;
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-}
-
-.canvas-block.is-selected,
-.canvas-tab.is-selected {
-  border-color: #2563eb;
-  box-shadow: 0 0 0 1px #2563eb;
-}
-
-.canvas-block__head {
-  margin-bottom: 6px;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.form-grid {
+.region-grid {
   display: grid;
   grid-template-columns: repeat(24, minmax(0, 1fr));
-  gap: 8px;
+  gap: 12px;
 }
 
-.form-cell {
-  position: relative;
-  display: flex;
-  gap: 4px;
-  align-items: flex-start;
-  padding: 6px 8px 6px 4px;
-  text-align: left;
+.module-tile {
+  min-width: 0;
+  padding: 12px;
   cursor: pointer;
-  background: #f9fafb;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color);
+  border-radius: 8px;
 }
 
-.cell-drag {
-  flex-shrink: 0;
-  margin-top: 2px;
-  cursor: grab;
-}
-
-.span-handle {
-  position: absolute;
-  top: 4px;
-  right: 0;
-  width: 8px;
-  height: calc(100% - 8px);
-  cursor: ew-resize;
-  background: transparent;
-  border-right: 2px solid #cbd5e1;
-  border-radius: 0 4px 4px 0;
-}
-
-.span-handle:hover {
-  border-right-color: #2563eb;
-}
-
-.form-cell.is-hit,
-.table-col.is-hit {
-  background: #eff6ff;
-  border-color: #2563eb;
-}
-
-.form-ctrl {
-  padding: 4px 6px;
-  margin-top: 4px;
-  font-size: 11px;
-  color: #9ca3af;
-  background: #fff;
-  border: 1px dashed #d1d5db;
-  border-radius: 4px;
-}
-
-.canvas-tabs {
+.tile-heading {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-
-.canvas-tab {
-  display: inline-flex;
-  gap: 4px;
-  align-items: center;
-  padding: 6px 8px;
-  font-size: 12px;
-  cursor: pointer;
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-}
-
-.canvas-tabs-wrap {
-  padding: 8px;
-  background: #fff;
-  border-radius: 8px;
-}
-
-.canvas-table-preview {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-}
-
-.table-col-row {
-  display: flex;
-  flex-wrap: nowrap;
-  align-items: stretch;
-  min-height: 48px;
-  overflow-x: auto;
-  background: #f9fafb;
-}
-
-.table-col {
-  display: inline-flex;
-  flex: 0 0 auto;
-  gap: 4px;
-  align-items: flex-start;
-  min-width: 88px;
-  max-width: 180px;
-  padding: 8px 10px;
-  font-size: 11px;
-  font-weight: 600;
-  text-align: left;
-  cursor: pointer;
-  background: #f9fafb;
-  border-right: 1px solid #e5e7eb;
-}
-
-.table-col.is-fixed {
-  cursor: default;
-  background: #f3f4f6;
-  opacity: 0.85;
-}
-
-.table-col-ghost {
-  background: #dbeafe !important;
-  border: 1px dashed #2563eb !important;
-  opacity: 0.9;
-}
-
-.col-drag {
-  margin-top: 2px;
-  cursor: grab;
-}
-
-.table-col-drop-hint {
-  display: flex;
-  flex: 1;
-  align-items: center;
-  justify-content: center;
-  min-width: 160px;
-  padding: 8px 12px;
-  margin: 6px;
-  font-size: 11px;
-  color: #9ca3af;
-  border: 1px dashed #cbd5e1;
-  border-radius: 4px;
-}
-
-.col-palette-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.col-palette-item {
-  display: flex;
   gap: 8px;
   align-items: center;
-  width: 100%;
-  padding: 8px 10px;
+}
+
+.drag-handle {
+  color: var(--el-text-color-secondary);
   cursor: grab;
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
 }
 
-.col-palette-item:hover {
-  background: #f8fbff;
-  border-color: #93c5fd;
+.template-caption {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  overflow-wrap: anywhere;
 }
 
-.table-row-ghost {
-  width: 100%;
-  padding: 10px;
-  font-size: 11px;
-  color: #9ca3af;
+.tile-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
+.drop-hint {
+  padding: 24px 0;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
   text-align: center;
-  background: #fff;
-  border-top: 1px solid #e5e7eb;
 }
 
-.tab-drag {
-  cursor: grab;
+.property {
+  display: grid;
+  gap: 8px;
+  margin: 18px 0;
+  font-size: 13px;
 }
 
-.prop-card {
-  padding: 8px;
-  margin-bottom: 8px;
-  background: #f9fafb;
-  border-radius: 8px;
+.template-link {
+  display: inline-block;
+  margin: 0 8px 8px 0;
+  font-size: 12px;
+  color: var(--el-color-primary);
 }
 
-.prop-label {
-  margin-bottom: 4px;
-  font-size: 11px;
-  color: #6b7280;
+.module-identity {
+  margin-top: 24px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  overflow-wrap: anywhere;
 }
 
-.mini-chip {
-  padding: 2px 8px;
-  font-size: 11px;
-  cursor: pointer;
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 999px;
+.module-identity p {
+  margin-top: 8px;
 }
 
-.mini-chip.is-off {
-  color: #9ca3af;
-  text-decoration: line-through;
+@media (max-width: 1200px) {
+  .designer-columns {
+    grid-template-columns: 170px minmax(260px, 1fr) 230px;
+  }
 }
 
-.col-span-24 {
-  grid-column: span 24;
-}
-
-@media (max-width: 1100px) {
-  .detail-designer {
+@media (max-width: 900px) {
+  .designer-columns {
     grid-template-columns: 1fr;
+  }
+
+  .module-library,
+  .module-properties {
+    border: 0;
+  }
+
+  .library-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 </style>

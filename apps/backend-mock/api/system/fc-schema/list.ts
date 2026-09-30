@@ -11,11 +11,12 @@ export default eventHandler(async (event) => {
   const auth = assertFcSchemaReadAccess(event);
   if (!auth.ok) return auth.response;
 
-  const { keyword, kind, status } = getQuery(event);
+  const { keyword, kind, status, usage } = getQuery(event);
   const list = listFcSchemas({
     keyword: keyword ? String(keyword) : undefined,
     kind: kind ? String(kind) : undefined,
     status: status ? String(status) : undefined,
+    usage: usage ? String(usage) : undefined,
   });
   return useResponseSuccess(list);
 });

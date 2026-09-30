@@ -33,6 +33,9 @@ const schemaId = computed(() => String(route.params.id || ''));
 
 const name = ref('');
 const kind = ref<'form' | 'table'>('form');
+const usage = ref<'' | 'agreementModule' | 'workflowSupplement'>(
+  'agreementModule',
+);
 const remark = ref('');
 const saving = ref(false);
 const iframeReady = ref(false);
@@ -41,6 +44,14 @@ const pendingRuleJson = ref('[]');
 const iframeRef = ref<HTMLIFrameElement | null>(null);
 
 const embedSrc = `${import.meta.env.BASE_URL}fc-designer-embed.html`;
+const builtinIds = new Set([
+  'FC_BASIC',
+  'FC_COMPENSATION',
+  'FC_HOUSES',
+  'FC_POPULATION',
+  'FC_REWARDS',
+]);
+const builtin = computed(() => builtinIds.has(schemaId.value));
 
 /**
  * rule → 纯 JSON 字符串（去掉 Proxy / 函数，供 postMessage）
@@ -139,6 +150,10 @@ async function loadSchema() {
     name.value = '';
     remark.value = '';
     kind.value = (route.query.kind as 'form' | 'table') || 'form';
+    usage.value =
+      route.query.usage === 'workflowSupplement'
+        ? 'workflowSupplement'
+        : 'agreementModule';
     pushRule(
       kind.value === 'table'
         ? buildDefaultCustomTableFcRule('新表格')
@@ -149,6 +164,8 @@ async function loadSchema() {
   const data = await getFcSchema(schemaId.value);
   name.value = data.name || '';
   kind.value = data.kind;
+  usage.value =
+    data.usage || (builtinIds.has(data.id) ? 'agreementModule' : '');
   remark.value = data.remark || '';
   pushRule(isFcRule(data.rule) ? cloneFcRule(data.rule) : []);
 }
@@ -163,6 +180,10 @@ async function persistTemplate(rule: FcRule[]) {
     ElMessage.warning('请先填写模板名称');
     return;
   }
+  if (!usage.value) {
+    ElMessage.warning('请选择模板用途，避免业务模块和节点补充表单混用');
+    return;
+  }
   if (!isFcRule(rule)) {
     ElMessage.warning('画布为空，请先从左侧拖入控件');
     return;
@@ -172,6 +193,7 @@ async function persistTemplate(rule: FcRule[]) {
     const payload = {
       name: label,
       kind: kind.value,
+      usage: usage.value,
       remark: remark.value.trim(),
       status: 1 as const,
       rule: cloneFcRule(rule),
@@ -267,6 +289,16 @@ onUnmounted(() => {
           <ElOption label="表单" value="form" />
           <ElOption label="表格" value="table" />
         </ElSelect>
+        <ElSelect
+          v-model="usage"
+          class="fc-edit-page__usage"
+          size="small"
+          :disabled="builtin"
+          placeholder="选择模板用途"
+        >
+          <ElOption label="协议详情模块" value="agreementModule" />
+          <ElOption label="流程节点补充" value="workflowSupplement" />
+        </ElSelect>
         <ElInput
           v-model="remark"
           class="fc-edit-page__remark"
@@ -321,6 +353,10 @@ onUnmounted(() => {
 
 .fc-edit-page__kind {
   width: 100px;
+}
+
+.fc-edit-page__usage {
+  width: 150px;
 }
 
 .fc-edit-page__remark {

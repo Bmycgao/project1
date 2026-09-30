@@ -23,6 +23,18 @@ export function useGridFormSchema() {
       fieldName: 'kind',
       label: '类型',
     },
+    {
+      component: 'Select',
+      componentProps: {
+        allowClear: true,
+        options: [
+          { label: '协议详情模块', value: 'agreementModule' },
+          { label: '流程节点补充', value: 'workflowSupplement' },
+        ],
+      },
+      fieldName: 'usage',
+      label: '用途',
+    },
   ];
 }
 
@@ -44,6 +56,17 @@ export function useColumns(
         cellValue === 'table'
           ? $t('system.fcSchema.kindTable')
           : $t('system.fcSchema.kindForm'),
+    },
+    {
+      field: 'usage',
+      title: '用途',
+      width: 130,
+      formatter: ({ cellValue, row }) =>
+        cellValue === 'workflowSupplement'
+          ? '流程节点补充'
+          : cellValue === 'agreementModule' || isBuiltin(row.id)
+            ? '协议详情模块'
+            : '未分类（兼容）',
     },
     { field: 'remark', title: '备注', minWidth: 160 },
     {

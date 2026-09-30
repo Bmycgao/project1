@@ -17,6 +17,7 @@ import {
   saveAgreementDetailAll,
 } from './mock-agreement-detail';
 import { createAgreeListRow, findAgreeListRow } from './mock-agreement-list';
+import { createFcSchema } from './mock-fc-schema';
 const { directory, root } = await vi.hoisted(async () => {
   const { mkdtempSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
@@ -595,10 +596,25 @@ describe('published workflow runtime', () => {
     expect(afterApprove.houses[0]?.address).toBe('办理改房屋路');
     expect(afterApprove.basic.amount).toBe(1_300_000);
   });
-  it('lets an approval node edit catalog extras such as legalOpinion', () => {
-    const { definition, forms } = setup();
+  it('lets an approval node edit a field defined by its supplement form', () => {
+    const { definition } = setup();
     const draft = newWorkflowVersion(definition.id, 'admin');
     const approval = draft.nodes.find((n) => n.name === '科长审核')!;
+    const supplement = createFcSchema({
+      id: newId('fc'),
+      name: '法务审核补充表单',
+      kind: 'form',
+      usage: 'workflowSupplement',
+      status: 1,
+      rule: [
+        {
+          type: 'textarea',
+          field: 'legalOpinion',
+          title: '法务意见',
+        },
+      ],
+    });
+    approval.supplementFormId = supplement.id;
     approval.fieldAccess = { legalOpinion: 'edit' };
     const saved = saveWorkflow(draft, 'admin', draft.id, draft.revision);
     const frozen = freezeWorkflowForms(saved);
@@ -1124,6 +1140,218 @@ describe('published workflow runtime', () => {
       v2.nodes.find((n) => n.type === 'task')!.id,
     );
     expect(listInstances(reviewer2, 'todo')).toEqual([]);
+  });
+  it('hides sequential progress after everyone has passed', () => {
+    const reviewer2: RuntimeActor = {
+      id: 'reviewer2',
+      name: '副科长',
+      roleIds: ['review'],
+      codes: ['Workflow:Use'],
+    };
+    const people = [...actors, reviewer2];
+    const start = createNode('start', 0, 0, 1);
+    const fill = createNode('task', 200, 0, 2);
+    const approve = createNode('approve', 400, 0, 3);
+    const end = createNode('end', 600, 0, 4);
+    fill.name = '填报';
+    approve.name = '审批';
+    approve.approveMode = 'sequential';
+    approve.assignee = {
+      type: 'user',
+      ids: ['reviewer', 'reviewer2'],
+      field: '',
+    };
+    const edge = (source: string, target: string) => ({
+      id: newId('edge'),
+      source,
+      target,
+      type: 'pass' as const,
+      label: '通过',
+      condition: '',
+      isDefault: false,
+    });
+    const doc = {
+      ...createDocument(),
+      code: 'FL_SEQ_DONE',
+      name: '依次结束',
+      base: 'JD_TEST',
+      nodes: [start, fill, approve, end],
+      edges: [
+        edge(start.id, fill.id),
+        edge(fill.id, approve.id),
+        edge(approve.id, end.id),
+      ],
+    };
+    const draft = saveWorkflow(doc, 'admin');
+    const forms = {
+      [fill.id]: {
+        title: '协议资料',
+        fields: structuredClone(BUSINESS_FIELDS),
+      },
+      [approve.id]: {
+        title: '协议资料',
+        fields: structuredClone(BUSINESS_FIELDS),
+      },
+    } as Record<string, RuntimeForm>;
+    const published = publishWorkflow(draft.id, draft.revision, forms, 'admin');
+    let c = startInstance(
+      {
+        definitionId: published.id,
+        agreementNo: seedAgreement(1_200_000, '依次结束路'),
+        title: '依次办完',
+        requestId: newId('start'),
+      },
+      operator,
+      people,
+    );
+    c = actOnInstance(
+      c.instance.id,
+      {
+        taskId: c.task!.id,
+        revision: c.instance.revision,
+        requestId: newId('action'),
+        action: 'submit',
+      },
+      operator,
+      people,
+    );
+    c = actOnInstance(
+      c.instance.id,
+      {
+        taskId: c.task!.id,
+        revision: c.instance.revision,
+        requestId: newId('action'),
+        action: 'pass',
+      },
+      reviewer,
+      people,
+    );
+    expect(c.countersign).toMatchObject({ passed: 1, total: 2 });
+    c = actOnInstance(
+      c.instance.id,
+      {
+        taskId: workflowContext(c.instance.id, reviewer2, people).task!.id,
+        revision: c.instance.revision,
+        requestId: newId('action'),
+        action: 'pass',
+      },
+      reviewer2,
+      people,
+    );
+    expect(c.instance.status).toBe('completed');
+    expect(c.countersign).toBeUndefined();
+  });
+  it('lists every ratio assignee and hides the progress after the round ends', () => {
+    const reviewer2: RuntimeActor = {
+      id: 'reviewer2',
+      name: '副科长',
+      roleIds: ['review'],
+      codes: ['Workflow:Use'],
+    };
+    const people = [...actors, reviewer2];
+    const start = createNode('start', 0, 0, 1);
+    const fill = createNode('task', 200, 0, 2);
+    const approve = createNode('approve', 400, 0, 3);
+    const end = createNode('end', 600, 0, 4);
+    fill.name = '填报';
+    approve.name = '审批';
+    approve.approveMode = 'ratio';
+    approve.approveRatio = 50;
+    approve.assignee = {
+      type: 'user',
+      ids: ['reviewer', 'reviewer2', 'leader'],
+      field: '',
+    };
+    const edge = (source: string, target: string) => ({
+      id: newId('edge'),
+      source,
+      target,
+      type: 'pass' as const,
+      label: '通过',
+      condition: '',
+      isDefault: false,
+    });
+    const doc = {
+      ...createDocument(),
+      code: 'FL_RATIO_DONE',
+      name: '比例结束',
+      base: 'JD_TEST',
+      nodes: [start, fill, approve, end],
+      edges: [
+        edge(start.id, fill.id),
+        edge(fill.id, approve.id),
+        edge(approve.id, end.id),
+      ],
+    };
+    const draft = saveWorkflow(doc, 'admin');
+    const forms = {
+      [fill.id]: {
+        title: '协议资料',
+        fields: structuredClone(BUSINESS_FIELDS),
+      },
+      [approve.id]: {
+        title: '协议资料',
+        fields: structuredClone(BUSINESS_FIELDS),
+      },
+    } as Record<string, RuntimeForm>;
+    const published = publishWorkflow(draft.id, draft.revision, forms, 'admin');
+    let c = startInstance(
+      {
+        definitionId: published.id,
+        agreementNo: seedAgreement(1_200_000, '比例结束路'),
+        title: '比例办完',
+        requestId: newId('start'),
+      },
+      operator,
+      people,
+    );
+    c = actOnInstance(
+      c.instance.id,
+      {
+        taskId: c.task!.id,
+        revision: c.instance.revision,
+        requestId: newId('action'),
+        action: 'submit',
+      },
+      operator,
+      people,
+    );
+    c = actOnInstance(
+      c.instance.id,
+      {
+        taskId: workflowContext(c.instance.id, reviewer, people).task!.id,
+        revision: c.instance.revision,
+        requestId: newId('action'),
+        action: 'pass',
+      },
+      reviewer,
+      people,
+    );
+    const watching = workflowContext(c.instance.id, reviewer, people);
+    expect(watching.canAct).toBe(false);
+    expect(watching.countersign).toMatchObject({
+      mode: 'ratio',
+      passed: 1,
+      required: 2,
+      percent: 50,
+    });
+    expect(watching.countersign?.pendingNames).toEqual(
+      expect.arrayContaining(['副科长', '领导']),
+    );
+    expect(watching.countersign?.pendingNames).toHaveLength(2);
+    c = actOnInstance(
+      c.instance.id,
+      {
+        taskId: workflowContext(c.instance.id, reviewer2, people).task!.id,
+        revision: c.instance.revision,
+        requestId: newId('action'),
+        action: 'pass',
+      },
+      reviewer2,
+      people,
+    );
+    expect(c.instance.status).toBe('completed');
+    expect(c.countersign).toBeUndefined();
   });
   it('notifies cc recipients without pending todos and continues to the next node', () => {
     const { definition, cc, review } = setupWithCc();
@@ -1912,6 +2140,19 @@ describe('published workflow runtime', () => {
     const draft = newWorkflowVersion(definition.id, 'admin');
     const fill = draft.nodes.find((n) => n.type === 'task')!;
     const chief = draft.nodes.find((n) => n.name === '科长审核')!;
+    const supplement = createFcSchema({
+      id: newId('fc'),
+      name: '数据动作补充表单',
+      kind: 'form',
+      usage: 'workflowSupplement',
+      status: 1,
+      rule: [
+        { type: 'textarea', field: 'acceptOpinion', title: '受理意见' },
+        { type: 'textarea', field: 'legalOpinion', title: '法务意见' },
+      ],
+    });
+    fill.supplementFormId = supplement.id;
+    chief.supplementFormId = supplement.id;
     fill.dataActions = [
       { when: 'arrive', kind: 'set', field: 'acceptOpinion', value: '待填报' },
       { when: 'submit', kind: 'copy', field: 'remark', from: 'houseAddress' },

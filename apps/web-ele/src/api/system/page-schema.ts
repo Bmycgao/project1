@@ -88,6 +88,7 @@ export namespace PageSchemaApi {
       key: string;
       label?: string;
       order?: number;
+      region?: 'content' | 'tabs';
       span?: number;
       widgetKind?: 'form' | 'table';
     }[];

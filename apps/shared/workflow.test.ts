@@ -17,7 +17,6 @@ import {
 import {
   applyWorkflowDataActions,
   computeDueAt,
-  extraFieldsFromAccess,
   formatRemain,
   hasWorkflowDesignAccess,
   hasWorkflowMonitorAccess,
@@ -236,14 +235,6 @@ describe('workflow graph validation', () => {
     expect(isWorkflowDocument(doc)).toBe(true);
     doc.nodes[1]!.transferReturn = 1 as unknown as boolean;
     expect(isWorkflowDocument(doc)).toBe(false);
-  });
-  it('turns fieldAccess extras into runtime fields for the frozen form', () => {
-    const extras = extraFieldsFromAccess({
-      legalOpinion: 'edit',
-      houseAddress: 'readonly',
-    });
-    expect(extras.map((f) => f.key)).toEqual(['legalOpinion']);
-    expect(extras[0]?.label).toBe('法务意见');
   });
   it('accepts dataActions and rejects malformed ones', () => {
     const doc = valid();
@@ -509,5 +500,50 @@ describe('workflow data actions', () => {
         fields,
       ),
     ).toThrow('数字');
+  });
+  it('supports empty-only and first-arrival data action policies', () => {
+    const fields = [
+      {
+        key: 'opinion',
+        label: '意见',
+        type: 'textarea' as const,
+        required: false,
+        readonly: false,
+        hidden: false,
+      },
+    ];
+    expect(
+      applyWorkflowDataActions(
+        { opinion: '已有意见' },
+        [
+          {
+            when: 'arrive',
+            kind: 'set',
+            field: 'opinion',
+            value: '默认意见',
+            policy: 'empty',
+          },
+        ],
+        'arrive',
+        fields,
+      ).data.opinion,
+    ).toBe('已有意见');
+    expect(
+      applyWorkflowDataActions(
+        {},
+        [
+          {
+            when: 'arrive',
+            kind: 'set',
+            field: 'opinion',
+            value: '首次意见',
+            policy: 'firstArrival',
+          },
+        ],
+        'arrive',
+        fields,
+        { firstArrival: false },
+      ).data.opinion,
+    ).toBeUndefined();
   });
 });

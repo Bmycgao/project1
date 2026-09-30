@@ -8,6 +8,8 @@ export namespace FcSchemaApi {
     id: string;
     name: string;
     kind: 'form' | 'table';
+    /** 未设置表示历史模板，暂时兼容两种用途。 */
+    usage?: 'agreementModule' | 'workflowSupplement';
     remark?: string;
     status: 0 | 1;
     rule: Record<string, any>[];

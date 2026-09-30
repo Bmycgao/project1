@@ -3,6 +3,9 @@ import type {
   WorkflowActionInput,
   WorkflowContext,
 } from '../../../../shared/workflow-runtime';
+
+import type { AgreementDetail } from '#/views/biz/agreement/types';
+
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import {
   onBeforeRouteLeave,
@@ -10,7 +13,9 @@ import {
   useRoute,
   useRouter,
 } from 'vue-router';
+
 import { Page } from '@vben/common-ui';
+
 import {
   ElAlert,
   ElButton,
@@ -30,21 +35,22 @@ import {
   ElTimelineItem,
   ElTooltip,
 } from 'element-plus';
+
 import {
   getWorkflowContext,
   submitWorkflowAction,
 } from '#/api/workflow-runtime';
+
 import { newId } from '../../../../shared/workflow';
 import {
   ACTION_LABELS,
   BUSINESS_FIELDS,
-  INSTANCE_STATUS_LABELS,
   formatRemain,
+  INSTANCE_STATUS_LABELS,
   WORKFLOW_FIELD_CATALOG,
 } from '../../../../shared/workflow-runtime';
-import type { AgreementDetail } from '#/views/biz/agreement/types';
-import FieldControl from './field-control.vue';
 import AgreementPanel from './agreement-panel.vue';
+import FieldControl from './field-control.vue';
 import Trace from './trace.vue';
 const route = useRoute();
 const router = useRouter();
@@ -67,12 +73,21 @@ const agreePanel = ref<InstanceType<typeof AgreementPanel>>();
 const boundAgreement = computed(() => {
   const raw = context.value?.agreement;
   if (!raw || typeof raw !== 'object') return null;
-  return raw as AgreementDetail;
+  return raw as unknown as AgreementDetail;
 });
+/** 仅包含详情视图的节点嵌入协议模块；仅表单模式不渲染默认协议页面。 */
+const showAgreementDetail = computed(
+  () =>
+    !!boundAgreement.value && context.value?.form.presentation !== 'formOnly',
+);
 /** 当前节点，用于把 fieldAccess 传给协议模块 */
 const currentNode = computed(() =>
   context.value?.definition.nodes.find(
-    (n) => n.id === context.value?.instance.currentNodeId,
+    (n) =>
+      n.id ===
+      (context.value?.viewNodeId ||
+        context.value?.task?.nodeId ||
+        context.value?.instance.currentNodeId),
   ),
 );
 const dirty = computed(
@@ -82,11 +97,19 @@ const dirty = computed(
     !!opinion.value,
 );
 /** 从监控进入时回到监控页，否则回任务中心 */
+/**
+ * 待办人名最多列 3 个，再多只写人数。具体是谁看审批记录。
+ * @param names 当前还没办的人
+ */
+function pendingText(names: string[]) {
+  const list = [...new Set(names)];
+  if (list.length === 0) return '';
+  if (list.length <= 3) return `，待办：${list.join('、')}`;
+  return `，待办 ${list.length} 人`;
+}
 /** 会签进度文案：全部通过、依次，或按百分比 */
 function countersignTitle(sign: NonNullable<WorkflowContext['countersign']>) {
-  const names = sign.pendingNames.length
-    ? `，待办：${sign.pendingNames.join('、')}`
-    : '';
+  const names = pendingText(sign.pendingNames);
   if (sign.mode === 'sequential')
     return `依次审批进度 ${sign.passed}/${sign.total}${names}`;
   if (sign.mode === 'ratio')
@@ -101,7 +124,9 @@ function backToList() {
 const HEADER_KEYS = new Set(BUSINESS_FIELDS.map((f) => f.key));
 /** 绑定协议后仍要展示的节点额外字段（如法务意见） */
 const extraFields = computed(() =>
-  (context.value?.form.fields || []).filter((f) => !HEADER_KEYS.has(f.key)),
+  (context.value?.form.fields || []).filter(
+    (f) => !f.moduleKey && !HEADER_KEYS.has(f.key),
+  ),
 );
 /** 已回写到协议、当前节点表单未列出的流程字段，供后续环节只读回看 */
 const storedFlowFields = computed(() => {
@@ -126,18 +151,22 @@ const storedFlowFields = computed(() => {
 const nodeName = computed(
   () =>
     context.value?.definition.nodes.find(
-      (n) => n.id === context.value?.instance.currentNodeId,
+      (n) =>
+        n.id ===
+        (context.value?.viewNodeId ||
+          context.value?.task?.nodeId ||
+          context.value?.instance.currentNodeId),
     )?.name,
 );
 /** 终止原因，供详情提示条展示 */
 const terminateReason = computed(
   () =>
     [...(context.value?.instance.events || [])]
-      .reverse()
+      .toReversed()
       .find((e) => e.action === 'terminate')?.opinion || '',
 );
 let sequence = 0;
-let pendingRequest: { fingerprint: string; id: string } | undefined;
+let pendingRequest: undefined | { fingerprint: string; id: string };
 function accept(result: WorkflowContext) {
   context.value = result;
   data.value = JSON.parse(JSON.stringify(result.instance.data));
@@ -178,6 +207,7 @@ function payload() {
     (context.value?.form.fields || [])
       .filter(
         (f) =>
+          !(boundAgreement.value && (f.moduleKey || HEADER_KEYS.has(f.key))) &&
           !f.readonly &&
           !f.hidden &&
           !(
@@ -225,20 +255,28 @@ async function submit(action: WorkflowActionInput['action']) {
       return;
     }
   }
-  let agreementPayload: AgreementDetail | undefined;
+  let agreementPayload: Record<string, any> | undefined;
   if (boundAgreement.value && agreePanel.value) {
-    if (['save', 'submit'].includes(action) && current.agreementEditable) {
-      if (!(await agreePanel.value.validate())) {
+    if (
+      ['pass', 'save', 'submit'].includes(action) &&
+      current.agreementEditable
+    ) {
+      if (action !== 'save' && !(await agreePanel.value.validate())) {
         view.value = 'form';
         return;
       }
       agreementPayload = await agreePanel.value.collect();
-      Object.assign(data.value, headerFromAgreement(agreementPayload));
+      if (!current.detailView)
+        Object.assign(
+          data.value,
+          headerFromAgreement(agreementPayload as AgreementDetail),
+        );
     }
   }
-  if (['submit', 'pass'].includes(action)) {
+  if (['pass', 'submit'].includes(action)) {
     const missing = current.form.fields.find(
       (f) =>
+        !(boundAgreement.value && (f.moduleKey || HEADER_KEYS.has(f.key))) &&
         !f.hidden &&
         !f.readonly &&
         f.required &&
@@ -368,22 +406,21 @@ onBeforeUnmount(() => {
 <template>
   <Page auto-content-height>
     <div v-loading="loading" class="runtime-detail">
-      <ElEmpty v-if="!context && !loading" description="实例加载失败或无权访问"
-        ><ElButton @click="load">重试</ElButton
-        ><ElButton @click="backToList"
-          >返回{{
+      <ElEmpty v-if="!context && !loading" description="实例加载失败或无权访问">
+<ElButton @click="load">重试</ElButton><ElButton @click="backToList">
+返回{{
             route.query.from === 'monitor' ? '流程监控' : '任务中心'
-          }}</ElButton
-        ></ElEmpty
-      >
+          }}
+</ElButton>
+</ElEmpty>
       <template v-if="context">
         <header>
           <div>
-            <ElButton text @click="backToList"
-              >← 返回{{
+            <ElButton text @click="backToList">
+← 返回{{
                 route.query.from === 'monitor' ? '流程监控' : '任务中心'
-              }}</ElButton
-            >
+              }}
+</ElButton>
             <h1>{{ context.instance.title }}</h1>
             <p>
               {{ context.instance.businessNo }} ·
@@ -396,8 +433,9 @@ onBeforeUnmount(() => {
                 link
                 type="primary"
                 @click="openAgreement"
-                >打开协议详情</ElButton
-              >
+                >
+打开协议详情
+</ElButton>
             </p>
           </div>
           <div class="status">
@@ -411,12 +449,13 @@ onBeforeUnmount(() => {
                       ? 'info'
                       : 'primary'
               "
-              >{{
+              >
+{{
                 context.instance.status === 'running'
                   ? nodeName
                   : INSTANCE_STATUS_LABELS[context.instance.status] || nodeName
-              }}</ElTag
-            ><ElButton :disabled="saving" @click="reload">刷新</ElButton>
+              }}
+</ElTag><ElButton :disabled="saving" @click="reload">刷新</ElButton>
           </div>
         </header>
         <ElAlert
@@ -461,7 +500,7 @@ onBeforeUnmount(() => {
         <ElAlert
           v-else-if="!context.canAct && context.instance.status === 'running'"
           type="info"
-          :title="`当前由 ${context.task?.assigneeNames.join('、')} 办理，您正在查看只读资料。`"
+          title="您正在查看只读资料。"
           :closable="false"
           style="margin: 12px 0"
         />
@@ -481,28 +520,32 @@ onBeforeUnmount(() => {
         />
         <div class="content-grid">
           <section>
-            <ElTabs v-model="view"
-              ><ElTabPane label="办理资料" name="form"
-                ><div class="form-header">
+            <ElTabs v-model="view">
+<ElTabPane label="办理资料" name="form">
+<div class="form-header">
                   <h2>
-                    {{ boundAgreement ? '协议资料' : context.form.title }}
+                    {{ showAgreementDetail ? '协议资料' : context.form.title }}
                   </h2>
                   <span>{{
                     context.canAct
-                      ? context.agreementEditable
-                        ? '按当前节点编辑协议，保存/提交后回写'
-                        : '审批节点协议只读，可填写意见后通过或驳回'
+                      ? showAgreementDetail
+                        ? context.agreementEditable
+                          ? '按当前节点编辑协议，保存/提交后回写'
+                          : '按本节点资料权限查看，可填写意见后通过或驳回'
+                        : '填写当前节点办理表单，保存或提交后进入后续环节'
                       : '只读视图'
                   }}</span>
                 </div>
                 <AgreementPanel
-                  v-if="boundAgreement"
-                  :key="`${context.instance.id}:${context.instance.currentNodeId}:${context.instance.revision}`"
+                  v-if="showAgreementDetail && boundAgreement"
+                  :key="`${context.instance.id}:${context.viewNodeId}:${context.instance.revision}`"
                   ref="agreePanel"
                   :detail="boundAgreement"
                   :editable="!!context.agreementEditable && !saving && !stale"
                   :field-access="currentNode?.fieldAccess"
-                  @dirty="agreeDirty = true" />
+                  :detail-view="context.detailView"
+                  @dirty="agreeDirty = true"
+/>
                 <ElForm
                   v-if="boundAgreement && extraFields.length"
                   label-position="top"
@@ -510,10 +553,12 @@ onBeforeUnmount(() => {
                   @submit.prevent
                 >
                   <div class="form-header" style="margin-top: 8px">
-                    <h2>本节点字段</h2>
-                    <span
-                      >按当前节点字段权限填写，审批默认可写已设为「可编辑」的项</span
-                    >
+                    <h2>
+                      {{
+                        showAgreementDetail ? '节点补充表单' : '节点办理表单'
+                      }}
+                    </h2>
+                    <span>按当前节点字段权限填写，审批默认可写已设为「可编辑」的项</span>
                   </div>
                   <div class="field-grid">
                     <ElFormItem
@@ -537,7 +582,11 @@ onBeforeUnmount(() => {
                   </div>
                 </ElForm>
                 <ElForm
-                  v-if="boundAgreement && storedFlowFields.length"
+                  v-if="
+                    showAgreementDetail &&
+                    boundAgreement &&
+                    storedFlowFields.length
+                  "
                   label-position="top"
                   disabled
                 >
@@ -565,7 +614,8 @@ onBeforeUnmount(() => {
                   label-position="top"
                   :disabled="saving || stale"
                   @submit.prevent
-                  ><div class="field-grid">
+                  >
+<div class="field-grid">
                     <ElFormItem
                       v-for="field in context.form.fields"
                       :key="`${context.instance.currentNodeId}:${field.key}`"
@@ -574,18 +624,23 @@ onBeforeUnmount(() => {
                       :class="{
                         wide: ['table', 'textarea'].includes(field.type),
                       }"
-                      ><FieldControl
+                      >
+<FieldControl
                         :field="field"
                         :model-value="data[field.key]"
                         :disabled="!context.canAct || saving || stale"
                         @update:model-value="data[field.key] = $event"
-                    /></ElFormItem></div></ElForm
-                ><ElEmpty
+                    />
+</ElFormItem>
+</div>
+</ElForm><ElEmpty
                   v-if="!boundAgreement && !context.form.fields.length"
-                  description="当前无可见字段" /></ElTabPane
-              ><ElTabPane label="流程图" name="graph"
-                ><Trace :context="context" /></ElTabPane
-            ></ElTabs>
+                  description="当前无可见字段"
+/>
+</ElTabPane><ElTabPane label="流程图" name="graph">
+<Trace :context="context" />
+</ElTabPane>
+</ElTabs>
             <div
               v-if="
                 context.canAct ||
@@ -593,8 +648,7 @@ onBeforeUnmount(() => {
               "
               class="action-area"
             >
-              <label>办理意见</label
-              ><ElInput
+              <label>办理意见</label><ElInput
                 v-model="opinion"
                 type="textarea"
                 :rows="3"
@@ -603,14 +657,13 @@ onBeforeUnmount(() => {
                 placeholder="填写办理意见；驳回时必填"
               />
               <div class="actions">
-                <span v-if="dirty">有未提交修改</span
-                ><ElTooltip
+                <span v-if="dirty">有未提交修改</span><ElTooltip
                   v-for="button in context.buttons"
                   :key="button.code"
                   :content="button.reason || ''"
                   :disabled="button.enabled"
-                  ><span
-                    ><ElButton
+                  >
+<span><ElButton
                       :type="
                         button.code === 'reject' || button.code === 'recall'
                           ? 'danger'
@@ -628,10 +681,8 @@ onBeforeUnmount(() => {
                       :disabled="!button.enabled || stale"
                       :loading="saving"
                       @click="actionClick(button.code)"
-                      >{{ button.label }}</ElButton
-                    ></span
-                  ></ElTooltip
-                >
+                      >{{ button.label }}</ElButton></span>
+</ElTooltip>
               </div>
             </div>
           </section>
@@ -640,8 +691,8 @@ onBeforeUnmount(() => {
             <p class="timeline-note">
               发起人：{{ context.instance.initiatorName }}
             </p>
-            <ElTimeline
-              ><ElTimelineItem
+            <ElTimeline>
+<ElTimelineItem
                 v-for="event in [...context.instance.events].reverse()"
                 :key="event.id"
                 :timestamp="
@@ -663,13 +714,14 @@ onBeforeUnmount(() => {
                         ? 'success'
                         : 'primary'
                 "
-                ><b>{{ event.nodeName }} · {{ ACTION_LABELS[event.action] }}</b>
+                >
+<b>{{ event.nodeName }} · {{ ACTION_LABELS[event.action] }}</b>
                 <p>{{ event.actorName }}</p>
                 <div v-if="event.opinion" class="opinion">
                   {{ event.opinion }}
-                </div></ElTimelineItem
-              ></ElTimeline
-            >
+                </div>
+</ElTimelineItem>
+</ElTimeline>
           </aside>
         </div>
         <ElDialog
@@ -679,32 +731,36 @@ onBeforeUnmount(() => {
           :close-on-click-modal="false"
           :show-close="!saving"
           :close-on-press-escape="!saving"
-          ><ElForm label-position="top" :disabled="saving"
-            ><ElFormItem label="退回节点" required
-              ><ElSelect v-model="target" style="width: 100%"
-                ><ElOption
+          >
+<ElForm label-position="top" :disabled="saving">
+<ElFormItem label="退回节点" required>
+<ElSelect v-model="target" style="width: 100%">
+<ElOption
                   v-for="item in context.rejectTargets"
                   :key="item.id"
                   :label="item.name"
-                  :value="item.id" /></ElSelect></ElFormItem
-            ><ElFormItem label="驳回意见" required
-              ><ElInput
+                  :value="item.id"
+/>
+</ElSelect>
+</ElFormItem><ElFormItem label="驳回意见" required>
+<ElInput
                 v-model="opinion"
                 type="textarea"
                 :rows="4"
                 maxlength="2000"
-            /></ElFormItem>
+            />
+</ElFormItem>
             <p class="timeline-note">
               退回人修改后，将按节点配置重新提交。
-            </p></ElForm
-          ><template #footer
-            ><ElButton :disabled="saving" @click="rejectOpen = false"
-              >取消</ElButton
-            ><ElButton type="danger" :loading="saving" @click="submit('reject')"
-              >确认驳回</ElButton
-            ></template
-          ></ElDialog
-        >
+            </p>
+</ElForm><template #footer>
+<ElButton :disabled="saving" @click="rejectOpen = false">
+取消
+</ElButton><ElButton type="danger" :loading="saving" @click="submit('reject')">
+确认驳回
+</ElButton>
+</template>
+</ElDialog>
         <ElDialog
           v-model="transferOpen"
           title="转办"
@@ -712,26 +768,31 @@ onBeforeUnmount(() => {
           :close-on-click-modal="false"
           :show-close="!saving"
           :close-on-press-escape="!saving"
-          ><ElForm label-position="top" :disabled="saving"
-            ><ElFormItem label="转办给" required
-              ><ElSelect
+          >
+<ElForm label-position="top" :disabled="saving">
+<ElFormItem label="转办给" required>
+<ElSelect
                 v-model="transferTarget"
                 filterable
                 style="width: 100%"
                 placeholder="选择有流程办理权限的人"
-                ><ElOption
+                >
+<ElOption
                   v-for="item in context.transferCandidates || []"
                   :key="item.id"
                   :label="item.name"
-                  :value="item.id" /></ElSelect></ElFormItem
-            ><ElFormItem label="转办说明（选填）"
-              ><ElInput
+                  :value="item.id"
+/>
+</ElSelect>
+</ElFormItem><ElFormItem label="转办说明（选填）">
+<ElInput
                 v-model="opinion"
                 type="textarea"
                 :rows="4"
                 maxlength="2000"
                 placeholder="会写入审批记录，对方可在记录中看到"
-            /></ElFormItem>
+            />
+</ElFormItem>
             <p class="timeline-note">
               转办后本待办进入你的已办，由对方继续办理；本页未保存的协议修改不会带给对方。
             </p>
@@ -742,19 +803,20 @@ onBeforeUnmount(() => {
             </p>
             <p v-else-if="context.transferWillReturn" class="timeline-note">
               本节点要求转办后转回：对方提交或通过后，待办会回到你，由你再办理。
-            </p></ElForm
-          ><template #footer
-            ><ElButton :disabled="saving" @click="transferOpen = false"
-              >取消</ElButton
-            ><ElButton
+            </p>
+</ElForm><template #footer>
+<ElButton :disabled="saving" @click="transferOpen = false">
+取消
+</ElButton><ElButton
               type="warning"
               :loading="saving"
               :disabled="!transferTarget"
               @click="submit('transfer')"
-              >确认转办</ElButton
-            ></template
-          ></ElDialog
-        >
+              >
+确认转办
+</ElButton>
+</template>
+</ElDialog>
       </template>
     </div>
   </Page>

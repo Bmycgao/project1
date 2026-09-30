@@ -309,7 +309,28 @@ export function applyUnlockedFlowFields(
     return false;
   };
   for (const [key, value] of Object.entries(data || {})) {
-    if (value === undefined || HEADER_KEYS.has(key)) continue;
+    if (value === undefined) continue;
+    if (HEADER_KEYS.has(key)) {
+      // 协议编号是业务主键，任何数据动作都不能修改；其余头字段仅允许本轮系统动作解锁。
+      if (!unlocked.has(key) || key === 'agreementNo') continue;
+      if (key === 'compensatee') {
+        const text = String(value ?? '');
+        next.basic.compensatee = text;
+        if (next.rightHolders?.[0]) next.rightHolders[0].name = text;
+        if (next.population) next.population.headName = text;
+      } else if (key === 'houseAddress') {
+        const text = String(value ?? '');
+        if (next.houses?.[0]) next.houses[0].address = text;
+        next.signing.houseAddress = text;
+        if (next.population) next.population.hukouAddress = text;
+      } else if (key === 'BuChangJinE') {
+        const amount = Number(value);
+        if (!Number.isFinite(amount) || amount < 0)
+          throw new Error('数据动作写入的补偿金额不合法');
+        next.basic.amount = amount;
+      }
+      continue;
+    }
     if (locked(key)) continue;
     const item = WORKFLOW_FIELD_CATALOG.find((c) => c.key === key);
     if (item?.persist === 'basic' && next.basic) {

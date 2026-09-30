@@ -50,6 +50,7 @@ import { useVbenForm } from '#/adapter/form';
 import {
   createPageSchema,
   DEFAULT_FC_BINDINGS,
+  getFcSchemaList,
   getPageSchema,
   getPageSchemaHistory,
   getRoleAccessCodes,
@@ -391,6 +392,7 @@ function createDefaultModuleLayoutRows(): ModuleLayoutEditRow[] {
       enabled: m.enabled,
       order: m.order ?? 10,
       span: normalizeModuleSpan(m.span),
+      region: m.region,
       widgetKind: meta?.widgetKind || 'form',
       custom: false,
       desc: meta?.desc,
@@ -407,6 +409,7 @@ function buildSceneModules(): AgreeModuleMount[] {
     enabled: row.enabled,
     order: row.order,
     span: normalizeModuleSpan(row.span),
+    region: row.region,
     label: row.label,
     desc: row.desc,
     widgetKind: row.widgetKind,
@@ -435,6 +438,7 @@ function rowsFromModules(
         enabled: m.enabled,
         order: m.order ?? 10,
         span: normalizeModuleSpan(m.span),
+        region: m.region,
         widgetKind: meta.widgetKind,
         custom: isCustomAgreeModule(String(m.key)),
         desc: meta.desc,
@@ -864,6 +868,28 @@ const [Drawer, drawerApi] = useVbenDrawer({
         ElMessage.warning('请至少挂载一个详情模块');
         return;
       }
+      try {
+        const templates = await getFcSchemaList({ status: 1 });
+        const invalid = moduleLayoutRows.value.find(
+          (row) =>
+            row.enabled &&
+            !templates.some(
+              (template) =>
+                template.id === fcBindingsMap.value[row.key] &&
+                template.status === 1 &&
+                template.usage !== 'workflowSupplement' &&
+                template.kind === (row.widgetKind || 'form'),
+            ),
+        );
+        if (invalid) {
+          ElMessage.warning(`请为「${invalid.label}」选择可用且类型匹配的模板`);
+          configTab.value = 'detail';
+          return;
+        }
+      } catch {
+        ElMessage.error('无法检查详情模板，请稍后重试');
+        return;
+      }
       // 场景可继承列模板：仅当本场景已配列时才校验至少一列可见
       if (columns.value.length > 0 && !columns.value.some((c) => c.visible)) {
         ElMessage.warning('至少保留一列可见的列表字段');
@@ -969,7 +995,7 @@ const [Drawer, drawerApi] = useVbenDrawer({
     schemaKind.value = 'entity';
     columnOverride.value = false;
     configTab.value =
-      (data as { focusTab?: string } | undefined)?.focusTab || 'base';
+      (data as undefined | { focusTab?: string })?.focusTab || 'base';
     bindCollapse.value = [];
     previewResult.value = null;
     previewRoleName.value = '';
@@ -1209,8 +1235,8 @@ const title = computed(() => {
       <ElTabPane v-if="isScene" label="详情" name="detail">
         <div class="mb-2 font-medium">详情组装</div>
         <p class="mb-2 text-xs text-gray-500">
-          挂模块、拖胶囊排序；每块选择表单模板。改字段请到系统管理 →
-          表单模板。中间的协议号和指标只是示意。
+          选择模块，设置显示区域、顺序与模板；预览使用实际详情组件和示例数据。
+          隐藏模块保留业务数据。字段在表单模板中维护。
         </p>
         <DetailDesigner
           v-model:layouts="moduleLayoutRows"

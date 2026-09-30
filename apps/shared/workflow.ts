@@ -16,6 +16,7 @@ export type AssigneeType =
   | 'initiator'
   | 'role'
   | 'user';
+export type WorkflowDetailMode = 'formOnly' | 'inherit' | 'override';
 export interface WorkflowNode {
   id: string;
   code: string;
@@ -24,8 +25,18 @@ export interface WorkflowNode {
   x: number;
   y: number;
   description: string;
-  assignee: { field: string; ids: string[]; type: AssigneeType; };
-  form: { id: string; type: 'form' | 'page'; };
+  assignee: { field: string; ids: string[]; type: AssigneeType };
+  /**
+   * 旧版单一绑定字段。新文档会保留空值以兼容旧接口；读取旧数据时：
+   * page 迁移为节点覆盖详情，form 迁移为继承详情 + 节点补充表单。
+   */
+  form: { id: string; type: 'form' | 'page' };
+  /** 办理详情来源：继承流程默认、节点覆盖，或仅显示独立表单。 */
+  detailMode?: WorkflowDetailMode;
+  /** detailMode=override 时使用的页面配置 id。 */
+  detailViewId?: string;
+  /** 节点补充表单；formOnly 时作为唯一办理表单。 */
+  supplementFormId?: string;
   buttons: string[];
   rejectMode: 'initiator' | 'previous' | 'specified';
   resubmitMode: 'restart' | 'return';
@@ -44,6 +55,8 @@ export interface WorkflowNode {
   approveRatio?: number;
   /** Optional per-field restrictions. Roles and template restrictions can only narrow these. */
   fieldAccess?: Record<string, 'edit' | 'hidden' | 'readonly'>;
+  /** 未设置时继承节点类型默认值；隐藏/只读限制整个模块。 */
+  moduleAccess?: Record<string, 'edit' | 'hidden' | 'inherit' | 'readonly'>;
   /** 子流程节点绑定的已发布流程编码（同基地） */
   subflowCode?: string;
   /** 办理时限与超时提醒（自然日折算为小时） */
@@ -60,17 +73,25 @@ export interface WorkflowNode {
 }
 export const DATA_ACTION_WHENS = ['arrive', 'save', 'submit', 'pass'] as const;
 export const DATA_ACTION_KINDS = ['set', 'copy'] as const;
+export const DATA_ACTION_POLICIES = [
+  'always',
+  'empty',
+  'firstArrival',
+] as const;
 export type WorkflowDataActionWhen = (typeof DATA_ACTION_WHENS)[number];
 export type WorkflowDataActionKind = (typeof DATA_ACTION_KINDS)[number];
+export type WorkflowDataActionPolicy = (typeof DATA_ACTION_POLICIES)[number];
 export interface WorkflowDataAction {
   when: WorkflowDataActionWhen;
   kind: WorkflowDataActionKind;
   /** 写入的目标字段 */
   field: string;
-  /** kind=set 时的字面量 */
-  value?: string;
+  /** kind=set 时的固定值；按目标字段类型保存，旧版本文本值仍兼容 */
+  value?: boolean | number | string;
   /** kind=copy 时的来源字段 */
   from?: string;
+  /** 默认每次执行；可限制为空时或首次到达节点时执行。 */
+  policy?: WorkflowDataActionPolicy;
 }
 export const DATA_ACTION_WHEN_LABELS: Record<WorkflowDataActionWhen, string> = {
   arrive: '到达节点',
@@ -81,6 +102,14 @@ export const DATA_ACTION_WHEN_LABELS: Record<WorkflowDataActionWhen, string> = {
 export const DATA_ACTION_KIND_LABELS: Record<WorkflowDataActionKind, string> = {
   set: '赋固定值',
   copy: '抄已有字段',
+};
+export const DATA_ACTION_POLICY_LABELS: Record<
+  WorkflowDataActionPolicy,
+  string
+> = {
+  always: '每次执行',
+  empty: '仅字段为空',
+  firstArrival: '仅首次到达',
 };
 export interface WorkflowEdge {
   id: string;
@@ -99,6 +128,8 @@ export interface WorkflowDocument {
   base: string;
   businessTable: string;
   description: string;
+  /** 全流程人工节点默认继承的办理详情页面；空值使用内置协议详情。 */
+  defaultDetailViewId?: string;
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   viewport: { x: number; y: number; zoom: number };
@@ -136,9 +167,38 @@ export interface WorkflowOptions {
   roles: { id: string; name: string }[];
   users: { id: string; name: string }[];
   departments: { id: string; name: string }[];
-  views: { id: string; name: string; type: 'form' | 'page' }[];
+  /** 未选择页面配置时，内置协议详情中真实存在的字段。 */
+  defaultDetailFields?: WorkflowOptionField[];
+  views: {
+    /** 此页面或节点补充模板中真实存在、可配置权限的字段。 */
+    fields?: WorkflowOptionField[];
+    id: string;
+    modules?: { key: string; label: string }[];
+    name: string;
+    type: 'form' | 'page';
+  }[];
   /** 可供子流程节点绑定的已发布流程 */
   workflows?: { code: string; id: string; name: string }[];
+}
+
+/** 设计器使用的真实字段元数据；actionable 表示当前运行层能够正确读写该字段。 */
+export interface WorkflowOptionField {
+  actionable?: boolean;
+  dateMode?: 'date' | 'datetime';
+  group: string;
+  key: string;
+  label: string;
+  max?: number;
+  min?: number;
+  options?: { label: string; value: boolean | number | string }[];
+  type?:
+    | 'boolean'
+    | 'date'
+    | 'number'
+    | 'select'
+    | 'table'
+    | 'text'
+    | 'textarea';
 }
 export const NODE_LABELS: Record<NodeType, string> = {
   start: '开始',
@@ -183,6 +243,9 @@ export function createNode(
       field: '',
     },
     form: { type: 'page', id: '' },
+    detailMode: 'inherit',
+    detailViewId: '',
+    supplementFormId: '',
     buttons:
       type === 'task'
         ? ['save', 'submit']
@@ -205,10 +268,60 @@ export function createDocument(): WorkflowDocument {
     base: '',
     businessTable: 'XieYi',
     description: '',
+    defaultDetailViewId: '',
     nodes: [],
     edges: [],
     viewport: { x: 60, y: 100, zoom: 1 },
   };
+}
+
+/** 兼容旧 node.form，返回节点当前明确的详情模式。 */
+export function workflowNodeDetailMode(
+  node: Pick<
+    WorkflowNode,
+    'detailMode' | 'detailViewId' | 'form' | 'supplementFormId'
+  >,
+): WorkflowDetailMode {
+  // A non-empty legacy binding wins so old callers that still assign node.form
+  // keep their historical behavior until they are explicitly migrated.
+  if (node.form?.id) return node.form.type === 'page' ? 'override' : 'inherit';
+  if (node.detailMode) return node.detailMode;
+  return 'inherit';
+}
+
+/** 节点覆盖详情 id；旧 page 绑定自动兼容。 */
+export function workflowNodeDetailViewId(
+  node: Pick<WorkflowNode, 'detailViewId' | 'form'>,
+): string {
+  return (
+    node.detailViewId || (node.form?.type === 'page' ? node.form.id : '') || ''
+  );
+}
+
+/** 节点补充表单 id；旧 form 绑定自动兼容。 */
+export function workflowNodeSupplementFormId(
+  node: Pick<WorkflowNode, 'form' | 'supplementFormId'>,
+): string {
+  return (
+    node.supplementFormId ||
+    (node.form?.type === 'form' ? node.form.id : '') ||
+    ''
+  );
+}
+
+/** 计算节点最终使用的详情页面 id；空值表示内置协议详情。 */
+export function effectiveWorkflowDetailViewId(
+  doc: Pick<WorkflowDocument, 'defaultDetailViewId'>,
+  node: Pick<
+    WorkflowNode,
+    'detailMode' | 'detailViewId' | 'form' | 'supplementFormId'
+  >,
+): string {
+  const mode = workflowNodeDetailMode(node);
+  if (mode === 'formOnly') return '';
+  return mode === 'override'
+    ? workflowNodeDetailViewId(node)
+    : doc.defaultDetailViewId || '';
 }
 /** Business validation allows unfinished drafts, but prevents treating them as valid designs. */
 export function validateWorkflow(doc: WorkflowDocument): WorkflowIssue[] {
@@ -283,6 +396,19 @@ export function validateWorkflow(doc: WorkflowDocument): WorkflowIssue[] {
         !outgoing.some((e) => e.type === 'reject')
       )
         add('已配置驳回按钮，请绘制允许的驳回连线');
+      if (node.type !== 'cc') {
+        const detailMode = workflowNodeDetailMode(node);
+        const supplementFormId = workflowNodeSupplementFormId(node);
+        if (detailMode === 'override' && !workflowNodeDetailViewId(node))
+          add('请选择节点覆盖的办理详情视图');
+        if (detailMode === 'formOnly' && !supplementFormId)
+          add('仅独立表单模式必须选择节点表单');
+        if (
+          detailMode === 'formOnly' &&
+          Object.keys(node.moduleAccess || {}).length > 0
+        )
+          add('仅独立表单模式不使用模块权限，请清除旧模块配置');
+      }
     }
     if (node.type === 'parallel') {
       const passIn = incoming.filter((e) => e.type !== 'reject');
@@ -412,9 +538,13 @@ function isDataActions(value: unknown) {
     return (
       DATA_ACTION_WHENS.includes(action.when) &&
       DATA_ACTION_KINDS.includes(action.kind) &&
+      (action.policy === undefined ||
+        DATA_ACTION_POLICIES.includes(action.policy)) &&
       typeof action.field === 'string' &&
       action.field.length <= 100 &&
       (action.value === undefined ||
+        typeof action.value === 'boolean' ||
+        (typeof action.value === 'number' && Number.isFinite(action.value)) ||
         (typeof action.value === 'string' && action.value.length <= 2000)) &&
       (action.from === undefined ||
         (typeof action.from === 'string' && action.from.length <= 100))
@@ -432,7 +562,8 @@ export function isWorkflowDocument(input: unknown): input is WorkflowDocument {
     d.schemaVersion !== 1 ||
     ![d.code, d.name, d.category, d.base, d.businessTable, d.description].every(
       str,
-    )
+    ) ||
+    (d.defaultDetailViewId !== undefined && !str(d.defaultDetailViewId))
   )
     return false;
   if (
@@ -466,6 +597,10 @@ export function isWorkflowDocument(input: unknown): input is WorkflowDocument {
         n.form &&
         ['form', 'page'].includes(n.form.type) &&
         str(n.form.id) &&
+        (n.detailMode === undefined ||
+          ['formOnly', 'inherit', 'override'].includes(n.detailMode)) &&
+        (n.detailViewId === undefined || str(n.detailViewId)) &&
+        (n.supplementFormId === undefined || str(n.supplementFormId)) &&
         ids(n.buttons) &&
         ['initiator', 'previous', 'specified'].includes(n.rejectMode) &&
         ['restart', 'return'].includes(n.resubmitMode) &&
@@ -486,6 +621,16 @@ export function isWorkflowDocument(input: unknown): input is WorkflowDocument {
         (n.subflowCode === undefined || str(n.subflowCode)) &&
         (n.sla === undefined || isSla(n.sla)) &&
         isDataActions(n.dataActions) &&
+        (n.moduleAccess === undefined ||
+          (!!n.moduleAccess &&
+            typeof n.moduleAccess === 'object' &&
+            !Array.isArray(n.moduleAccess) &&
+            Object.entries(n.moduleAccess).every(
+              ([key, mode]) =>
+                /^[A-Za-z_][\w]*$/.test(key) &&
+                !['__proto__', 'constructor', 'prototype'].includes(key) &&
+                ['edit', 'hidden', 'inherit', 'readonly'].includes(mode),
+            ))) &&
         (n.fieldAccess === undefined ||
           (!!n.fieldAccess &&
             typeof n.fieldAccess === 'object' &&
@@ -606,9 +751,13 @@ function slaText(node: WorkflowNode) {
 function dataActionText(action: WorkflowDataAction) {
   const when = DATA_ACTION_WHEN_LABELS[action.when] || action.when;
   const target = fieldLabel(action.field);
+  const policy =
+    action.policy && action.policy !== 'always'
+      ? `（${DATA_ACTION_POLICY_LABELS[action.policy]}）`
+      : '';
   if (action.kind === 'copy')
-    return `${when}把${fieldLabel(action.from || '')}抄到${target}`;
-  return `${when}把${target}设为「${action.value ?? ''}」`;
+    return `${when}${policy}把${fieldLabel(action.from || '')}抄到${target}`;
+  return `${when}${policy}把${target}设为「${action.value ?? ''}」`;
 }
 /** 节点全部数据动作文案 */
 function dataActionsText(node: WorkflowNode) {
@@ -629,6 +778,31 @@ function fieldAccessText(node: WorkflowNode) {
     )
     .join('、');
 }
+function moduleAccessText(node: WorkflowNode) {
+  const labels: Record<string, string> = {
+    inherit: '继承',
+    edit: '可编辑',
+    hidden: '隐藏',
+    readonly: '只读',
+  };
+  return (
+    Object.entries(node.moduleAccess || {})
+      .filter(([, mode]) => mode !== 'inherit')
+      .toSorted(([a], [b]) => a.localeCompare(b))
+      .map(([key, mode]) => `${key}：${labels[mode]}`)
+      .join('、') || '继承'
+  );
+}
+function detailBindingText(node: WorkflowNode) {
+  const mode = workflowNodeDetailMode(node);
+  const supplement = workflowNodeSupplementFormId(node);
+  if (mode === 'formOnly') return `仅表单（${supplement || '未选择'}）`;
+  const detail =
+    mode === 'override'
+      ? `覆盖详情（${workflowNodeDetailViewId(node) || '未选择'}）`
+      : '继承流程默认详情';
+  return supplement ? `${detail}，补充表单（${supplement}）` : detail;
+}
 /** 文案不同才记一条 */
 function pushConfigChange(
   lines: string[],
@@ -643,6 +817,12 @@ function pushConfigChange(
 /** 新增或删除节点时，只摘出四类配置里实际配过的部分 */
 function configuredParts(node: WorkflowNode) {
   const parts: string[] = [];
+  if (
+    workflowNodeDetailMode(node) !== 'inherit' ||
+    workflowNodeSupplementFormId(node)
+  )
+    parts.push(`办理详情（${detailBindingText(node)}）`);
+  if (node.moduleAccess) parts.push(`模块权限（${moduleAccessText(node)}）`);
   if (node.buttons?.length) parts.push(`按钮（${buttonsText(node)}）`);
   if (node.sla?.durationHours) parts.push(`时限（${slaText(node)}）`);
   if (node.dataActions?.length)
@@ -662,6 +842,10 @@ export function diffWorkflowConfig(
   after: WorkflowDocument,
 ): string[] {
   const lines: string[] = [];
+  if ((before.defaultDetailViewId || '') !== (after.defaultDetailViewId || ''))
+    lines.push(
+      `流程默认办理详情由${before.defaultDetailViewId || '内置协议详情'}改为${after.defaultDetailViewId || '内置协议详情'}`,
+    );
   const beforeNodes = new Map(before.nodes.map((node) => [node.id, node]));
   const afterNodes = new Map(after.nodes.map((node) => [node.id, node]));
   for (const next of after.nodes) {
@@ -693,6 +877,20 @@ export function diffWorkflowConfig(
       '字段权限',
       fieldAccessText(prev),
       fieldAccessText(next),
+    );
+    pushConfigChange(
+      lines,
+      next.name,
+      '办理详情',
+      detailBindingText(prev),
+      detailBindingText(next),
+    );
+    pushConfigChange(
+      lines,
+      next.name,
+      '模块权限',
+      moduleAccessText(prev),
+      moduleAccessText(next),
     );
   }
   for (const prev of before.nodes) {
@@ -819,6 +1017,7 @@ export function documentOf(record: WorkflowDocument): WorkflowDocument {
     base,
     businessTable,
     description,
+    defaultDetailViewId,
     nodes,
     edges,
     viewport,
@@ -832,6 +1031,7 @@ export function documentOf(record: WorkflowDocument): WorkflowDocument {
       base,
       businessTable,
       description,
+      defaultDetailViewId: defaultDetailViewId || '',
       nodes,
       edges,
       viewport,
