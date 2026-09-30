@@ -27,7 +27,7 @@
   },
   "dependencies": {
     "@form-create/designer": "^3.5.0",
-    "@form-create/element-ui": "^3.3.3",
+    "@form-create/element-ui": "^3.3.4",
     "@vben/access": "workspace:*",
     "@vben/common-ui": "workspace:*",
     "@vben/constants": "workspace:*",
@@ -48,7 +48,7 @@
     "element-plus": "catalog:",
     "jquery": "^3.7.1",
     "jsbarcode": "^3.12.3",
-    "monaco-editor": "^0.56.0",
+    "monaco-editor": "^0.57.0",
     "pinia": "catalog:",
     "sortablejs": "catalog:",
     "vue": "catalog:",
