@@ -67,7 +67,7 @@ export interface AgreeActionContext {
   /** 刷新列表 */
   reload: () => Promise<void> | void;
   /** 打开详情 */
-  openDetail: (row: AgreementListItem) => void;
+  openDetail: (row: AgreementListItem, options?: { edit?: boolean }) => void;
   router: Router;
   /** 当前用户权限码（按钮级鉴权） */
   accessCodes?: string[];
@@ -134,6 +134,10 @@ function assertSelection(
 /** 勾选行的协议编号 */
 function selectedNos(ctx: AgreeActionContext) {
   return ctx.selected.map((r) => r.agreementNo);
+}
+
+function selectedIds(ctx: AgreeActionContext) {
+  return ctx.selected.map((row) => row.id);
 }
 
 /**
@@ -224,7 +228,7 @@ export const AGREE_ACTION_REGISTRY: Record<string, AgreeActionDef> = {
     handler: async (ctx) => {
       const row = await createAgreement();
       ElMessage.success(`已创建草稿 ${row.agreementNo}`);
-      ctx.openDetail(row);
+      ctx.openDetail(row, { edit: true });
       await ctx.reload();
     },
   },
@@ -248,7 +252,7 @@ export const AGREE_ACTION_REGISTRY: Record<string, AgreeActionDef> = {
       } catch {
         return;
       }
-      const { removed } = await deleteAgreements(selectedNos(ctx));
+      const { removed } = await deleteAgreements(selectedIds(ctx));
       ElMessage.success(`已删除 ${removed} 条`);
       await ctx.reload();
     },
@@ -303,7 +307,7 @@ export const AGREE_ACTION_REGISTRY: Record<string, AgreeActionDef> = {
       } catch {
         return;
       }
-      const res = await submitAgreementBatch(selectedNos(ctx));
+      const res = await submitAgreementBatch(selectedIds(ctx));
       ElMessage.success(`已提交复核 ${res?.total ?? ctx.selected.length} 条`);
       await ctx.reload();
     },
@@ -351,7 +355,7 @@ export const AGREE_ACTION_REGISTRY: Record<string, AgreeActionDef> = {
           if (error !== 'cancel') return;
         }
       }
-      const res = await approveAgreements(selectedNos(ctx));
+      const res = await approveAgreements(selectedIds(ctx));
       ElMessage.success(`已审核通过 ${res?.total ?? ctx.selected.length} 条`);
       await ctx.reload();
     },
@@ -379,7 +383,7 @@ export const AGREE_ACTION_REGISTRY: Record<string, AgreeActionDef> = {
       } catch {
         return;
       }
-      const res = await rejectAgreements(selectedNos(ctx), remark);
+      const res = await rejectAgreements(selectedIds(ctx), remark);
       ElMessage.success(`已驳回 ${res?.total ?? ctx.selected.length} 条`);
       await ctx.reload();
     },
@@ -418,7 +422,7 @@ export const AGREE_ACTION_REGISTRY: Record<string, AgreeActionDef> = {
       } catch {
         return;
       }
-      const res = await rejectAgreements(selectedNos(ctx), '驳回前期');
+      const res = await rejectAgreements(selectedIds(ctx), '驳回前期');
       ElMessage.success(`已驳回前期 ${res?.total ?? ctx.selected.length} 条`);
       await ctx.reload();
     },
@@ -637,6 +641,7 @@ async function runConfiguredBind(
     | 'post'
     | 'put';
   const payload = {
+    agreementIds: selectedIds(ctx),
     agreementNos: selectedNos(ctx),
     scene: ctx.scene,
   };

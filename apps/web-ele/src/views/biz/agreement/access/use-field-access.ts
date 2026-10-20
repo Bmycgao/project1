@@ -32,11 +32,14 @@ export const AGREE_DETAIL_EDITABLE_KEY: InjectionKey<Ref<boolean>> = Symbol(
  * 详情壳加载字段规则并 provide
  * @param schemaId 列模板或场景 schemaId，默认 PS_AGREE_COLS
  */
-export function useProvideAgreeFieldRules(schemaId = 'PS_AGREE_COLS') {
+export function useProvideAgreeFieldRules(
+  schemaId: null | string = 'PS_AGREE_COLS',
+) {
   const rules = ref<AgreeFieldRule[]>([...DEFAULT_AGREE_FIELD_RULES]);
 
   /** 从页面配置拉取 fieldRules */
   async function loadFieldRules() {
+    if (!schemaId) return;
     try {
       const schema = await getPageSchema(schemaId);
       if (schema?.fieldRules?.length) {

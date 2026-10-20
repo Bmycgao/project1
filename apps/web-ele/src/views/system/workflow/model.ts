@@ -1,20 +1,16 @@
+import type {
+  WorkflowDocument,
+  WorkflowEdge,
+  WorkflowNode,
+} from '../../../../../shared/workflow';
+
+import { createNode, newId } from '../../../../../shared/workflow';
 export * from '../../../../../shared/workflow';
 export {
   WORKFLOW_AUTH,
   WORKFLOW_FIELD_CATALOG,
   WORKFLOW_PERSON_FIELDS,
 } from '../../../../../shared/workflow-runtime';
-import type {
-  WorkflowDocument,
-  WorkflowEdge,
-  WorkflowNode,
-} from '../../../../../shared/workflow';
-import {
-  createNode,
-  newId,
-  exportWorkflowJson,
-  parseWorkflowJson,
-} from '../../../../../shared/workflow';
 
 export const NODE_WIDTH = 164;
 export const NODE_HEIGHT = 72;
@@ -91,7 +87,7 @@ export function edgeCaption(edge: WorkflowEdge) {
  */
 export function edgeLabelWidth(text: string) {
   let units = 0;
-  for (const char of text) units += char.charCodeAt(0) > 255 ? 12 : 6.6;
+  for (const char of text) units += (char.codePointAt(0) ?? 0) > 255 ? 12 : 6.6;
   return Math.max(40, Math.min(260, Math.ceil(units + 16)));
 }
 
@@ -102,10 +98,10 @@ export function edgeLabelWidth(text: string) {
  */
 export function edgeLabelBox(
   geometry: {
-    x: number;
-    y: number;
     labelAbove: boolean;
     labelSide?: 'center' | 'left';
+    x: number;
+    y: number;
   },
   text: string,
 ) {
@@ -124,7 +120,7 @@ export function edgeLabelBox(
     textY: geometry.labelAbove ? geometry.y - 14 : geometry.y + 4,
   };
 }
-export function sampleGraph(): Pick<WorkflowDocument, 'nodes' | 'edges'> {
+export function sampleGraph(): Pick<WorkflowDocument, 'edges' | 'nodes'> {
   const nodes = [
     createNode('start', 100, 210, 1),
     createNode('task', 350, 210, 2),
@@ -146,7 +142,7 @@ export function sampleGraph(): Pick<WorkflowDocument, 'nodes' | 'edges'> {
     '结束',
   ];
   nodes.forEach((node, i) => {
-    node.name = names[i]!;
+    node.name = names[i] || node.name;
   });
   const edges: WorkflowEdge[] = [];
   function edge(
@@ -158,8 +154,8 @@ export function sampleGraph(): Pick<WorkflowDocument, 'nodes' | 'edges'> {
   ) {
     edges.push({
       id: newId('edge'),
-      source: nodes[from]!.id,
-      target: nodes[to]!.id,
+      source: nodes[from]?.id || '',
+      target: nodes[to]?.id || '',
       type,
       condition,
       isDefault,
@@ -179,26 +175,4 @@ export function sampleGraph(): Pick<WorkflowDocument, 'nodes' | 'edges'> {
   edge(4, 2, 'reject');
   edge(6, 5, 'reject');
   return { nodes, edges };
-}
-
-/** 在浏览器下载流程设计 JSON */
-export function downloadWorkflowJson(doc: WorkflowDocument) {
-  const text = exportWorkflowJson(doc);
-  const code = (doc.code || 'workflow').replace(/[^\w-]+/g, '_') || 'workflow';
-  const blob = new Blob([text], { type: 'application/json;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `${code}.json`;
-  link.click();
-  URL.revokeObjectURL(url);
-}
-
-/**
- * 从本地文件读取并解析流程 JSON
- * @param file 用户选择的 .json 文件
- */
-export async function readWorkflowJsonFile(file: File) {
-  if (file.size > 1_000_000) throw new Error('流程 JSON 过大');
-  return parseWorkflowJson(await file.text());
 }

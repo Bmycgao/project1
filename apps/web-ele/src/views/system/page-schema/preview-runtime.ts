@@ -18,6 +18,7 @@ import {
 } from '../../biz/agreement/access/field-access';
 import {
   AGREE_DETAIL_MODULES,
+  getAgreeModuleAuthCode,
   isAgreeModuleVisible,
   normalizeAgreeModuleMounts,
   normalizeModuleSpan,
@@ -30,11 +31,13 @@ import {
 
 /** 预览入参（表单草稿） */
 export interface SchemaPreviewInput {
-  schemaKind: 'entity' | 'scene' | 'template';
+  schemaKind: NonNullable<PageSchemaApi.PageSchema['schemaKind']>;
   /** 可见列（场景可传模板列） */
   columns: PageSchemaApi.Column[];
   /** 字段规则（场景可传模板规则） */
   fieldRules?: AgreeFieldRule[];
+  /** 关联独立详情后，详情字段规则与列表列规则分开计算。 */
+  detailFieldRules?: AgreeFieldRule[];
   /** 场景勾选动作码 */
   actionCodes?: string[];
   /** 动作差异化绑定 */
@@ -201,8 +204,11 @@ export function buildSchemaPreview(
     }
   }
 
-  const fields: PreviewFieldRow[] = rules.map((r) => {
-    const access = resolveFieldAccess(r.field, rules, accessCodes);
+  const detailRules = input.detailFieldRules || rules;
+  const fields: PreviewFieldRow[] = [
+    ...new Map(detailRules.map((rule) => [rule.field, rule])).values(),
+  ].map((r) => {
+    const access = resolveFieldAccess(r.field, detailRules, accessCodes);
     let reason = '可见且可编辑';
     if (!access.visible) {
       reason = r.hidden ? '强制隐藏' : '缺少可见权限码';
@@ -226,7 +232,7 @@ export function buildSchemaPreview(
   });
 
   const modules: PreviewModuleRow[] = [];
-  if (input.schemaKind === 'scene') {
+  if (input.schemaKind === 'scene' || input.schemaKind === 'detail') {
     const normalized = normalizeAgreeModuleMounts(input.modules);
     const shownList = resolveAgreeModulesForPage(input.modules, accessCodes);
     const shownMap = new Map(shownList.map((m) => [m.key, m]));
@@ -236,7 +242,7 @@ export function buildSchemaPreview(
       const meta = AGREE_DETAIL_MODULES.find((m) => m.key === mount.key) || {
         key: mount.key,
         label: mount.label || '自定义组件',
-        authCode: mount.authCode || 'Agree:Module:custom',
+        authCode: getAgreeModuleAuthCode(mount.key),
       };
       const layout = shownMap.get(mount.key);
       if (!mount.enabled) {

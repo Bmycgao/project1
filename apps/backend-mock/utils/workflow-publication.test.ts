@@ -1,3 +1,4 @@
+/* oxlint-disable typescript/no-non-null-assertion -- Test fixtures intentionally assert that configured nodes and mounted controls exist. */
 import { readdirSync, rmSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 
@@ -10,6 +11,14 @@ import {
   saveAgreementDetailAll,
 } from './mock-agreement-detail';
 import { createAgreeListRow } from './mock-agreement-list';
+import {
+  actOnInstance,
+  startInstance,
+  workflowContext,
+} from './workflow-engine';
+import { freezeWorkflowForms } from './workflow-forms';
+import { publicationCheck, publishChecked } from './workflow-publication';
+import { getWorkflow, saveWorkflow } from './workflow-store';
 
 const state = await vi.hoisted(async () => {
   const { mkdtempSync } = await import('node:fs');
@@ -41,14 +50,7 @@ vi.mock('./rbac-store', () => ({ roleStore: [{ id: 'review', status: 1 }] }));
 vi.mock('./workflow-runtime-api', () => ({
   workflowActors: () => [actor, ...state.extraActors],
 }));
-import {
-  actOnInstance,
-  startInstance,
-  workflowContext,
-} from './workflow-engine';
-import { freezeWorkflowForms } from './workflow-forms';
-import { publicationCheck, publishChecked } from './workflow-publication';
-import { getWorkflow, saveWorkflow } from './workflow-store';
+
 const actor = {
   id: 'demo',
   name: '演示用户',
@@ -80,9 +82,9 @@ function seedAgreement(amount = 1_200_000) {
   saveAgreementDetailAll({
     ...detail,
     basic: { ...detail.basic, compensatee: '张某', amount },
-    houses: (detail.houses || []).map((house, index) =>
-      index === 0 ? { ...house, address: '测试路1号' } : house,
-    ),
+    houses: [
+      { id: 'test-house', address: '测试路1号', certNo: '', propertyType: '' },
+    ],
     signing: { ...detail.signing, houseAddress: '测试路1号' },
   });
   return row.agreementNo;
@@ -106,6 +108,256 @@ function withForm(rule: any[]) {
   return doc;
 }
 describe('publication and frozen form validation', () => {
+  it('freezes full node rules and round-trips single time and typed transfer keys with server permissions', () => {
+    const doc = withForm([
+      {
+        type: 'timePicker',
+        field: 'visitTime',
+        title: '上门时间',
+        $required: true,
+        col: { span: 12 },
+      },
+      {
+        type: 'elTransfer',
+        field: 'materials',
+        title: '核查材料',
+        $required: true,
+        props: {
+          data: [
+            { key: 1, label: '原件' },
+            { key: '2', label: '复印件' },
+          ],
+        },
+      },
+      {
+        type: 'input',
+        field: 'secretNote',
+        title: '内部备注',
+        value: 'secret-default',
+        hidden: true,
+      },
+    ]);
+    doc.nodes[2]!.supplementFormId = 'test';
+    const saved = saveWorkflow(doc, 'demo');
+    expect(publicationCheck(saved.id).issues).toEqual([]);
+    const published = publishChecked(saved.id, saved.revision, 'demo');
+    const snapshot = published.frozenForms![doc.nodes[1]!.id]!.supplement!;
+    expect(snapshot.rules[0]!.col.span).toBe(12);
+    state.forms.test.rule = [];
+    let context = startInstance(
+      {
+        definitionId: published.id,
+        agreementNo: seedAgreement(5),
+        title: '新控件验收',
+        requestId: 'start',
+      },
+      actor,
+      [actor],
+    );
+    expect(JSON.stringify(context)).not.toContain('secret-default');
+    expect(context.form.supplement!.rules.map((rule) => rule.field)).toEqual([
+      'visitTime',
+      'materials',
+    ]);
+    expect(context.form.supplement!.rules[0]!.props.valueFormat).toBe(
+      'HH:mm:ss',
+    );
+    function act(
+      action: 'pass' | 'save' | 'submit',
+      data: Record<string, unknown>,
+    ) {
+      return actOnInstance(
+        context.instance.id,
+        {
+          taskId: context.task!.id,
+          revision: context.instance.revision,
+          requestId: newId('action'),
+          action,
+          data,
+        },
+        actor,
+        [actor],
+      );
+    }
+    // Saving an incomplete draft is allowed; submitting it is not.
+    context = act('save', { visitTime: null, materials: [] });
+    expect(() =>
+      act('submit', { visitTime: '09:30:00', materials: [] }),
+    ).toThrow('候选项');
+    expect(() => act('save', { visitTime: '25:30:00' })).toThrow('时间格式');
+    expect(() => act('save', { materials: ['1'] })).toThrow('候选项');
+    expect(() => act('save', { materials: [1, 1] })).toThrow('候选项');
+    expect(workflowContext(context.instance.id, actor).instance.revision).toBe(
+      context.instance.revision,
+    );
+    context = act('save', { visitTime: '09:30:00', materials: [1, '2'] });
+    context = workflowContext(context.instance.id, actor);
+    expect(context.instance.data.visitTime).toBe('09:30:00');
+    expect(context.instance.data.materials).toEqual([1, '2']);
+    context = act('submit', {});
+    expect(context.instance.currentNodeId).toBe(doc.nodes[2]!.id);
+    expect(
+      context.form.supplement!.rules.every((rule) => rule.props.disabled),
+    ).toBe(true);
+    expect(() => act('pass', { visitTime: '10:00:00' })).toThrow('不可修改');
+    expect(
+      getWorkflow(published.id).frozenForms![doc.nodes[1]!.id]!.supplement,
+    ).toEqual(snapshot);
+  });
+
+  it.each([
+    { type: 'timePicker', field: 'time', props: { isRange: true } },
+    { type: 'timePicker', field: 'time', value: '2026-10-19T12:00:00.000Z' },
+    {
+      type: 'elTransfer',
+      field: 'items',
+      props: { data: [{ key: 1 }, { key: 1 }] },
+    },
+    {
+      type: 'elTransfer',
+      field: 'items',
+      props: { data: [{ key: 1 }] },
+      value: ['1'],
+    },
+    { type: 'upload', field: 'files' },
+    {
+      type: 'input',
+      field: 'code',
+      props: { formatter: '[[FORM-CREATE-PREFIX-function(){}]]' },
+    },
+  ])(
+    'blocks unsupported configurations before publishing: $type $field',
+    (rule) => {
+      const saved = saveWorkflow(withForm([rule]), 'demo');
+      expect(publicationCheck(saved.id).issues.length).toBeGreaterThan(0);
+      expect(() => publishChecked(saved.id, saved.revision, 'demo')).toThrow(
+        '发布检查未通过',
+      );
+    },
+  );
+
+  it('流程草稿仍引用旧列表时，发布会冻结关联详情并记录来源，后续修改不影响快照', () => {
+    const doc = document();
+    doc.defaultDetailViewId = 'source-list';
+    state.pages['source-list'] = {
+      id: 'source-list',
+      title: '录入列表',
+      schemaKind: 'scene',
+      status: 1,
+      detailSchemaId: 'linked-detail',
+      modules: [],
+    };
+    state.pages['linked-detail'] = {
+      id: 'linked-detail',
+      title: '关联详情',
+      schemaKind: 'detail',
+      status: 1,
+      modules: [{ key: 'basic', enabled: true, widgetKind: 'form' }],
+      fcRules: {
+        basic: [{ type: 'input', field: 'compensatee', title: '姓名' }],
+      },
+    };
+    const saved = saveWorkflow(doc, 'demo');
+    expect(publicationCheck(saved.id).issues).toEqual([]);
+    const published = publishChecked(saved.id, saved.revision, 'demo');
+    const task = doc.nodes.find((node) => node.type === 'task')!;
+    const view = published.frozenForms?.[task.id]?.detailView;
+    expect(view?.schemaId).toBe('linked-detail');
+    expect(view?.sourceSchemaId).toBe('source-list');
+    state.pages['linked-detail'].modules = [];
+    expect(
+      getWorkflow(published.id).frozenForms?.[task.id]?.detailView,
+    ).toEqual(view);
+    state.pages['linked-detail'].status = 0;
+    const next = {
+      ...document(),
+      code: 'WF_BAD_LINK',
+      defaultDetailViewId: 'source-list',
+    };
+    const invalid = saveWorkflow(next, 'demo');
+    expect(
+      publicationCheck(invalid.id).issues.some((issue) =>
+        issue.message.includes('不存在或已停用'),
+      ),
+    ).toBe(true);
+  });
+  it('独立办理详情可以作为流程默认页发布，并冻结所绑定的表单模板', () => {
+    const doc = document();
+    doc.defaultDetailViewId = 'standalone-detail';
+    state.forms.detailBasic = {
+      kind: 'form',
+      usage: 'agreementModule',
+      status: 1,
+      rule: [{ type: 'input', field: 'compensatee', title: '被补偿人' }],
+    };
+    state.pages['standalone-detail'] = {
+      id: 'standalone-detail',
+      name: 'standalone',
+      title: '独立办理详情',
+      schemaKind: 'detail',
+      status: 1,
+      columns: [],
+      queryFields: [],
+      modules: [{ key: 'basic', enabled: true, widgetKind: 'form' }],
+      fcBindings: { basic: 'detailBasic' },
+    };
+    const saved = saveWorkflow(doc, 'demo');
+    expect(publicationCheck(saved.id).issues).toEqual([]);
+    const published = publishChecked(saved.id, saved.revision, 'demo');
+    const task = doc.nodes.find((node) => node.type === 'task')!;
+    const frozen = published.frozenForms?.[task.id]?.detailView;
+    expect(frozen?.schemaId).toBe('standalone-detail');
+    expect(frozen?.modules[0]?.fields[0]?.label).toBe('被补偿人');
+    state.pages['standalone-detail'].modules = [];
+    state.forms.detailBasic.rule[0].title = '后来修改的字段';
+    expect(
+      getWorkflow(published.id).frozenForms?.[task.id]?.detailView,
+    ).toEqual(frozen);
+  });
+  it('accepts a custom button resource bound to the required submit action', () => {
+    const doc = document();
+    doc.buttonCatalog = [
+      { code: 'SUBMIT_REVIEW', action: 'submit', label: '提交复核' },
+    ];
+    const task = doc.nodes.find((node) => node.type === 'task')!;
+    task.buttons = task.buttons.map((code) =>
+      code === 'submit' ? 'SUBMIT_REVIEW' : code,
+    );
+    const saved = saveWorkflow(doc, 'demo');
+    expect(publicationCheck(saved.id).issues).toEqual([]);
+    const published = publishChecked(saved.id, saved.revision, 'demo');
+    expect(published.buttonCatalog?.[0]?.code).toBe('SUBMIT_REVIEW');
+  });
+  it('rejects button conditions that reference fields outside the published form', () => {
+    const doc = document();
+    doc.buttonCatalog = [
+      {
+        action: 'submit',
+        label: '提交审核',
+        visibleWhen: 'UnknownSecretField == true',
+      },
+    ];
+    const saved = saveWorkflow(doc, 'demo');
+    expect(
+      publicationCheck(saved.id)
+        .issues.map((issue) => issue.message)
+        .join(' '),
+    ).toContain('条件引用了未配置的字段');
+  });
+  it('rejects invalid or unusable role policies before publication', () => {
+    const doc = document();
+    doc.startRoleIds = ['missing'];
+    const task = doc.nodes.find((node) => node.type === 'task')!;
+    task.handleRoleIds = ['missing'];
+    task.buttonDeniedRoleIds = { submit: ['review'] };
+    const saved = saveWorkflow(doc, 'demo');
+    const messages = publicationCheck(saved.id)
+      .issues.map((issue) => issue.message)
+      .join(' ');
+    expect(messages).toContain('发起权限配置中存在失效角色');
+    expect(messages).toContain('办理或按钮限制中存在失效角色');
+    expect(messages).toContain('提交或通过按钮没有可操作的有效用户');
+  });
   it('publishes a checked snapshot and completes the high amount route including rejection', () => {
     const doc = document();
     const saved = saveWorkflow(doc, 'demo');
@@ -275,6 +527,10 @@ describe('publication and frozen form validation', () => {
   });
   it('freezes page modules and applies different module access at each node', () => {
     const doc = document();
+    const moduleActor = {
+      ...actor,
+      codes: [...actor.codes, 'Agree:Module:basic', 'Agree:Module:houses'],
+    };
     const task = doc.nodes[1]!;
     const approval = doc.nodes[2]!;
     task.detailMode = 'override';
@@ -324,8 +580,8 @@ describe('publication and frozen form validation', () => {
         title: '节点资料权限',
         requestId: newId('start'),
       },
-      actor,
-      [actor],
+      moduleActor,
+      [moduleActor],
     );
     expect(context.detailView?.modules.map((module) => module.key)).toEqual([
       'basic',
@@ -339,8 +595,8 @@ describe('publication and frozen form validation', () => {
         requestId: newId('action'),
         action: 'submit',
       },
-      actor,
-      [actor],
+      moduleActor,
+      [moduleActor],
     );
     expect(context.viewNodeId).toBe(approval.id);
     expect(context.detailView?.modules.map((module) => module.key)).toEqual([
@@ -358,8 +614,8 @@ describe('publication and frozen form validation', () => {
           action: 'pass',
           agreement: { houses: [] },
         },
-        actor,
-        [actor],
+        moduleActor,
+        [moduleActor],
       ),
     ).toThrow('不可编辑');
   });
@@ -460,6 +716,162 @@ describe('publication and frozen form validation', () => {
     expect(
       (getOrCreateAgreementDetail(agreementNo).flowFields || {}).standaloneNote,
     ).toBe('可以保存的节点字段');
+  });
+  it('shows a saved field in a different read-only node form without exposing the source form', () => {
+    const doc = document();
+    const entry = doc.nodes.find((node) => node.type === 'task')!;
+    const review = doc.nodes.find((node) => node.name === '科长审核')!;
+    entry.detailMode = 'formOnly';
+    entry.supplementFormId = 'entry-result';
+    review.detailMode = 'formOnly';
+    review.supplementFormId = 'review-result';
+    review.fieldBindings = { displayedResult: 'entryResult' };
+    review.fieldAccess = { displayedResult: 'edit' };
+    state.forms['entry-result'] = {
+      status: 1,
+      usage: 'workflowSupplement',
+      kind: 'form',
+      rule: [{ type: 'input', field: 'entryResult', title: '经办结果' }],
+    };
+    state.forms['review-result'] = {
+      status: 1,
+      usage: 'workflowSupplement',
+      kind: 'form',
+      rule: [{ type: 'input', field: 'displayedResult', title: '结果摘要' }],
+    };
+    const saved = saveWorkflow(doc, 'demo');
+    expect(publicationCheck(saved.id).issues).toEqual([]);
+    const published = publishChecked(saved.id, saved.revision, 'demo');
+    let context = startInstance(
+      {
+        definitionId: published.id,
+        agreementNo: seedAgreement(5),
+        title: '结果交接',
+        requestId: newId('start'),
+      },
+      actor,
+      [actor],
+    );
+    context = actOnInstance(
+      context.instance.id,
+      {
+        taskId: context.task!.id,
+        revision: context.instance.revision,
+        requestId: newId('action'),
+        action: 'submit',
+        data: { entryResult: '资料核对通过' },
+      },
+      actor,
+      [actor],
+    );
+    expect(context.form.presentation).toBe('formOnly');
+    expect(context.agreement).toBeUndefined();
+    expect(context.instance.data).toEqual({ displayedResult: '资料核对通过' });
+    expect(
+      context.form.fields.find((field) => field.key === 'displayedResult')
+        ?.readonly,
+    ).toBe(true);
+    expect(() =>
+      actOnInstance(
+        context.instance.id,
+        {
+          taskId: context.task!.id,
+          revision: context.instance.revision,
+          requestId: newId('action'),
+          action: 'pass',
+          data: { displayedResult: '篡改' },
+        },
+        actor,
+        [actor],
+      ),
+    ).toThrow('不可修改');
+  });
+  it('blocks orphaned bindings until explicitly removed, then publishes without changing other node rules', () => {
+    const doc = document();
+    const entry = doc.nodes.find((node) => node.type === 'task')!;
+    const review = doc.nodes.find((node) => node.name === '科长审核')!;
+    entry.fieldAccess = { remark: 'readonly' };
+    review.fieldBindings = { removedSummary: 'compensatee' };
+    review.fieldAccess = { remark: 'hidden' };
+    // The form has already been cleared, as in an older saved draft.
+    review.supplementFormId = '';
+    const saved = saveWorkflow(doc, 'demo');
+    expect(publicationCheck(saved.id).issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          nodeId: review.id,
+          message: expect.stringContaining(
+            '目标必须是当前节点补充表单的普通字段',
+          ),
+        }),
+      ]),
+    );
+    expect(() => publishChecked(saved.id, saved.revision, 'demo')).toThrow(/./);
+    delete review.fieldBindings.removedSummary;
+    const fixed = saveWorkflow(doc, 'demo', saved.id, saved.revision);
+    expect(publicationCheck(fixed.id).issues).toEqual([]);
+    const published = publishChecked(fixed.id, fixed.revision, 'demo');
+    expect(
+      published.nodes.find((node) => node.id === entry.id)?.fieldAccess,
+    ).toEqual({ remark: 'readonly' });
+    expect(
+      published.nodes.find((node) => node.id === review.id)?.fieldAccess,
+    ).toEqual({ remark: 'hidden' });
+  });
+  it('rejects bindings to missing or incompatible source fields', () => {
+    const doc = document();
+    const review = doc.nodes.find((node) => node.name === '科长审核')!;
+    review.detailMode = 'formOnly';
+    review.supplementFormId = 'review-result';
+    review.fieldBindings = { displayedResult: 'missingResult' };
+    state.forms['review-result'] = {
+      status: 1,
+      usage: 'workflowSupplement',
+      kind: 'form',
+      rule: [{ type: 'input', field: 'displayedResult', title: '结果摘要' }],
+    };
+    const saved = saveWorkflow(doc, 'demo');
+    expect(
+      publicationCheck(saved.id)
+        .issues.map((issue) => issue.message)
+        .join(' '),
+    ).toContain('来源必须是流程中已定义的其他普通字段');
+    review.fieldBindings = { displayedResult: 'BuChangJinE' };
+    const changed = saveWorkflow(doc, 'demo', saved.id, saved.revision);
+    expect(
+      publicationCheck(changed.id)
+        .issues.map((issue) => issue.message)
+        .join(' '),
+    ).toContain('来源与展示字段的类型不一致');
+  });
+  it('projects a supported agreement field into an independent node form', () => {
+    const doc = document();
+    const entry = doc.nodes.find((node) => node.type === 'task')!;
+    entry.detailMode = 'formOnly';
+    entry.supplementFormId = 'amount-view';
+    entry.fieldBindings = { amountSummary: 'BuChangJinE' };
+    state.forms['amount-view'] = {
+      status: 1,
+      usage: 'workflowSupplement',
+      kind: 'form',
+      rule: [
+        { type: 'inputNumber', field: 'amountSummary', title: '协议金额摘要' },
+      ],
+    };
+    const saved = saveWorkflow(doc, 'demo');
+    expect(publicationCheck(saved.id).issues).toEqual([]);
+    const published = publishChecked(saved.id, saved.revision, 'demo');
+    const context = startInstance(
+      {
+        definitionId: published.id,
+        agreementNo: seedAgreement(720_000),
+        requestId: newId('start'),
+      },
+      actor,
+      [actor],
+    );
+    expect(context.instance.data).toEqual({ amountSummary: 720_000 });
+    expect(context.agreement).toBeUndefined();
   });
   it('blocks page module rules that the normalized renderer cannot preserve', () => {
     const doc = document();
@@ -650,6 +1062,39 @@ describe('publication and frozen form validation', () => {
     ];
     const saved = saveWorkflow(doc, 'demo');
     expect(publicationCheck(saved.id).issues).toEqual([]);
+  });
+  it('allows reject data actions when the node has a reject button', () => {
+    const valid = document();
+    valid.buttonCatalog = [
+      { code: 'REJECT_BACK', action: 'reject', label: '退回补正' },
+    ];
+    const review = valid.nodes.find((n) => n.name === '科长审核')!;
+    review.buttons = review.buttons.map((code) =>
+      code === 'reject' ? 'REJECT_BACK' : code,
+    );
+    review.dataActions = [
+      { when: 'reject', kind: 'set', field: 'remark', value: '待补正' },
+    ];
+    const saved = saveWorkflow(valid, 'demo');
+    expect(publicationCheck(saved.id).issues).toEqual([]);
+
+    const withoutButton = document();
+    withoutButton.code = 'WF_REJECT_ACTION_NO_BUTTON';
+    const withoutButtonReview = withoutButton.nodes.find(
+      (n) => n.name === '科长审核',
+    )!;
+    withoutButtonReview.buttons = withoutButtonReview.buttons.filter(
+      (code) => code !== 'reject',
+    );
+    withoutButtonReview.dataActions = [
+      { when: 'reject', kind: 'set', field: 'remark', value: '待补正' },
+    ];
+    const withoutButtonSaved = saveWorkflow(withoutButton, 'demo');
+    expect(
+      publicationCheck(withoutButtonSaved.id)
+        .issues.map((item) => item.message)
+        .join(' '),
+    ).toContain('数据动作时机对应的按钮未配置');
   });
   it('rejects data actions that try to create an undeclared field', () => {
     const doc = document();

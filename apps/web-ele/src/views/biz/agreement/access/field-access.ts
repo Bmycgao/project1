@@ -77,20 +77,22 @@ export function resolveFieldAccess(
   rules: AgreeFieldRule[] | undefined,
   accessCodes: string[] | undefined,
 ): AgreeFieldAccess {
-  const rule = (rules || []).find((r) => r.field === field);
-  if (!rule) {
+  const matched = (rules || []).filter((r) => r.field === field);
+  if (matched.length === 0) {
     return { visible: true, editable: true };
   }
-  if (rule.hidden) {
+  if (matched.some((rule) => rule.hidden)) {
     return { visible: false, editable: false };
   }
-  const visible = matchAccessCodes(accessCodes, rule.visibleCodes);
+  const visible = matched.every((rule) =>
+    matchAccessCodes(accessCodes, rule.visibleCodes),
+  );
   if (!visible) {
     return { visible: false, editable: false };
   }
-  const editable = rule.editableCodes?.length
-    ? matchAccessCodes(accessCodes, rule.editableCodes)
-    : true;
+  const editable = matched.every((rule) =>
+    matchAccessCodes(accessCodes, rule.editableCodes),
+  );
   return { visible, editable };
 }
 

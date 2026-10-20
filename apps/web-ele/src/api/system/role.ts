@@ -1,5 +1,7 @@
 import type { Recordable } from '@vben/types';
 
+import type { SystemMenuApi } from './menu';
+
 import { requestClient } from '#/api/request';
 
 /** 系统角色相关类型与接口 */
@@ -20,10 +22,10 @@ export namespace SystemRoleApi {
  * @param params 查询参数
  */
 async function getRoleList(params: Recordable<any>) {
-  return requestClient.get<{ items: SystemRoleApi.SystemRole[]; total: number }>(
-    '/system/role/list',
-    { params },
-  );
+  return requestClient.get<{
+    items: SystemRoleApi.SystemRole[];
+    total: number;
+  }>('/system/role/list', { params });
 }
 
 /**
@@ -67,10 +69,18 @@ async function getRoleAccessCodes(id: string) {
   }>(`/system/role/${id}/codes`);
 }
 
+/** Role editor resource tree, including page-configured custom modules. */
+async function getRolePermissionResources() {
+  return requestClient.get<SystemMenuApi.SystemMenu[]>(
+    '/system/role/resources',
+  );
+}
+
 export {
   createRole,
   deleteRole,
   getRoleAccessCodes,
   getRoleList,
+  getRolePermissionResources,
   updateRole,
 };

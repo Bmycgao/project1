@@ -22,8 +22,11 @@ import {
 } from 'element-plus';
 
 import { useVbenForm } from '#/adapter/form';
-import { getMenuList } from '#/api/system/menu';
-import { createRole, updateRole } from '#/api/system/role';
+import {
+  createRole,
+  getRolePermissionResources,
+  updateRole,
+} from '#/api/system/role';
 import { $t } from '#/locales';
 
 import { useFormSchema } from '../data';
@@ -142,7 +145,7 @@ watch(activePermTab, () => {
 async function loadPermissions() {
   loadingPermissions.value = true;
   try {
-    permissions.value = await getMenuList();
+    permissions.value = await getRolePermissionResources();
   } finally {
     loadingPermissions.value = false;
   }
@@ -176,9 +179,7 @@ const [Drawer, drawerApi] = useVbenDrawer({
     id.value = data?.id;
     activePermTab.value = 'menu';
     resourceKeyword.value = '';
-    if (permissions.value.length === 0) {
-      await loadPermissions();
-    }
+    await loadPermissions();
     await nextTick();
     selectedPermIds.value = Array.isArray(data?.permissions)
       ? [...data.permissions]
@@ -395,6 +396,9 @@ const getDrawerTitle = computed(() =>
               </template>
               <p class="mb-2 text-xs text-gray-500">
                 {{ $t('system.role.permTabModuleTip') }}
+              </p>
+              <p class="mb-2 text-xs text-gray-500">
+                页面配置中新建的详情模块会自动列在这里；新模块默认不授权，请按角色勾选。
               </p>
               <ElInput
                 v-model="resourceKeyword"

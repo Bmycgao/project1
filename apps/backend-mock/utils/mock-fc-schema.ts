@@ -2,6 +2,10 @@
  * FormCreate 表单/表格模板库（独立于 page-schema）
  * 页面配置通过 fcBindings 引用模板 id
  */
+import {
+  appendAgreementStatusOptions,
+  buildAgreementDemoStatusOptions,
+} from '../../shared/agreement-demo-status';
 import { readPersistJson, writePersistJson } from './mock-persist';
 
 /** 单条 FormCreate 模板 */
@@ -43,16 +47,10 @@ export const DEFAULT_FC_BINDINGS: Record<string, string> = {
 };
 
 /**
- * 种子 rule（与前端 default-rules 对齐，mock 侧独立一份避免跨包引用）
+ * 种子 rule（字段结构与前端 default-rules 对齐，状态选项使用共享演示字典）
  */
 function buildSeedRules(): Record<string, Record<string, any>[]> {
-  const statusOptions = [
-    { label: '告知单', value: '告知单' },
-    { label: '待复核', value: '待复核' },
-    { label: '待生效', value: '待生效' },
-    { label: '已签约', value: '已签约' },
-    { label: '组长已复核', value: '组长已复核' },
-  ];
+  const statusOptions = buildAgreementDemoStatusOptions();
   const field = (opts: {
     field: string;
     options?: { label: string; value: string }[];
@@ -263,6 +261,21 @@ function ensureBuiltinFcSchemas() {
     const idx = fcSchemaStore.findIndex((s) => s.id === seed.id);
     if (idx === -1) {
       fcSchemaStore.push(structuredClone(seed));
+      changed = true;
+    }
+  }
+  // 只补齐内置演示模板的缺失状态；不重命名历史值，不改用户自建模板。
+  const basic = fcSchemaStore.find(
+    (schema) => schema.id === FC_SCHEMA_IDS.basic,
+  );
+  const status = basic?.rule.find((rule) => rule.field === 'statusValue');
+  if (Array.isArray(status?.options)) {
+    const options = appendAgreementStatusOptions(
+      status.options,
+      buildAgreementDemoStatusOptions().map((option) => option.value),
+    );
+    if (options.length !== status.options.length) {
+      status.options = options;
       changed = true;
     }
   }

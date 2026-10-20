@@ -1,17 +1,40 @@
 import type { WorkflowRecord } from './workflow';
 
+/** Lightweight definition returned to the workflow start page. */
+export type StartableWorkflowDefinition = Pick<
+  WorkflowRecord,
+  'base' | 'businessTable' | 'category' | 'code' | 'id' | 'name' | 'version'
+> & { familyId: string };
+
+export function startableWorkflowDefinition(
+  record: WorkflowRecord,
+): StartableWorkflowDefinition {
+  return {
+    id: record.id,
+    familyId: record.familyId || record.id,
+    code: record.code,
+    name: record.name,
+    base: record.base,
+    version: record.version,
+    category: record.category,
+    businessTable: record.businessTable,
+  };
+}
+
 export interface RuntimeField {
   moduleKey?: string;
   key: string;
   label: string;
   type:
     | 'boolean'
+    | 'choiceList'
     | 'date'
     | 'number'
     | 'select'
     | 'table'
     | 'text'
-    | 'textarea';
+    | 'textarea'
+    | 'time';
   required: boolean;
   readonly: boolean;
   hidden: boolean;
@@ -44,12 +67,23 @@ export interface WorkflowDetailModule {
 }
 export interface WorkflowDetailView {
   schemaId?: string;
+  /** 通过旧列表配置绑定流程时，保留来源用于引用追溯。 */
+  sourceSchemaId?: string;
   title: string;
   modules: WorkflowDetailModule[];
 }
 export interface RuntimeForm {
+  /** Optional for new versions; old snapshots continue to use FieldControl. */
+  supplement?: {
+    option?: Record<string, any>;
+    renderer: 'form-create-v1';
+    rules: Record<string, any>[];
+    schemaId: string;
+  };
   /** 此节点真实存在且已接入持久化的数据动作目标字段。 */
   actionFields?: string[];
+  /** Frozen read-only target -> saved instance-data source mappings. */
+  valueBindings?: Record<string, string>;
   detailView?: WorkflowDetailView;
   /** 仅表单模式显式标记；缺省兼容旧发布版本的默认协议详情。 */
   presentation?: 'detail' | 'formOnly';
@@ -111,7 +145,7 @@ export interface WorkflowInstance {
   base: string;
   /** 绑定业务表，协议为 XieYi */
   bizTable?: string;
-  /** 绑定业务主键，协议为协议编号 */
+  /** 绑定业务内部主键，协议为稳定的内部 ID；businessNo 用于展示编号。 */
   bizId?: string;
   initiatorId: string;
   initiatorName: string;
@@ -137,7 +171,17 @@ export interface WorkflowContext {
   definition: WorkflowRecord;
   form: RuntimeForm;
   task?: WorkflowTask;
-  buttons: { code: string; enabled: boolean; label: string; reason?: string }[];
+  buttons: {
+    action: WorkflowActionInput['action'];
+    code: string;
+    confirmText?: string;
+    enabled: boolean;
+    label: string;
+    placement?: 'bottom' | 'top';
+    reason?: string;
+    requireOpinion?: boolean;
+    style?: 'danger' | 'default' | 'primary' | 'warning';
+  }[];
   rejectTargets: { id: string; name: string }[];
   canAct: boolean;
   /** 实际用于展示的任务节点（并行/已办不能用实例的单一 currentNodeId）。 */
@@ -188,6 +232,8 @@ export interface WorkflowActionInput {
   taskId: string;
   revision: number;
   action: 'pass' | 'recall' | 'reject' | 'save' | 'submit' | 'transfer';
+  /** Exact bound resource; omitted by legacy clients for standard action codes. */
+  buttonCode?: string;
   data?: Record<string, unknown>;
   /** 办理页提交的协议整单（服务端按节点权限合并） */
   agreement?: Record<string, unknown>;
@@ -245,7 +291,7 @@ export const BUSINESS_FIELDS: RuntimeField[] = [
   },
   {
     key: 'houseAddress',
-    label: '房屋坐落',
+    label: '房屋地址',
     type: 'text',
     required: true,
     readonly: false,
@@ -261,6 +307,32 @@ export const BUSINESS_FIELDS: RuntimeField[] = [
     min: 0,
   },
 ];
+
+export interface WorkflowStartIssue {
+  field: string;
+  module: 'basic' | 'houses';
+  message: string;
+}
+
+/** 发起弹窗和服务端共用的必填检查，提示指向协议中的实际填写位置。 */
+export function workflowStartIssues(
+  data: Record<string, unknown>,
+): WorkflowStartIssue[] {
+  return BUSINESS_FIELDS.filter((field) => {
+    const value = data[field.key];
+    return (
+      field.required &&
+      (value === null || value === undefined || String(value).trim() === '')
+    );
+  }).map((field) => ({
+    field: field.key,
+    module: field.key === 'houseAddress' ? 'houses' : 'basic',
+    message:
+      field.key === 'houseAddress'
+        ? '协议尚未填写房屋地址，请到「房屋信息」中添加或完善首套房屋地址并保存。'
+        : `协议尚未填写${field.label}，请到「基础信息」中填写并保存。`,
+  }));
+}
 
 /** 设计器字段权限可选目录：头字段走协议模块，flow 写入协议 flowFields */
 export interface WorkflowFieldCatalogItem {
@@ -288,7 +360,7 @@ export const WORKFLOW_FIELD_CATALOG: WorkflowFieldCatalogItem[] = [
   },
   {
     key: 'houseAddress',
-    label: '房屋坐落',
+    label: '房屋地址',
     type: 'text',
     group: '协议头',
     persist: 'header',
@@ -372,7 +444,7 @@ export function extraFieldsFromKeys(keys: string[]): RuntimeField[] {
  * 按触发时机执行数据动作：赋固定值或抄已有字段，不支持公式
  * @param data 当前实例数据
  * @param actions 节点上配置的动作
- * @param when 到达 / 保存 / 提交 / 通过
+ * @param when 到达 / 保存 / 提交 / 通过 / 驳回
  * @param fields 冻结表单字段（用于类型转换）
  */
 export function applyWorkflowDataActions(
@@ -400,8 +472,8 @@ export function applyWorkflowDataActions(
     )
       continue;
     const target = byKey.get(field);
-    if (target?.type === 'table')
-      throw new Error(`数据动作不能写入表格字段「${field}」`);
+    if (target && ['choiceList', 'table'].includes(target.type))
+      throw new Error(`数据动作不能写入表格或多选字段「${field}」`);
     let raw: unknown;
     if (action.kind === 'copy') {
       const from = String(action.from || '').trim();
@@ -426,7 +498,8 @@ function coerceDataActionValue(
   key: string,
 ): unknown {
   const type = field?.type || 'textarea';
-  if (type === 'table') throw new Error(`数据动作不能写入表格字段「${key}」`);
+  if (['choiceList', 'table'].includes(type))
+    throw new Error(`数据动作不能写入表格或多选字段「${key}」`);
   if (raw === undefined || raw === null)
     return type === 'number' ? undefined : '';
   if (type === 'number') {
@@ -455,6 +528,8 @@ function coerceDataActionValue(
     return option.value;
   }
   const value = String(raw);
+  if (type === 'time' && !/^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/.test(value))
+    throw new Error(`数据动作写入「${key}」的时间格式应为 HH:mm:ss`);
   if (
     value.length > (field?.maxLength ?? 5000) ||
     value.length < (field?.minLength ?? 0)

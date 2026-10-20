@@ -586,7 +586,6 @@ function cellStyle(
 }
 
 let bodySelectionKey = '';
-let headerSelectionKey = '';
 
 function onTableBodyCellPointer(
   e: MouseEvent,
@@ -751,7 +750,6 @@ function onTableHeaderCellMouseDown(
     headerMergeId?: string;
   },
 ) {
-  headerSelectionKey = el.key;
   onTableHeaderCellPointer(e, el, cell);
 }
 
@@ -787,9 +785,7 @@ function onHeaderFilterClick(
   });
 }
 
-function clearHeaderSelecting() {
-  headerSelectionKey = '';
-}
+function clearHeaderSelecting() {}
 
 /** 越界红框 */
 function isOverflow(el: DesignElement, page: DesignPage) {

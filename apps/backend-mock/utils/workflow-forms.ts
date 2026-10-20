@@ -6,6 +6,7 @@ import type {
 } from '../../shared/workflow-runtime';
 
 import { buildDefaultFcRuleMap } from '../../shared/agreement-default-rules';
+import { agreementModuleAuthCode } from '../../shared/agreement-module-access';
 import {
   effectiveWorkflowDetailViewId,
   workflowNodeDetailMode,
@@ -15,7 +16,15 @@ import {
   DEFAULT_WORKFLOW_MODULES,
   WORKFLOW_DETAIL_FIELD_ALIASES,
 } from '../../shared/workflow-detail';
-import { BUSINESS_FIELDS } from '../../shared/workflow-runtime';
+import {
+  WORKFLOW_FORM_LAYOUTS,
+  WORKFLOW_FORM_TYPES,
+  workflowFormExecutionIssue,
+} from '../../shared/workflow-form-schema';
+import {
+  BUSINESS_FIELDS,
+  WORKFLOW_FIELD_CATALOG,
+} from '../../shared/workflow-runtime';
 import { fcSchemaUsage, findFcSchema } from './mock-fc-schema';
 import { findPageSchema } from './mock-page-schema';
 
@@ -26,17 +35,23 @@ export function freezeWorkflowForms(doc: WorkflowDocument): {
 } {
   const forms: Record<string, RuntimeForm> = {};
   const issues: WorkflowIssue[] = [];
+  const supplementKeys = new Map<string, Set<string>>();
   // 只冻结填报/审批；抄送不挂表单、不产生待办
   for (const node of doc.nodes.filter((n) =>
     ['approve', 'task'].includes(n.type),
   )) {
     let detailView: undefined | WorkflowDetailView;
+    let supplement: RuntimeForm['supplement'];
     const fields: RuntimeField[] = JSON.parse(JSON.stringify(BUSINESS_FIELDS));
     const actionFields = new Set<string>();
     const permissionFields = new Set<string>();
     const fail = (message: string) =>
       issues.push({ nodeId: node.id, message: `${node.name}：${message}` });
-    function parse(rules: Record<string, any>[], prefix = ''): RuntimeField[] {
+    function parse(
+      rules: Record<string, any>[],
+      prefix = '',
+      nodeForm = false,
+    ): RuntimeField[] {
       const result: RuntimeField[] = [];
       for (const rule of rules) {
         if (!rule || typeof rule !== 'object') {
@@ -54,8 +69,10 @@ export function freezeWorkflowForms(doc: WorkflowDocument): {
             '此表单包含动态联动或脚本，请先使用静态字段视图；当前运行层不执行脚本',
           );
         if (!rule.field) {
+          if (nodeForm && !WORKFLOW_FORM_LAYOUTS.has(String(rule.type)))
+            fail(`节点表单的布局控件 ${rule.type} 尚未支持`);
           if (Array.isArray(rule.children))
-            result.push(...parse(rule.children, prefix));
+            result.push(...parse(rule.children, prefix, nodeForm));
           continue;
         }
         const key = `${prefix}${rule.field}`;
@@ -80,7 +97,7 @@ export function freezeWorkflowForms(doc: WorkflowDocument): {
           switch: 'boolean',
           tableForm: 'table',
         };
-        const type = map[String(rule.type)];
+        const type = (nodeForm ? WORKFLOW_FORM_TYPES : map)[String(rule.type)];
         if (!type) {
           fail(
             `字段「${rule.title || key}」的控件 ${rule.type} 尚未接入办理页`,
@@ -106,26 +123,33 @@ export function freezeWorkflowForms(doc: WorkflowDocument): {
           )
         )
           fail(`字段「${rule.title || key}」包含尚未接入的自定义校验`);
-        const expectedType =
-          type === 'table'
-            ? 'array'
-            : type === 'number'
-              ? 'number'
-              : type === 'boolean'
-                ? 'boolean'
-                : 'string';
+        const expectedType = (() => {
+          if (['choiceList', 'table'].includes(type)) {
+            return 'array';
+          }
+          if (type === 'number') {
+            return 'number';
+          }
+          if (type === 'boolean') {
+            return 'boolean';
+          }
+          return 'string';
+        })();
         if (validators.some((v: any) => v.type && v.type !== expectedType))
           fail(`字段「${rule.title || key}」的校验类型与控件不匹配或尚不支持`);
         if (
           validators.some(
             (v: any) =>
               (v.min !== undefined || v.max !== undefined) &&
-              !['number', 'table', 'text', 'textarea'].includes(type),
+              !['choiceList', 'number', 'table', 'text', 'textarea'].includes(
+                type,
+              ),
           )
         )
           fail(`字段「${rule.title || key}」的长度/范围校验尚不支持`);
         if (
           props.multiple ||
+          (type === 'time' && props.isRange) ||
           (type === 'date' &&
             props.type &&
             !['date', 'datetime'].includes(props.type))
@@ -158,16 +182,21 @@ export function freezeWorkflowForms(doc: WorkflowDocument): {
               fail(`字段「${field.label}」的范围校验必须为数字`);
               continue;
             }
-            const prop =
-              type === 'number'
-                ? bound
-                : type === 'table'
-                  ? bound === 'min'
-                    ? 'minItems'
-                    : 'maxItems'
-                  : bound === 'min'
-                    ? 'minLength'
-                    : 'maxLength';
+            const prop = (() => {
+              if (type === 'number') {
+                return bound;
+              }
+              if (['choiceList', 'table'].includes(type)) {
+                if (bound === 'min') {
+                  return 'minItems';
+                }
+                return 'maxItems';
+              }
+              if (bound === 'min') {
+                return 'minLength';
+              }
+              return 'maxLength';
+            })();
             const current = field[prop];
             field[prop] =
               current === undefined
@@ -194,9 +223,60 @@ export function freezeWorkflowForms(doc: WorkflowDocument): {
         }
         if (type === 'select' && !field.options?.length)
           fail(`字段「${field.label}」缺少静态选项`);
+        if (type === 'choiceList') {
+          const names = props.props || {};
+          const keyName = names.key || 'key';
+          const labelName = names.label || 'label';
+          if (Array.isArray(props.data)) {
+            const options: NonNullable<RuntimeField['options']> =
+              props.data.map((item: Record<string, any>) => ({
+                value: item?.[keyName],
+                label: String(item?.[labelName] ?? item?.[keyName] ?? ''),
+              }));
+            field.options = options;
+            if (
+              options.some(
+                (item) =>
+                  !['number', 'string'].includes(typeof item.value) ||
+                  (typeof item.value === 'number' &&
+                    !Number.isFinite(item.value)),
+              ) ||
+              new Set(options.map((item) => item.value)).size !== options.length
+            )
+              fail(`穿梭框「${field.label}」的候选标识必须是唯一的文本或数字`);
+            if (field.required && options.length === 0)
+              fail(`穿梭框「${field.label}」缺少候选项`);
+          } else {
+            fail(`穿梭框「${field.label}」需要静态候选数据`);
+          }
+        }
+        if (
+          field.defaultValue !== undefined &&
+          field.defaultValue !== null &&
+          field.defaultValue !== ''
+        ) {
+          if (
+            type === 'time' &&
+            (typeof field.defaultValue !== 'string' ||
+              !/^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/.test(field.defaultValue))
+          )
+            fail(`时间「${field.label}」的默认值必须为 HH:mm:ss`);
+          if (
+            type === 'choiceList' &&
+            (!Array.isArray(field.defaultValue) ||
+              new Set(field.defaultValue).size !== field.defaultValue.length ||
+              field.defaultValue.some(
+                (value) =>
+                  !field.options?.some((option) => option.value === value),
+              ))
+          )
+            fail(
+              `穿梭框「${field.label}」的默认值必须是有效且不重复的候选标识数组`,
+            );
+        }
         if (type === 'table') {
           field.children = (props.columns || []).flatMap((column: any) =>
-            parse(column.rule || []).map((child) => ({
+            parse(column.rule || [], '', nodeForm).map((child) => ({
               ...child,
               required: child.required || !!column.required,
             })),
@@ -223,8 +303,18 @@ export function freezeWorkflowForms(doc: WorkflowDocument): {
     if (detailMode === 'formOnly' && !supplementFormId)
       fail('仅独立表单模式必须选择节点表单');
     if (detailMode !== 'formOnly') {
-      const page = pageId ? findPageSchema(pageId) : undefined;
-      if (pageId && (!page || page.status !== 1))
+      const source = pageId ? findPageSchema(pageId) : undefined;
+      const page = source?.detailSchemaId
+        ? findPageSchema(source.detailSchemaId)
+        : source;
+      if (
+        pageId &&
+        (!source ||
+          source.status !== 1 ||
+          !page ||
+          page.status !== 1 ||
+          (source.detailSchemaId && page.schemaKind !== 'detail'))
+      )
         fail('办理详情视图不存在或已停用');
       const defaultRules = buildDefaultFcRuleMap();
       const mounts = page
@@ -236,6 +326,7 @@ export function freezeWorkflowForms(doc: WorkflowDocument): {
           }));
       detailView = {
         schemaId: page?.id,
+        sourceSchemaId: source?.detailSchemaId ? source.id : undefined,
         title: page?.title || '协议资料',
         modules: [],
       };
@@ -310,9 +401,9 @@ export function freezeWorkflowForms(doc: WorkflowDocument): {
             if (access.editableCodes?.length)
               (field.editableCodeGroups ||= []).push(access.editableCodes);
           }
-          field.children?.forEach(applyAccess);
+          field.children?.forEach((value) => applyAccess(value));
         }
-        moduleFields.forEach(applyAccess);
+        moduleFields.forEach((value) => applyAccess(value));
         for (const field of moduleFields) {
           const path = `${key}.${field.key}`;
           const alias = WORKFLOW_DETAIL_FIELD_ALIASES[path];
@@ -341,7 +432,7 @@ export function freezeWorkflowForms(doc: WorkflowDocument): {
             ? config.span || 24
             : 24,
           order: config.order || 0,
-          authCode: config.authCode,
+          authCode: agreementModuleAuthCode(key, config.authCode),
           rules: JSON.parse(JSON.stringify(rules)),
           fields: moduleFields,
         });
@@ -369,11 +460,41 @@ export function freezeWorkflowForms(doc: WorkflowDocument): {
       else if (fcSchemaUsage(schema) === 'agreementModule')
         fail('节点补充表单不能使用协议详情模块模板');
       else {
-        const supplementFields = parse(schema.rule);
+        if (
+          workflowFormExecutionIssue(schema.rule) ||
+          workflowFormExecutionIssue(schema.option)
+        )
+          fail(
+            '节点表单包含动态脚本、远程请求或自定义组件，当前仅支持静态配置',
+          );
+        const supplementFields = parse(schema.rule, '', true);
+        supplement = {
+          renderer: 'form-create-v1',
+          schemaId: supplementFormId,
+          rules: JSON.parse(JSON.stringify(schema.rule)),
+          // Only presentation options are retained; submit/reset belong to the workflow.
+          option: {
+            ...Object.fromEntries(
+              ['form', 'row', 'col', 'info', 'wrap', 'title']
+                .filter((key) => schema.option?.[key] !== undefined)
+                .map((key) => [
+                  key,
+                  JSON.parse(JSON.stringify(schema.option?.[key])),
+                ]),
+            ),
+            submitBtn: false,
+            resetBtn: false,
+          },
+        };
+        supplementKeys.set(
+          node.id,
+          new Set(supplementFields.map((field) => field.key)),
+        );
         fields.push(...supplementFields);
         for (const field of supplementFields) {
           permissionFields.add(field.key);
-          if (field.type !== 'table') actionFields.add(field.key);
+          if (!['choiceList', 'table'].includes(field.type))
+            actionFields.add(field.key);
           for (const child of field.children || [])
             permissionFields.add(child.key);
         }
@@ -426,7 +547,92 @@ export function freezeWorkflowForms(doc: WorkflowDocument): {
       fields: [...unique.values()],
       presentation: detailMode === 'formOnly' ? 'formOnly' : 'detail',
       ...(detailView ? { detailView } : {}),
+      ...(supplement ? { supplement } : {}),
     };
+  }
+  const sourceFields = new Map<string, RuntimeField>();
+  const ambiguousSources = new Set<string>();
+  for (const field of BUSINESS_FIELDS) sourceFields.set(field.key, field);
+  for (const field of WORKFLOW_FIELD_CATALOG.filter(
+    (item) => item.persist !== 'flow',
+  ))
+    sourceFields.set(field.key, {
+      ...field,
+      required: false,
+      readonly: true,
+      hidden: false,
+    });
+  for (const node of doc.nodes) {
+    const form = forms[node.id];
+    if (!form) continue;
+    for (const field of form.fields) {
+      if (
+        supplementKeys.get(node.id)?.has(field.key) &&
+        !node.fieldBindings?.[field.key] &&
+        field.type !== 'table'
+      ) {
+        if (
+          sourceFields.has(field.key) &&
+          sourceFields.get(field.key)?.type !== field.type
+        )
+          ambiguousSources.add(field.key);
+        sourceFields.set(field.key, field);
+      }
+    }
+  }
+  for (const node of doc.nodes.filter((candidate) =>
+    ['approve', 'task'].includes(candidate.type),
+  )) {
+    const form = forms[node.id];
+    if (!form) continue;
+    const bindings: Record<string, string> = {};
+    for (const [target, source] of Object.entries(node.fieldBindings || {})) {
+      const targetField = form.fields.find((field) => field.key === target);
+      const sourceField = sourceFields.get(source);
+      const fail = (reason: string) =>
+        issues.push({
+          nodeId: node.id,
+          message: `${node.name}：字段取值「${target}←${source}」${reason}`,
+        });
+      if (
+        !supplementKeys.get(node.id)?.has(target) ||
+        BUSINESS_FIELDS.some((field) => field.key === target) ||
+        !targetField ||
+        ['choiceList', 'table'].includes(targetField.type)
+      ) {
+        fail('目标必须是当前节点补充表单的普通字段');
+        continue;
+      }
+      if (
+        !sourceField ||
+        ['choiceList', 'table'].includes(sourceField.type) ||
+        target === source
+      ) {
+        fail('来源必须是流程中已定义的其他普通字段');
+        continue;
+      }
+      if (ambiguousSources.has(source)) {
+        fail('来源字段在不同表单中的类型不一致');
+        continue;
+      }
+      if (
+        targetField.type !== sourceField.type &&
+        !(
+          ['text', 'textarea'].includes(targetField.type) &&
+          ['text', 'textarea'].includes(sourceField.type)
+        )
+      ) {
+        fail('来源与展示字段的类型不一致');
+        continue;
+      }
+      targetField.readonly = true;
+      delete targetField.defaultValue;
+      bindings[target] = source;
+    }
+    if (Object.keys(bindings).length > 0) {
+      form.valueBindings = bindings;
+      form.actionFields = form.actionFields?.filter((key) => !bindings[key]);
+    }
   }
   return { forms, issues };
 }

@@ -1,3 +1,4 @@
+import type { WorkflowStartIssue } from '../../shared/workflow-runtime';
 /**
  * 流程实例与协议业务的映射：发起时灌入办理字段，办理成功后回写整份协议。
  */
@@ -7,6 +8,7 @@ import {
   BUSINESS_FIELDS,
   WORKFLOW_FIELD_CATALOG,
   WORKFLOW_PERSON_FIELDS,
+  workflowStartIssues,
 } from '../../shared/workflow-runtime';
 import {
   getOrCreateAgreementDetail,
@@ -16,9 +18,12 @@ import { AGREE_ALL_ROWS, findAgreeListRow } from './mock-agreement-list';
 
 /** 发起/办理页协议选项 */
 export interface WorkflowAgreementOption {
+  id: string;
   agreementNo: string;
   compensatee: string;
   houseAddress: string;
+  houseCount: number;
+  startIssues: WorkflowStartIssue[];
   amount: number;
   statusValue: string;
   title: string;
@@ -63,14 +68,16 @@ export function projectAgreementToWorkflowData(detail: AgreementDetail) {
       people[item.key] = raw;
   }
   return {
-    agreementNo: String(detail.agreementNo || ''),
-    compensatee: String(detail.basic?.compensatee || ''),
-    houseAddress: String(
-      detail.houses?.[0]?.address || detail.signing?.houseAddress || '',
-    ),
-    BuChangJinE: amountOf(detail.basic?.amount),
     ...flow,
     ...people,
+    compensatee: String(detail.basic?.compensatee || ''),
+    houseAddress: String(
+      (detail.houses?.length
+        ? detail.houses[0]?.address
+        : detail.signing?.houseAddress) || '',
+    ),
+    BuChangJinE: amountOf(detail.basic?.amount),
+    agreementNo: String(detail.agreementNo || ''),
   };
 }
 
@@ -101,9 +108,12 @@ export function listWorkflowAgreements(): WorkflowAgreementOption[] {
     const detail = getOrCreateAgreementDetail(row.agreementNo, row);
     const data = projectAgreementToWorkflowData(detail);
     return {
+      id: row.id,
       agreementNo: row.agreementNo,
       compensatee: data.compensatee,
       houseAddress: data.houseAddress,
+      houseCount: detail.houses?.length || 0,
+      startIssues: workflowStartIssues(data),
       amount: data.BuChangJinE,
       statusValue: String(detail.statusValue || row.statusValue),
       title: String(
@@ -151,7 +161,12 @@ export function applyAgreementPatch(
 ): AgreementDetail {
   if (!options.canAct) throw new Error('当前不能修改协议');
   const next = structuredClone(current);
-  if (incoming == null || options.nodeType === 'approve') return next;
+  if (
+    incoming === null ||
+    incoming === undefined ||
+    options.nodeType === 'approve'
+  )
+    return next;
   if (
     typeof incoming !== 'object' ||
     Array.isArray(incoming) ||
@@ -161,7 +176,7 @@ export function applyAgreementPatch(
   const src = incoming as Record<string, unknown>;
   for (const key of PATCH_KEYS) {
     if (!(key in src) || src[key] === undefined) continue;
-    (next as Record<string, unknown>)[key] = structuredClone(src[key]);
+    Object.assign(next, { [key]: structuredClone(src[key]) });
   }
   next.id = current.id;
   next.agreementNo = current.agreementNo;
@@ -311,7 +326,7 @@ export function applyUnlockedFlowFields(
   for (const [key, value] of Object.entries(data || {})) {
     if (value === undefined) continue;
     if (HEADER_KEYS.has(key)) {
-      // 协议编号是业务主键，任何数据动作都不能修改；其余头字段仅允许本轮系统动作解锁。
+      // 流程启动后编号已锁定，数据动作不能改号；其余头字段仅允许本轮系统动作解锁。
       if (!unlocked.has(key) || key === 'agreementNo') continue;
       if (key === 'compensatee') {
         const text = String(value ?? '');

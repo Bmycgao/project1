@@ -1,4 +1,4 @@
-import { eventHandler, getRouterParam, readBody } from 'h3';
+import { eventHandler, getRouterParam, readBody, setResponseStatus } from 'h3';
 import { updateFcSchema } from '~/utils/mock-fc-schema';
 import { useResponseError, useResponseSuccess } from '~/utils/response';
 import { assertSystemAccess, SYSTEM_AUTH } from '~/utils/system-api-auth';
@@ -12,7 +12,8 @@ export default eventHandler(async (event) => {
   const body = await readBody(event);
   const node = updateFcSchema(id, body || {});
   if (!node) {
-    return useResponseError(event, '模板不存在', { statusCode: 404 });
+    setResponseStatus(event, 404);
+    return useResponseError('模板不存在');
   }
   return useResponseSuccess(node);
 });

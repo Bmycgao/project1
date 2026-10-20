@@ -1,17 +1,21 @@
-import type { WorkflowRecord } from '../../../shared/workflow';
 import type {
+  StartableWorkflowDefinition,
   WorkflowActionInput,
   WorkflowContext,
   WorkflowInterveneInput,
   WorkflowNotice,
+  WorkflowStartIssue,
 } from '../../../shared/workflow-runtime';
+
+import { requestClient } from '#/api/request';
+
 export {
   formatRemain,
   hasWorkflowRuntimeAccess,
   INSTANCE_STATUS_LABELS,
   WORKFLOW_AUTH,
 } from '../../../shared/workflow-runtime';
-import { requestClient } from '#/api/request';
+
 export interface WorkflowInstanceRow {
   id: string;
   definitionName: string;
@@ -19,7 +23,7 @@ export interface WorkflowInstanceRow {
   businessNo: string;
   title: string;
   base: string;
-  /** 绑定的协议编号 */
+  /** 绑定的协议内部 ID */
   bizId?: string;
   initiatorName: string;
   status: string;
@@ -36,15 +40,18 @@ export interface WorkflowInstanceRow {
   slaStatus?: 'dueSoon' | 'ok' | 'overdue';
 }
 export interface WorkflowAgreementOption {
+  id: string;
   agreementNo: string;
   compensatee: string;
   houseAddress: string;
+  houseCount: number;
+  startIssues: WorkflowStartIssue[];
   amount: number;
   statusValue: string;
   title: string;
 }
 export const getStartableWorkflows = () =>
-  requestClient.get<WorkflowRecord[]>('/workflow/definitions');
+  requestClient.get<StartableWorkflowDefinition[]>('/workflow/definitions');
 export const getWorkflowAgreements = () =>
   requestClient.get<WorkflowAgreementOption[]>('/workflow/agreements');
 export const getWorkflowInstances = (tab: string) =>
@@ -56,7 +63,8 @@ export const getWorkflowContext = (id: string) =>
     `/workflow/instances/${encodeURIComponent(id)}`,
   );
 export const startWorkflow = (input: {
-  agreementNo: string;
+  agreementId?: string;
+  agreementNo?: string;
   definitionId: string;
   requestId: string;
   title?: string;

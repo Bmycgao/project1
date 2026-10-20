@@ -18,6 +18,7 @@ import FcDesigner from '@form-create/designer';
 import {
   ElAutocomplete,
   ElButton,
+  ElCard,
   ElCascader,
   ElCheckbox,
   ElCheckboxButton,
@@ -64,6 +65,7 @@ import 'element-plus/es/components/header/style/css';
 import 'element-plus/es/components/main/style/css';
 import 'element-plus/es/components/autocomplete/style/css';
 import 'element-plus/es/components/button/style/css';
+import 'element-plus/es/components/card/style/css';
 import 'element-plus/es/components/cascader/style/css';
 /** 表单栅格 + 常用控件样式 */
 import 'element-plus/es/components/checkbox/style/css';
@@ -107,6 +109,7 @@ import '@form-create/element-ui/src/style/index.css';
 /** FormCreate 会按 name 解析的 Element Plus 组件 */
 
 const FORM_CREATE_EP_COMPONENTS: Component[] = [
+  ElCard,
   ElAutocomplete,
 
   ElButton,

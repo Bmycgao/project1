@@ -19,13 +19,24 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 
-import { newId, ratioPassCount } from '../../shared/workflow';
+import {
+  newId,
+  ratioPassCount,
+  workflowButtonAction,
+  workflowButtonConfig,
+} from '../../shared/workflow';
+import {
+  mayHandleWorkflowNode,
+  mayStartWorkflow,
+  mayUseWorkflowButton,
+} from '../../shared/workflow-access';
 import {
   detailHeaderAccess,
   effectiveDetailView,
   projectWorkflowAgreement,
 } from '../../shared/workflow-detail';
 import { evaluateCondition } from '../../shared/workflow-expression';
+import { prepareWorkflowFormRules } from '../../shared/workflow-form-schema';
 import {
   ACTION_LABELS,
   applyWorkflowDataActions,
@@ -34,7 +45,9 @@ import {
   hasWorkflowMonitorAccess,
   slaBucket,
   WORKFLOW_PERSON_FIELDS,
+  workflowStartIssues,
 } from '../../shared/workflow-runtime';
+import { findAgreeListRow, lockAgreementNumber } from './mock-agreement-list';
 import { leaderUserIdsOf } from './mock-dept';
 import { DATA_DIR } from './mock-persist';
 import {
@@ -43,6 +56,7 @@ import {
   loadWorkflowAgreement,
   persistWorkflowAgreement,
   projectAgreementToWorkflowData,
+  requireExistingAgreement,
   syncAgreementFromWorkflow,
   workflowDataFromAgreement,
 } from './workflow-agreement';
@@ -86,6 +100,14 @@ function read(): State {
   if (!Array.isArray(state.instances) || !Array.isArray(state.starts))
     throw new Error('实例存储格式异常');
   if (!Array.isArray(state.notices)) state.notices = [];
+  // 兼容旧实例中以协议编号保存的 bizId，后续写入时自然迁移成内部 ID。
+  for (const instance of state.instances) {
+    const agreement = findAgreeListRow(instance.bizId || instance.businessNo);
+    if (!agreement) continue;
+    instance.bizId = agreement.id;
+    instance.businessNo = agreement.agreementNo;
+    instance.data.agreementNo = agreement.agreementNo;
+  }
   return state;
 }
 /**
@@ -308,8 +330,9 @@ function orderedAssignees(
 ) {
   const eligible = assignees(node, instance, actors).filter(
     (a) =>
-      a.codes.includes('Workflow:Use') ||
-      a.codes.includes('System:Workflow:Manage'),
+      mayHandleWorkflowNode(node, a) &&
+      (a.codes.includes('Workflow:Use') ||
+        a.codes.includes('System:Workflow:Manage')),
   );
   const byId = new Map(eligible.map((a) => [a.id, a]));
   let order: string[] | undefined;
@@ -355,7 +378,7 @@ function orderedAssignees(
 function runDataActions(
   instance: WorkflowInstance,
   node: WorkflowNode,
-  when: 'arrive' | 'pass' | 'save' | 'submit',
+  when: 'arrive' | 'pass' | 'reject' | 'save' | 'submit',
   fields: RuntimeField[],
   written: Set<string>,
   firstArrival?: boolean,
@@ -392,7 +415,8 @@ function enter(
   let spawnSubflow: undefined | { code: string; nodeId: string };
   const limit = Math.max(16, definition.nodes.length * 4);
   for (let steps = 0; queue.length > 0 && steps <= limit; steps++) {
-    const item = queue.shift()!;
+    const item = queue.shift();
+    if (!item) break;
     const node = definition.nodes.find((n) => n.id === item.nodeId);
     if (!node) throw new WorkflowError('流转目标节点不存在');
     instance.currentNodeId = node.id;
@@ -420,7 +444,11 @@ function enter(
         );
       const fields = definition.frozenForms?.[node.id]?.fields || [];
       for (const f of fields)
-        if (instance.data[f.key] === undefined && f.defaultValue !== undefined)
+        if (
+          !definition.frozenForms?.[node.id]?.valueBindings?.[f.key] &&
+          instance.data[f.key] === undefined &&
+          f.defaultValue !== undefined
+        )
           instance.data[f.key] = clone(f.defaultValue);
       const firstArrival = !instance.tasks.some(
         (task) => task.nodeId === node.id,
@@ -443,7 +471,7 @@ function enter(
         countersign || ratio
           ? candidates.map((c) => [c])
           : sequential
-            ? [[candidates[0]!]]
+            ? [candidates.slice(0, 1)]
             : [candidates];
       for (const group of groups)
         pushHumanTask(
@@ -549,7 +577,7 @@ function enter(
           );
           continue;
         }
-        delete arrivals[node.id];
+        Reflect.deleteProperty(arrivals, node.id);
         const selected = outgoing[0];
         if (!selected)
           throw new WorkflowError(`节点「${node.name}」无可用流出路径`);
@@ -661,7 +689,7 @@ function spawnSubflowInstance(
     familyId: childDef.familyId || childDef.id,
     definitionName: childDef.name,
     version: childDef.version || 1,
-    businessNo: parent.bizId || parent.businessNo,
+    businessNo: parent.businessNo,
     title: `${parent.title} · ${subNode?.name || '子流程'}`,
     base: childDef.base,
     bizTable: childDef.businessTable || parent.bizTable,
@@ -729,9 +757,7 @@ function resumeParent(
     edge.id,
   );
   parent.revision++;
-  if (next.spawnSubflow)
-    spawnSubflowInstance(state, parent, next.spawnSubflow, actor, actors);
-  if (parent.status === 'completed') resumeParent(state, parent, actor, actors);
+  afterEnter(state, parent, next, actor, actors);
 }
 
 /**
@@ -834,17 +860,27 @@ export function effectiveForm(
         field.editableCodeGroups?.some(
           (group) => !matches(actor.codes, group),
         ) === true,
-      children: field.children?.map(fieldAccess),
+      children: field.children?.map((value) => fieldAccess(value)),
     };
   }
+  const fields = source.fields
+    .map((value) => fieldAccess(value))
+    .filter((f) => !f.hidden)
+    .map((field) => withPersonOptions(field, actors));
   return {
     title: source.title,
     detailView,
     presentation: source.presentation,
-    fields: source.fields
-      .map(fieldAccess)
-      .filter((f) => !f.hidden)
-      .map((field) => withPersonOptions(field, actors)),
+    valueBindings: source.valueBindings,
+    fields,
+    ...(source.supplement
+      ? {
+          supplement: {
+            ...source.supplement,
+            rules: prepareWorkflowFormRules(source.supplement.rules, fields),
+          },
+        }
+      : {}),
   };
 }
 function visibleValue(field: RuntimeField, value: unknown): unknown {
@@ -877,7 +913,7 @@ function targets(
   }
   return edges.map((e) => ({
     id: e.target,
-    name: definition.nodes.find((n) => n.id === e.target)!.name,
+    name: definition.nodes.find((n) => n.id === e.target)?.name || e.target,
   }));
 }
 /** 审批会签：全部候选人各持一笔待办，须全部通过 */
@@ -925,10 +961,9 @@ function ratioPeers(
 function roundTasks(instance: WorkflowInstance, nodeId: string) {
   const ofNode = instance.tasks.filter((t) => t.nodeId === nodeId);
   if (ofNode.length === 0) return [];
-  const arrivedAt = ofNode.reduce(
-    (latest, t) => (t.arrivedAt > latest ? t.arrivedAt : latest),
-    ofNode[0]!.arrivedAt,
-  );
+  let arrivedAt = '';
+  for (const task of ofNode)
+    if (task.arrivedAt > arrivedAt) arrivedAt = task.arrivedAt;
   return ofNode.filter((t) => t.arrivedAt === arrivedAt);
 }
 /**
@@ -998,6 +1033,55 @@ function recallState(
     reason: allowed ? undefined : '下一节点已办理或已保存，不能撤回',
   };
 }
+function configuredButton(
+  definition: WorkflowRecord,
+  node: WorkflowNode,
+  instance: WorkflowInstance,
+  actor: RuntimeActor,
+  code: string,
+  enabled = true,
+  reason?: string,
+  defaultLabel?: string,
+) {
+  const config = workflowButtonConfig(definition, code);
+  const action = workflowButtonAction(definition, code);
+  if (!action) return undefined;
+  const values = {
+    ...instance.data,
+    nodeCode: node.code,
+    instanceStatus: instance.status,
+    actorId: actor.id,
+    initiatorId: instance.initiatorId,
+  };
+  const matches = (expression?: string) => {
+    if (!expression?.trim()) return true;
+    try {
+      return evaluateCondition(expression, values);
+    } catch {
+      return false;
+    }
+  };
+  if (!matches(config.visibleWhen)) return undefined;
+  const conditionEnabled = matches(config.enabledWhen);
+  return {
+    code,
+    action,
+    label: definition.buttonCatalog?.some(
+      (item) => (item.code || item.action) === code,
+    )
+      ? config.label
+      : defaultLabel || config.label,
+    enabled: enabled && conditionEnabled,
+    reason:
+      enabled && !conditionEnabled
+        ? config.disabledReason || '未满足按钮启用条件'
+        : reason,
+    placement: config.placement,
+    style: config.style,
+    confirmText: config.confirmText,
+    requireOpinion: config.requireOpinion,
+  };
+}
 function buildContext(
   instance: WorkflowInstance,
   actor: RuntimeActor,
@@ -1023,8 +1107,12 @@ function buildContext(
     (instance.status === 'running' ? anyPending?.nodeId : undefined) ||
     lastOwn?.nodeId ||
     instance.currentNodeId;
-  const node = definition.nodes.find((n) => n.id === viewId)!;
-  const canAct = !!pendingForActor && instance.status === 'running';
+  const node = definition.nodes.find((n) => n.id === viewId);
+  if (!node) throw new WorkflowError('当前节点不存在，请检查流程配置');
+  const canAct =
+    !!pendingForActor &&
+    instance.status === 'running' &&
+    mayHandleWorkflowNode(node, actor);
   // 已结束实例回看最近一次办理/审批节点的冻结表单，跳过抄送知会
   const lastHandled = [...instance.tasks]
     .toReversed()
@@ -1062,15 +1150,18 @@ function buildContext(
   // 当前表单字段优先用实例 data，缺省时回填协议 flowFields / 备注
   const data = Object.fromEntries(
     form.fields.map((f) => {
-      let value = instance.data[f.key];
+      const boundSource = form.valueBindings?.[f.key];
+      let value = boundSource
+        ? instance.data[boundSource]
+        : instance.data[f.key];
       if (
         value === undefined &&
-        f.key === 'remark' &&
+        (boundSource || f.key) === 'remark' &&
         basicRemark !== undefined
       )
         value = basicRemark;
-      if (value === undefined && flowFields[f.key] !== undefined)
-        value = flowFields[f.key];
+      if (value === undefined && flowFields[boundSource || f.key] !== undefined)
+        value = flowFields[boundSource || f.key];
       return [f.key, visibleValue(f, value)];
     }),
   );
@@ -1121,64 +1212,89 @@ function buildContext(
       )
     : [];
   const ratioSeats = ratioRound.filter((t) => isRatioSeat(t));
-  const countersign =
-    isAllSign(viewNode) && round.length > 1
-      ? {
-          passed: round.filter((t) => isVote(t)).length,
-          total: round.length,
-          pendingNames: round
-            .filter((t) => t.status === 'pending')
-            .flatMap((t) => t.assigneeNames),
-          mode: 'all' as const,
-        }
-      : // 依次审批离开本节点后不再显示进度，避免已办完仍显示 0/人数
-        isSequential(viewNode) &&
-          sequentialOrdered.length > 1 &&
-          sequentialRound.some((t) => t.status === 'pending')
-        ? {
-            passed: sequentialRound.filter((t) => isVote(t)).length,
-            total: sequentialOrdered.length,
-            pendingNames: sequentialRound
-              .filter((t) => t.status === 'pending')
-              .flatMap((t) => t.assigneeNames),
-            mode: 'sequential' as const,
-          }
-        : // 比例会签离开本节点后不再按剩余人数重算，避免已办完显示成 2/1
-          isRatio(viewNode) &&
-            ratioSeats.length > 1 &&
-            ratioSeats.some((t) => t.status === 'pending')
-          ? {
-              passed: ratioSeats.filter((t) => isVote(t)).length,
-              total: ratioSeats.length,
-              pendingNames: ratioSeats
-                .filter((t) => t.status === 'pending')
-                .flatMap((t) => t.assigneeNames),
-              mode: 'ratio' as const,
-              required: ratioPassCount(
-                ratioSeats.length,
-                viewNode.approveRatio ?? 50,
-              ),
-              percent: viewNode.approveRatio ?? 50,
-            }
-          : undefined;
+  const countersign = (() => {
+    if (isAllSign(viewNode) && round.length > 1) {
+      return {
+        passed: round.filter((t) => isVote(t)).length,
+        total: round.length,
+        pendingNames: round
+          .filter((t) => t.status === 'pending')
+          .flatMap((t) => t.assigneeNames),
+        mode: 'all' as const,
+      };
+    }
+    if (
+      isSequential(viewNode) &&
+      sequentialOrdered.length > 1 &&
+      sequentialRound.some((t) => t.status === 'pending')
+    ) {
+      return {
+        passed: sequentialRound.filter((t) => isVote(t)).length,
+        total: sequentialOrdered.length,
+        pendingNames: sequentialRound
+          .filter((t) => t.status === 'pending')
+          .flatMap((t) => t.assigneeNames),
+        mode: 'sequential' as const,
+      };
+    }
+    if (
+      isRatio(viewNode) &&
+      ratioSeats.length > 1 &&
+      ratioSeats.some((t) => t.status === 'pending')
+    ) {
+      return {
+        passed: ratioSeats.filter((t) => isVote(t)).length,
+        total: ratioSeats.length,
+        pendingNames: ratioSeats
+          .filter((t) => t.status === 'pending')
+          .flatMap((t) => t.assigneeNames),
+        mode: 'ratio' as const,
+        required: ratioPassCount(
+          ratioSeats.length,
+          viewNode.approveRatio ?? 50,
+        ),
+        percent: viewNode.approveRatio ?? 50,
+      };
+    }
+    return undefined;
+  })();
   const actButtons = canAct
     ? node.buttons
-        .filter((code) => ['pass', 'reject', 'save', 'submit'].includes(code))
-        .map((code) => ({
-          code,
-          label: ACTION_LABELS[code]!,
-          enabled: code !== 'reject' || rejectTargets.length > 0,
-          reason:
-            code === 'reject' && rejectTargets.length === 0
+        .filter((code) =>
+          ['pass', 'reject', 'save', 'submit'].includes(
+            workflowButtonAction(definition, code) || '',
+          ),
+        )
+        .filter((code) => mayUseWorkflowButton(node, code, actor))
+        .map((code) =>
+          configuredButton(
+            definition,
+            node,
+            instance,
+            actor,
+            code,
+            workflowButtonAction(definition, code) !== 'reject' ||
+              rejectTargets.length > 0,
+            workflowButtonAction(definition, code) === 'reject' &&
+              rejectTargets.length === 0
               ? '没有符合配置且已办理的驳回目标'
               : undefined,
-        }))
+            ACTION_LABELS[workflowButtonAction(definition, code) || code],
+          ),
+        )
+        .filter((button) => !!button)
     : [];
+  const transferCodes = node.buttons.filter(
+    (code) => workflowButtonAction(definition, code) === 'transfer',
+  );
+  const transferBindings =
+    transferCodes.length > 0 ? transferCodes : ['transfer'];
   const transferCandidates =
     canAct && node.allowTransfer
       ? actors.filter(
           (a) =>
             a.id !== actor.id &&
+            mayHandleWorkflowNode(node, a) &&
             (a.codes.includes('Workflow:Use') ||
               a.codes.includes('System:Workflow:Manage')) &&
             !instance.tasks.some(
@@ -1191,26 +1307,47 @@ function buildContext(
       : [];
   const transferButton =
     canAct && node.allowTransfer
-      ? [
-          {
-            code: 'transfer',
-            label: ACTION_LABELS.transfer,
-            enabled: transferCandidates.length > 0,
-            reason:
+      ? transferBindings
+          .filter((code) => mayUseWorkflowButton(node, code, actor))
+          .map((code) =>
+            configuredButton(
+              definition,
+              node,
+              instance,
+              actor,
+              code,
+              transferCandidates.length > 0,
               transferCandidates.length > 0 ? undefined : '没有可转办的办理人',
-          },
-        ]
+              ACTION_LABELS.transfer,
+            ),
+          )
+          .filter((button) => !!button)
       : [];
-  const recallButton = recall
-    ? [
-        {
-          code: 'recall',
-          label: `撤回至${recall.targetNodeName}`,
-          enabled: recall.enabled && !!task,
-          reason: recall.reason,
-        },
-      ]
-    : [];
+  const recallSource = recall
+    ? definition.nodes.find((n) => n.id === recall.targetNodeId) || node
+    : node;
+  const recallCodes = recallSource.buttons.filter(
+    (code) => workflowButtonAction(definition, code) === 'recall',
+  );
+  const recallBindings = recallCodes.length > 0 ? recallCodes : ['recall'];
+  const recallButton =
+    recall && recallSource.allowRecall
+      ? recallBindings
+          .filter((code) => mayUseWorkflowButton(recallSource, code, actor))
+          .map((code) =>
+            configuredButton(
+              definition,
+              recallSource,
+              instance,
+              actor,
+              code,
+              recall.enabled && !!task,
+              recall.reason,
+              `撤回至${recall.targetNodeName}`,
+            ),
+          )
+          .filter((button) => !!button)
+      : [];
   return {
     instance: { ...safe, data },
     definition: safeDefinition,
@@ -1353,7 +1490,8 @@ export function interveneInstance(
   const pending = instance.tasks.filter((t) => t.status === 'pending');
   const viewNode =
     definition.nodes.find((n) => n.id === pending[0]?.nodeId) ||
-    definition.nodes.find((n) => n.id === instance.currentNodeId)!;
+    definition.nodes.find((n) => n.id === instance.currentNodeId);
+  if (!viewNode) throw new WorkflowError('当前节点不存在，请检查流程配置');
   const note = (input.opinion || '').trim();
   if (note.length > 2000) throw new WorkflowError('意见最多 2000 字');
   const at = now();
@@ -1374,7 +1512,7 @@ export function interveneInstance(
     instance.status = 'running';
     const resumed = Date.parse(at);
     for (const task of pending) {
-      if (task.dueRemainMs != null) {
+      if (task.dueRemainMs !== null && task.dueRemainMs !== undefined) {
         task.dueAt = new Date(resumed + task.dueRemainMs).toISOString();
         task.dueRemainMs = undefined;
       }
@@ -1505,12 +1643,12 @@ function toInstanceRow(
     dueAt: pending
       .map((t) => t.dueAt)
       .filter(Boolean)
-      .toSorted()[0],
+      .toSorted((a, b) => String(a).localeCompare(String(b)))[0],
     slaStatus: (() => {
       const dueAt = pending
         .map((t) => t.dueAt)
         .filter(Boolean)
-        .toSorted()[0];
+        .toSorted((a, b) => String(a).localeCompare(String(b)))[0];
       const node = definition.nodes.find((n) => n.id === pending[0]?.nodeId);
       const bucket = slaBucket(dueAt, node?.sla?.warnHours);
       return bucket === 'none' ? undefined : bucket;
@@ -1533,40 +1671,55 @@ export function listInstances(actor: RuntimeActor, tab: string) {
       throw new WorkflowError('无流程监控权限', 403);
     return state.instances
       .toSorted((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .map(row);
+      .map((value) => row(value));
   }
   return state.instances
     .filter((i) => mayRead(i, actor))
     .filter((i) =>
-      tab === 'started'
-        ? i.initiatorId === actor.id && !i.parentInstanceId
-        : tab === 'done'
-          ? i.tasks.some((t) => t.completedBy === actor.id)
-          : tab === 'cc'
-            ? i.tasks.some(
-                (t) =>
-                  t.status === 'copied' && t.assigneeIds.includes(actor.id),
-              )
-            : i.status === 'running' &&
-              i.tasks.some(
-                (t) =>
-                  t.status === 'pending' && t.assigneeIds.includes(actor.id),
-              ),
+      (() => {
+        if (tab === 'started') {
+          return i.initiatorId === actor.id && !i.parentInstanceId;
+        }
+        if (tab === 'done') {
+          return i.tasks.some((t) => t.completedBy === actor.id);
+        }
+        if (tab === 'cc') {
+          return i.tasks.some(
+            (t) => t.status === 'copied' && t.assigneeIds.includes(actor.id),
+          );
+        }
+        return (
+          i.status === 'running' &&
+          i.tasks.some(
+            (t) =>
+              t.status === 'pending' &&
+              t.assigneeIds.includes(actor.id) &&
+              !!definitions
+                .get(i.definitionId)
+                ?.nodes.some(
+                  (node) =>
+                    node.id === t.nodeId && mayHandleWorkflowNode(node, actor),
+                ),
+          )
+        );
+      })(),
     )
     .toSorted((a, b) => b.createdAt.localeCompare(a.createdAt))
-    .map(row);
+    .map((value) => row(value));
 }
-/** 解析发起入参中的协议编号（兼容旧字段 businessNo） */
-function startAgreementNo(input: {
+/** 优先用内部 ID 绑定，兼容旧客户端传 agreementNo/businessNo。 */
+function resolveStartAgreement(input: {
+  agreementId?: unknown;
   agreementNo?: unknown;
   businessNo?: unknown;
 }) {
   const raw =
-    typeof input.agreementNo === 'string' && input.agreementNo.trim()
+    input.agreementId ||
+    (typeof input.agreementNo === 'string' && input.agreementNo.trim()
       ? input.agreementNo
-      : input.businessNo;
+      : input.businessNo);
   try {
-    return workflowDataFromAgreement(String(raw || '')).agreementNo;
+    return requireExistingAgreement(String(raw || ''));
   } catch (error) {
     throw new WorkflowError(
       error instanceof Error ? error.message : '请选择要办理的协议',
@@ -1575,6 +1728,7 @@ function startAgreementNo(input: {
 }
 export function startInstance(
   input: {
+    agreementId?: string;
     agreementNo?: string;
     businessNo?: string;
     data?: Record<string, unknown>;
@@ -1604,11 +1758,16 @@ export function startInstance(
   const definition = getWorkflow(input.definitionId);
   if (definition.status !== 'published')
     throw new WorkflowError('该版本未发布或已停用，不可新发起');
+  if (!mayStartWorkflow(definition, actor))
+    throw new WorkflowError('无权发起该流程', 403);
   let data: Record<string, unknown>;
   let agreementNo: string;
+  let agreementId: string;
   try {
-    agreementNo = startAgreementNo(input);
-    data = workflowDataFromAgreement(agreementNo);
+    const agreement = resolveStartAgreement(input);
+    agreementNo = agreement.agreementNo;
+    agreementId = agreement.id;
+    data = workflowDataFromAgreement(agreementId);
   } catch (error) {
     throw new WorkflowError(
       error instanceof Error ? error.message : '请选择要办理的协议',
@@ -1622,7 +1781,7 @@ export function startInstance(
   if (
     state.instances.some(
       (i) =>
-        (i.bizId || i.businessNo) === agreementNo &&
+        (i.bizId || i.businessNo) === agreementId &&
         i.familyId === (definition.familyId || definition.id) &&
         isInFlight(i.status),
     )
@@ -1640,7 +1799,7 @@ export function startInstance(
     title,
     base: definition.base,
     bizTable: definition.businessTable || 'XieYi',
-    bizId: agreementNo,
+    bizId: agreementId,
     initiatorId: actor.id,
     initiatorName: actor.name,
     status: 'running',
@@ -1653,6 +1812,8 @@ export function startInstance(
     returnStack: [],
     requests: [],
   };
+  const missing = workflowStartIssues(instance.data)[0];
+  if (missing) throw new WorkflowError(missing.message);
   for (const field of BUSINESS_FIELDS)
     validateValue(field, instance.data[field.key], true);
   const entered = enter(state, instance, definition, first.id, actor, actors);
@@ -1664,7 +1825,17 @@ export function startInstance(
     fingerprint,
     instanceId: instance.id,
   });
-  write(state);
+  const undoNumberLock = lockAgreementNumber(agreementId);
+  try {
+    write(state);
+  } catch (error) {
+    try {
+      undoNumberLock();
+    } catch (rollbackError) {
+      console.error('撤销协议编号锁定失败', rollbackError);
+    }
+    throw error;
+  }
   return buildContext(instance, actor, actors);
 }
 function validateValue(field: RuntimeField, value: unknown, required: boolean) {
@@ -1687,7 +1858,7 @@ function validateValue(field: RuntimeField, value: unknown, required: boolean) {
   )
     throw new WorkflowError(`「${field.label}」数值不合法`);
   if (
-    ['date', 'text', 'textarea'].includes(field.type) &&
+    ['date', 'text', 'textarea', 'time'].includes(field.type) &&
     (typeof value !== 'string' ||
       value.length > (field.maxLength ?? 5000) ||
       value.length < (field.minLength ?? 0))
@@ -1711,6 +1882,24 @@ function validateValue(field: RuntimeField, value: unknown, required: boolean) {
     throw new WorkflowError(`「${field.label}」必须为布尔值`);
   if (field.type === 'select' && !field.options?.some((o) => o.value === value))
     throw new WorkflowError(`「${field.label}」不是允许的选项`);
+  if (
+    field.type === 'time' &&
+    (typeof value !== 'string' ||
+      !/^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/.test(value))
+  )
+    throw new WorkflowError(`「${field.label}」时间格式应为 HH:mm:ss`);
+  if (
+    field.type === 'choiceList' &&
+    (!Array.isArray(value) ||
+      value.length > (field.maxItems ?? 200) ||
+      (required &&
+        value.length < (field.minItems ?? (field.required ? 1 : 0))) ||
+      new Set(value).size !== value.length ||
+      value.some(
+        (item) => !field.options?.some((option) => option.value === item),
+      ))
+  )
+    throw new WorkflowError(`「${field.label}」请选择有效且不重复的候选项`);
   if (field.type === 'table') {
     if (
       !Array.isArray(value) ||
@@ -1817,11 +2006,41 @@ export function actOnInstance(
       409,
     );
   const definition = getWorkflow(instance.definitionId);
-  const node = definition.nodes.find((n) => n.id === task.nodeId)!;
+  const node = definition.nodes.find((n) => n.id === task.nodeId);
+  if (!node) throw new WorkflowError('任务节点不存在，请检查流程配置');
+  const buttonCode = input.buttonCode || input.action;
+  if (workflowButtonAction(definition, buttonCode) !== input.action)
+    throw new WorkflowError('按钮资源与动作类型不匹配', 403);
   if (input.action === 'recall') {
     const recall = recallState(instance, actor, definition);
     if (!recall) throw new WorkflowError('当前不能撤回', 403);
     if (!recall.enabled) throw new WorkflowError(recall.reason || '不能撤回');
+    const recallSource = definition.nodes.find(
+      (n) => n.id === recall.targetNodeId,
+    );
+    const recallCodes =
+      recallSource?.buttons.filter(
+        (code) => workflowButtonAction(definition, code) === 'recall',
+      ) || [];
+    if (
+      !recallSource ||
+      !(recallCodes.length > 0
+        ? recallCodes.includes(buttonCode)
+        : buttonCode === 'recall') ||
+      !mayUseWorkflowButton(recallSource, buttonCode, actor)
+    )
+      throw new WorkflowError('当前角色无权撤回', 403);
+    const button = configuredButton(
+      definition,
+      recallSource,
+      instance,
+      actor,
+      buttonCode,
+    );
+    if (!button?.enabled)
+      throw new WorkflowError(button?.reason || '撤回按钮当前不可用', 403);
+    if (button.requireOpinion && !(input.opinion || '').trim())
+      throw new WorkflowError('请填写办理意见');
     const cancelledAt = now();
     for (const pending of instance.tasks.filter(
       (t) => t.status === 'pending',
@@ -1830,7 +2049,8 @@ export function actOnInstance(
       pending.completedAt = cancelledAt;
     }
     instance.joinArrivals = {};
-    const source = definition.nodes.find((n) => n.id === recall.targetNodeId)!;
+    const source = definition.nodes.find((n) => n.id === recall.targetNodeId);
+    if (!source) throw new WorkflowError('撤回目标不存在，请检查流程配置');
     event(
       instance,
       source,
@@ -1858,15 +2078,39 @@ export function actOnInstance(
   }
   if (!task.assigneeIds.includes(actor.id))
     throw new WorkflowError('您不是该任务的办理人', 403);
+  if (!mayHandleWorkflowNode(node, actor))
+    throw new WorkflowError('当前角色无权办理该节点', 403);
   // 转办：取消当前待办并给目标人新建同节点待办，不推进节点、不回写协议
   if (input.action === 'transfer') {
+    const transferCodes = node.buttons.filter(
+      (code) => workflowButtonAction(definition, code) === 'transfer',
+    );
+    if (
+      !(transferCodes.length > 0
+        ? transferCodes.includes(buttonCode)
+        : buttonCode === 'transfer') ||
+      !mayUseWorkflowButton(node, buttonCode, actor)
+    )
+      throw new WorkflowError('当前角色无权转办', 403);
     if (!node.allowTransfer) throw new WorkflowError('当前节点不允许转办', 403);
+    const button = configuredButton(
+      definition,
+      node,
+      instance,
+      actor,
+      buttonCode,
+    );
+    if (!button?.enabled)
+      throw new WorkflowError(button?.reason || '转办按钮当前不可用', 403);
+    if (button.requireOpinion && !(input.opinion || '').trim())
+      throw new WorkflowError('请填写办理意见');
     const targetId = String(input.targetUserId || '').trim();
     if (!targetId) throw new WorkflowError('请选择转办人');
     if (targetId === actor.id) throw new WorkflowError('不能转办给自己');
     const recipient = actors.find(
       (a) =>
         a.id === targetId &&
+        mayHandleWorkflowNode(node, a) &&
         (a.codes.includes('Workflow:Use') ||
           a.codes.includes('System:Workflow:Manage')),
     );
@@ -1927,7 +2171,8 @@ export function actOnInstance(
   }
   if (
     !['pass', 'reject', 'save', 'submit'].includes(input.action) ||
-    !node.buttons.includes(input.action)
+    !node.buttons.includes(buttonCode) ||
+    !mayUseWorkflowButton(node, buttonCode, actor)
   )
     throw new WorkflowError('当前节点不允许此操作', 403);
   if (
@@ -1935,10 +2180,21 @@ export function actOnInstance(
     (input.action === 'pass' && node.type !== 'approve')
   )
     throw new WorkflowError('操作与节点类型不匹配');
+  const button = configuredButton(
+    definition,
+    node,
+    instance,
+    actor,
+    buttonCode,
+  );
+  if (!button?.enabled)
+    throw new WorkflowError(button?.reason || '按钮当前不可用', 403);
   const opinion = (input.opinion || '').trim();
   if (opinion.length > 2000) throw new WorkflowError('意见最多 2000 字');
-  if (input.action === 'reject' && !opinion)
-    throw new WorkflowError('驳回意见不能为空');
+  if (button.requireOpinion && !opinion)
+    throw new WorkflowError(
+      input.action === 'reject' ? '驳回意见不能为空' : '请填写办理意见',
+    );
   const form = effectiveForm(definition, node, actor, true, actors);
   let nextAgreement: ReturnType<typeof loadWorkflowAgreement> | undefined;
   if (instance.bizId && input.agreement) {
@@ -2056,13 +2312,15 @@ export function actOnInstance(
         )
       )
         throw new WorkflowError('驳回目标不在允许且已办理的范围内');
-      target = input.targetNodeId!;
+      if (!input.targetNodeId) throw new WorkflowError('请选择驳回目标');
+      target = input.targetNodeId;
       edgeIds = definition.edges
         .filter(
           (e) =>
             e.type === 'reject' && e.source === node.id && e.target === target,
         )
         .map((e) => e.id);
+      runDataActions(instance, node, 'reject', frozenFields, written);
       instance.returnStack =
         node.resubmitMode === 'return'
           ? [

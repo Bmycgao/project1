@@ -10,7 +10,7 @@ import {
   fcSchemaStore,
   fcSchemaUsage,
 } from '~/utils/mock-fc-schema';
-import { pageSchemaStore } from '~/utils/mock-page-schema';
+import { findPageSchema, pageSchemaStore } from '~/utils/mock-page-schema';
 import { roleStore, userStore } from '~/utils/rbac-store';
 import { workflowRequest } from '~/utils/workflow-api';
 import { listWorkflows } from '~/utils/workflow-store';
@@ -19,6 +19,7 @@ import {
   DEFAULT_WORKFLOW_MODULES,
   WORKFLOW_DETAIL_FIELD_ALIASES,
 } from '../../../../shared/workflow-detail';
+import { WORKFLOW_FORM_TYPES } from '../../../../shared/workflow-form-schema';
 import { WORKFLOW_FIELD_CATALOG } from '../../../../shared/workflow-runtime';
 
 type ExtractedField = Omit<WorkflowOptionField, 'group'>;
@@ -32,6 +33,7 @@ function fieldsOfRules(
   for (const rule of rules || []) {
     if (!rule || typeof rule !== 'object') continue;
     const typeMap: Record<string, WorkflowOptionField['type']> = {
+      ...WORKFLOW_FORM_TYPES,
       datePicker: 'date',
       input: rule.props?.type === 'textarea' ? 'textarea' : 'text',
       inputNumber: 'number',
@@ -52,7 +54,8 @@ function fieldsOfRules(
         .map((item: any) => item?.max)
         .filter((value: unknown) => typeof value === 'number');
       result.push({
-        actionable: !insideTable && !!type && type !== 'table',
+        actionable:
+          !insideTable && !!type && !['choiceList', 'table'].includes(type),
         dateMode:
           type === 'date' && rule.props?.type === 'datetime'
             ? 'datetime'
@@ -167,6 +170,18 @@ export default eventHandler((event) =>
       defaultDetailFields: detailFields(),
       views: [
         ...pageSchemaStore
+          .map((source) => {
+            if (!source.detailSchemaId) return source;
+            const detail = findPageSchema(source.detailSchemaId);
+            return detail?.schemaKind === 'detail' && detail.status === 1
+              ? {
+                  ...detail,
+                  id: source.id,
+                  title: `${source.title}（引用：${detail.title}）`,
+                  status: source.status,
+                }
+              : { ...source, modules: [] };
+          })
           .filter(
             (v) =>
               v.status === 1 &&

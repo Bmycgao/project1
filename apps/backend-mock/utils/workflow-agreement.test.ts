@@ -1,5 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
-vi.mock('./mock-page-schema', () => ({ pageSchemaStore: [] }));
+/* oxlint-disable typescript/no-non-null-assertion -- Test fixtures intentionally assert that configured nodes and mounted controls exist. */
+import { rmSync } from 'node:fs';
+import { resolve, sep } from 'node:path';
+
+import { afterAll, describe, expect, it, vi } from 'vitest';
+
 import {
   getOrCreateAgreementDetail,
   saveAgreementDetailAll,
@@ -15,7 +19,77 @@ import {
   workflowDataFromAgreement,
 } from './workflow-agreement';
 
+const storage = await vi.hoisted(async () => {
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const root = tmpdir();
+  return {
+    directory: mkdtempSync(join(root, 'vben-workflow-agreement-')),
+    root,
+  };
+});
+vi.mock('./mock-persist', () => ({ DATA_DIR: storage.directory }));
+afterAll(() => {
+  if (
+    !resolve(storage.directory).startsWith(
+      `${resolve(storage.root)}${sep}vben-workflow-agreement-`,
+    )
+  )
+    throw new Error('Unexpected test directory');
+  rmSync(storage.directory, { recursive: true, force: true });
+});
+vi.mock('./mock-page-schema', () => ({ pageSchemaStore: [] }));
+
 describe('workflow agreement binding', () => {
+  it('reports missing house data with the actual module and clears it after saving houses', () => {
+    const row = createAgreeListRow({});
+    const current = getOrCreateAgreementDetail(row.id);
+    saveAgreementDetailAll({
+      ...current,
+      basic: { ...current.basic, compensatee: '张三', amount: 1000 },
+      flowFields: { houseAddress: '过期的扩展地址' },
+    });
+    const missing = listWorkflowAgreements().find(
+      (item) => item.id === row.id,
+    )!;
+    expect(missing.houseCount).toBe(0);
+    expect(missing.houseAddress).toBe('');
+    expect(missing.startIssues).toEqual([
+      expect.objectContaining({
+        field: 'houseAddress',
+        module: 'houses',
+        message: expect.stringContaining('房屋信息'),
+      }),
+    ]);
+    saveAgreementDetailAll({
+      ...getOrCreateAgreementDetail(row.id),
+      houses: [
+        { id: 'first', address: '首套路1号', certNo: '', propertyType: '' },
+        { id: 'second', address: '第二套路2号', certNo: '', propertyType: '' },
+      ],
+    });
+    const ready = listWorkflowAgreements().find((item) => item.id === row.id)!;
+    expect(ready).toMatchObject({
+      houseCount: 2,
+      houseAddress: '首套路1号',
+      startIssues: [],
+    });
+  });
+
+  it('does not hide an empty first house address with a stale signing address', () => {
+    const row = createAgreeListRow({});
+    const current = getOrCreateAgreementDetail(row.id);
+    saveAgreementDetailAll({
+      ...current,
+      houses: [{ id: 'first', address: '  ', certNo: '', propertyType: '' }],
+      signing: { ...current.signing, houseAddress: '旧地址' },
+    });
+    expect(
+      listWorkflowAgreements().find((item) => item.id === row.id)?.startIssues,
+    ).toContainEqual(expect.objectContaining({ field: 'houseAddress' }));
+  });
+
   it('projects list agreements into start options', () => {
     const row = createAgreeListRow({
       compensatee: '绑定测试人',
@@ -60,6 +134,9 @@ describe('workflow agreement binding', () => {
       houseAddress: '整单旧路',
     });
     const current = getOrCreateAgreementDetail(row.agreementNo, row);
+    current.houses = [
+      { id: 'test-house', address: '整单旧路', certNo: '', propertyType: '' },
+    ];
     const incoming = structuredClone(current);
     incoming.houses[0]!.address = '整单新路';
     incoming.houses[0]!.certNo = '证-新';
@@ -129,6 +206,9 @@ describe('workflow agreement binding', () => {
       houseAddress: '动作前地址',
     });
     const current = getOrCreateAgreementDetail(row.agreementNo, row);
+    current.houses = [
+      { id: 'test-house', address: '动作前地址', certNo: '', propertyType: '' },
+    ];
     const next = applyUnlockedFlowFields(
       current,
       {
@@ -158,6 +238,9 @@ describe('workflow agreement binding', () => {
       houseAddress: '锁定坐落',
     });
     const current = getOrCreateAgreementDetail(row.agreementNo, row);
+    current.houses = [
+      { id: 'test-house', address: '锁定坐落', certNo: '', propertyType: '' },
+    ];
     const incoming = structuredClone(current);
     incoming.houses[0]!.address = '篡改坐落';
     incoming.houses.push({

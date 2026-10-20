@@ -8,8 +8,9 @@ import { $t } from '#/locales';
 /** 配置用途：展示给操作员看的中文名 */
 const SCHEMA_KIND_LABEL: Record<string, string> = {
   entity: '普通列表',
-  template: '共用表头',
-  scene: '业务场景',
+  template: '公共列方案',
+  scene: '业务列表场景',
+  detail: '办理详情',
 };
 
 /** 业务场景码 → 通俗名称（未知码原样显示） */
@@ -95,31 +96,35 @@ export function useFormSchema(): VbenFormSchema[] {
       fieldName: 'title',
       label: '页面名称',
       rules: 'required',
-      componentProps: { placeholder: '如：小组律师审核（会出现在列表标题）' },
+      componentProps: { placeholder: '如：协议录入工作台 / 协议办理详情' },
     },
     {
       component: 'Select',
       fieldName: 'schemaKind',
-      label: '配置用途',
+      label: '页面用途',
       defaultValue: 'entity',
       rules: 'required',
       componentProps: {
         options: [
           {
+            label: '办理详情（组装模块与表单，供流程引用）',
+            value: 'detail',
+          },
+          {
             label: '普通列表（自己配表格列）',
             value: 'entity',
           },
           {
-            label: '共用表头（只定义列，给多个场景复用）',
+            label: '公共列方案（给多个列表场景复用）',
             value: 'template',
           },
           {
-            label: '业务场景（选按钮 + 看哪些数据，表头引用共用模板）',
+            label: '业务列表（配置列表与操作，引用独立详情）',
             value: 'scene',
           },
         ],
       },
-      help: '协议子菜单选「业务场景」。保存后还要在菜单管理里挂上，侧栏才会出现入口',
+      help: '办理详情可直接绑定流程，无需挂菜单；列表页面挂菜单后访问。已有配置保留原用途',
     },
     {
       component: 'Select',
@@ -140,7 +145,7 @@ export function useFormSchema(): VbenFormSchema[] {
     {
       component: 'ApiSelect',
       fieldName: 'columnTemplateId',
-      label: '共用表头',
+      label: '公共列方案',
       dependencies: {
         show: (values) => values.schemaKind === 'scene',
         triggerFields: ['schemaKind'],
@@ -204,6 +209,7 @@ export function useColumns(
   onActionClick: OnActionClickFn<PageSchemaApi.PageSchema>,
   /** 配置编号 → 已挂菜单名称 */
   menuTitleOf?: (schemaId: string) => string,
+  detailTitleOf?: (schemaId: string) => string,
 ): VxeTableGridColumns {
   return [
     { field: 'id', title: '配置编号', width: 150 },
@@ -217,8 +223,22 @@ export function useColumns(
     {
       field: 'schemaKind',
       title: '配置用途',
-      width: 110,
-      formatter: ({ cellValue }) => formatSchemaKindLabel(cellValue),
+      width: 155,
+      formatter: ({ cellValue, row }) =>
+        cellValue === 'scene' && !row.detailSchemaId
+          ? '业务列表 · 兼容配置'
+          : formatSchemaKindLabel(cellValue),
+    },
+    {
+      field: 'linkedDetailLabel',
+      title: '关联详情',
+      minWidth: 200,
+      formatter: ({ row }) =>
+        row.schemaKind === 'scene'
+          ? row.detailSchemaId
+            ? detailTitleOf?.(row.detailSchemaId) || row.detailSchemaId
+            : '内嵌详情（兼容配置）'
+          : '—',
     },
     {
       field: 'scene',
@@ -253,9 +273,12 @@ export function useColumns(
     {
       // 勿用 field: 'columns'，会覆盖行数据里的 columns 数组
       field: 'visibleColumnCount',
-      title: '表格列',
+      title: '页面内容',
       minWidth: 140,
       formatter: ({ row }) => {
+        if (row.schemaKind === 'detail') {
+          return `启用 ${(row.modules || []).filter((m: { enabled: boolean }) => m.enabled).length} 个详情模块`;
+        }
         if (row.schemaKind === 'scene' && row.columnTemplateId) {
           const tpl =
             TEMPLATE_LABEL[row.columnTemplateId] || row.columnTemplateId;
@@ -279,9 +302,9 @@ export function useColumns(
     { field: 'remark', title: '说明', minWidth: 160 },
     {
       field: 'boundMenus',
-      title: '已挂菜单',
+      title: '菜单引用',
       minWidth: 140,
-      formatter: ({ row }) => menuTitleOf?.(String(row.id)) || '未使用',
+      formatter: ({ row }) => menuTitleOf?.(String(row.id)) || '未挂菜单',
     },
     {
       align: 'center',
@@ -290,14 +313,15 @@ export function useColumns(
         name: 'CellOperation',
         options: [
           { code: 'edit', text: '去配置' },
+          { code: 'usage', text: '使用位置' },
           { code: 'history', text: '历史' },
-          'delete',
+          { code: 'remove', text: '删除', type: 'danger' },
         ],
       },
       field: 'operation',
       fixed: 'right',
       title: '操作',
-      width: 200,
+      width: 280,
     },
   ];
 }

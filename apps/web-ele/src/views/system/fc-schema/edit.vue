@@ -11,10 +11,18 @@ import { useRoute, useRouter } from 'vue-router';
 import { Page } from '@vben/common-ui';
 import { preferences } from '@vben/preferences';
 
-import { ElButton, ElInput, ElMessage, ElOption, ElSelect } from 'element-plus';
+import {
+  ElAlert,
+  ElButton,
+  ElInput,
+  ElMessage,
+  ElOption,
+  ElSelect,
+} from 'element-plus';
 
 import { createFcSchema, getFcSchema, updateFcSchema } from '#/api';
 
+import { workflowFormCapabilityIssues } from '../../../../../shared/workflow-form-schema';
 import {
   buildDefaultCustomFormFcRule,
   buildDefaultCustomTableFcRule,
@@ -41,6 +49,10 @@ const saving = ref(false);
 const iframeReady = ref(false);
 /** 待灌入 rule 的 JSON 字符串（可 structuredClone） */
 const pendingRuleJson = ref('[]');
+const previewRules = ref<Record<string, any>[]>([]);
+const capabilityIssues = computed(() =>
+  workflowFormCapabilityIssues(previewRules.value),
+);
 const iframeRef = ref<HTMLIFrameElement | null>(null);
 
 const embedSrc = `${import.meta.env.BASE_URL}fc-designer-embed.html`;
@@ -229,7 +241,20 @@ function onToolbarSave() {
  */
 function onMessage(event: MessageEvent) {
   const data = event.data;
-  if (!data || data.source !== 'fc-designer-embed') return;
+  if (
+    event.source !== iframeRef.value?.contentWindow ||
+    !data ||
+    data.source !== 'fc-designer-embed'
+  )
+    return;
+  if (data.type === 'fc-preview-rule') {
+    try {
+      previewRules.value = JSON.parse(data.ruleJson);
+    } catch {
+      /* Wait for a valid designer snapshot. */
+    }
+    return;
+  }
 
   if (data.type === 'fc-ready') {
     iframeReady.value = true;
@@ -314,6 +339,17 @@ onUnmounted(() => {
           保存模板
         </ElButton>
       </header>
+      <ElAlert
+        v-if="usage === 'workflowSupplement'"
+        :closable="false"
+        :type="capabilityIssues.length ? 'warning' : 'info'"
+        title="流程节点表单能力提示"
+        :description="
+          capabilityIssues.length
+            ? `${capabilityIssues.join('；')}。模板可保存，流程发布前须调整。`
+            : '支持输入、数字、日期、单时间、静态单选、开关、静态穿梭框和明细表。字段权限及发布检查仍会生效。'
+        "
+      />
       <iframe
         ref="iframeRef"
         class="fc-edit-page__frame"

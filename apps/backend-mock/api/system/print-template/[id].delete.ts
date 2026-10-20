@@ -1,4 +1,4 @@
-import { eventHandler, getRouterParam } from 'h3';
+import { eventHandler, getRouterParam, setResponseStatus } from 'h3';
 import { removePrintTemplate } from '~/utils/mock-print-template';
 import { useResponseError, useResponseSuccess } from '~/utils/response';
 import { assertSystemAccess, SYSTEM_AUTH } from '~/utils/system-api-auth';
@@ -11,9 +11,8 @@ export default eventHandler(async (event) => {
   const id = getRouterParam(event, 'id') || '';
   const ok = removePrintTemplate(id);
   if (!ok) {
-    return useResponseError(event, '模板不存在或为内置模板不可删', {
-      statusCode: 400,
-    });
+    setResponseStatus(event, 400);
+    return useResponseError('模板不存在或为内置模板不可删');
   }
   return useResponseSuccess(true);
 });

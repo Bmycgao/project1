@@ -69,4 +69,33 @@ describe('详情视图配置', () => {
       ['houses', 'content', 12],
     ]);
   });
+  it('自定义模块逐项授权，内置模块权限不能放行其他模块', () => {
+    const mounts = [
+      ...buildAgreeModuleMounts(),
+      {
+        key: 'custom_form_assessment',
+        enabled: true,
+        label: '评估信息',
+        widgetKind: 'form' as const,
+      },
+      {
+        key: 'custom_form_utilities',
+        enabled: true,
+        label: '水电费',
+        widgetKind: 'form' as const,
+        authCode: 'Agree:Module:custom', // 旧页面配置
+      },
+    ];
+    const builtinOnly = resolveAgreeModulesForPage(mounts, [
+      'Agree:Module:basic',
+    ]);
+    expect(builtinOnly.map((item) => item.key)).toEqual(['basic']);
+    const oneCustom = resolveAgreeModulesForPage(mounts, [
+      'Agree:Module:custom_form_utilities',
+    ]);
+    expect(oneCustom.map((item) => item.key)).toEqual([
+      'custom_form_utilities',
+    ]);
+    expect(oneCustom[0]?.authCode).toBe('Agree:Module:custom_form_utilities');
+  });
 });

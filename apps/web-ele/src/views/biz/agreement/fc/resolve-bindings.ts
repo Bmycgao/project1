@@ -50,6 +50,7 @@ export async function resolveFcRulesFromBindings(
   bindings: FcBindingsMap | undefined,
   modules: AgreeModuleMount[],
   legacyFcRules?: FcRuleMap,
+  options: { strict?: boolean } = {},
 ): Promise<FcRuleMap> {
   const mergedBindings: FcBindingsMap = {
     ...DEFAULT_FC_BINDINGS,
@@ -77,6 +78,25 @@ export async function resolveFcRulesFromBindings(
   for (const m of modules) {
     const id = mergedBindings[m.key];
     const schema = id ? schemaMap.get(id) : undefined;
+    if (options.strict && m.enabled) {
+      const kind =
+        m.widgetKind ||
+        (['compensation', 'houses', 'rewards'].includes(m.key) ||
+        String(m.key).startsWith('custom_table_')
+          ? 'table'
+          : 'form');
+      if (
+        !schema ||
+        schema.status !== 1 ||
+        schema.usage === 'workflowSupplement' ||
+        schema.kind !== kind ||
+        !isFcRule(schema.rule) ||
+        schema.rule.length === 0
+      )
+        throw new Error(
+          `详情模块「${m.label || m.key}」的模板不存在、已停用或类型不匹配`,
+        );
+    }
     // 场景里选了模板，优先用模板 rule（自定义「77」绑定「新建表格」）
     if (schema && isFcRule(schema.rule)) {
       map[m.key] = cloneFcRule(schema.rule);

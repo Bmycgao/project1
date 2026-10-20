@@ -667,12 +667,6 @@ function headerIsSelected(start: number | undefined, end: number) {
     end <= headerRange.value.end
   );
 }
-function selectExactHeaderRange() {
-  selectedGroupPosition.value = null;
-  headerSelectionActive.value = true;
-  headerSelectionPending.value = false;
-  headerMergeTitle.value = selectedHeaderMerge.value?.title || '';
-}
 
 function selectHeaderRange(start: number, end: number, event: MouseEvent) {
   selectedGroupPosition.value = null;
@@ -796,7 +790,7 @@ function applyHeaderMerge() {
         ? '表头标题已更新'
         : '已合并为分组表头，下面的数据列保持独立',
     );
-  } catch (error: any) {
+  } catch {
     try {
       const nextColumns = mergeTableHeaders(
         el.options.columns,
@@ -808,7 +802,7 @@ function applyHeaderMerge() {
       headerSelectionPending.value = false;
       ElMessage.success('表头已合并，下面的数据列保持独立');
     } catch (error: any) {
-      ElMessage.warning(error?.message || error?.message || '表头合并失败');
+      ElMessage.warning(error?.message || '表头合并失败');
     }
   }
 }
@@ -939,7 +933,6 @@ const visibleDisplayMode = ref<VisibleDisplayMode>('always');
 const visibleField = ref('');
 const visibleOperator = ref<VisibleOperator>('truthy');
 const visibleValue = ref('');
-const visibleValueInputRef = ref<null | { focus?: () => void }>(null);
 const VISIBLE_OPERATORS: Array<{
   label: string;
   needsValue?: boolean;
@@ -3775,7 +3768,6 @@ function elementTypeLabel(el: PrintElementRef) {
                   </ElSelect>
                   <ElInput
                     v-if="visibleOperatorNeedsValue"
-                    ref="visibleValueInputRef"
                     v-model="visibleValue"
                     placeholder="本项目比较值，如 0 或 已签约"
                     @keyup.enter="applySimpleVisibleRule"

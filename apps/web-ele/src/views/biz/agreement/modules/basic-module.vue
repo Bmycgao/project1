@@ -26,6 +26,7 @@ import {
   ElTableColumn,
 } from 'element-plus';
 
+import { appendAgreementStatusOptions } from '../../../../../../shared/agreement-demo-status';
 import { useAgreeFieldAccess } from '../access/use-field-access';
 import { cloneJson } from '../clone';
 import FcRuntime from '../components/fc-runtime.vue';
@@ -38,6 +39,7 @@ import {
   resolveEnabledFields,
   resolveEnabledSections,
 } from '../config/module-inner-config';
+import { withCurrentAgreementStatus } from '../fc/status-display';
 import { isFcRule } from '../fc/types';
 
 const props = defineProps<{
@@ -46,6 +48,9 @@ const props = defineProps<{
   editable?: boolean;
 }>();
 const emit = defineEmits<{ dirty: [] }>();
+const numberEditable = computed(
+  () => props.detail?.agreementNoEditable === true,
+);
 
 const {
   fieldVisible,
@@ -67,12 +72,28 @@ const injectedBasicInner = inject<Ref<BasicModuleInnerConfig | null>>(
 const injectedFcRules = inject<Ref<FcRuleMap>>('agreeFcRules', ref({}));
 
 /** 是否用完整 FormCreate 渲染主表单 */
-const fcRule = computed(() => injectedFcRules.value?.basic);
+const fcRule = computed(() => {
+  const rule = injectedFcRules.value?.basic;
+  return isFcRule(rule)
+    ? withCurrentAgreementStatus(rule, form.statusValue)
+    : rule;
+});
 const useFcRuntime = computed(() => isFcRule(fcRule.value));
 const fcRuntimeRef = ref<InstanceType<typeof FcRuntime> | null>(null);
 
 const innerConfig = computed(() => {
   const normalized = normalizeBasicModuleInner(injectedBasicInner.value);
+  // 兼容旧页面配置及自定义状态；只补当前值，不扩展管理员自定义的选项范围。
+  for (const section of normalized.sections) {
+    if (isCustomBasicSection(section)) continue;
+    for (const field of section.fields) {
+      if (field.key === 'statusValue' && Array.isArray(field.options)) {
+        field.options = appendAgreementStatusOptions(field.options, [
+          form.statusValue,
+        ]);
+      }
+    }
+  }
   const customSecs = normalized.sections.filter((s) => isCustomBasicSection(s));
   if (useFcRuntime.value) {
     return { sections: customSecs };
@@ -151,7 +172,7 @@ function emptyBasic(val: AgreementDetail | null): BasicInfo {
   const b = val.basic;
   return {
     ...b,
-    agreementNo: b?.agreementNo || val.agreementNo || '',
+    agreementNo: val.agreementNo || '',
     agreementName: b?.agreementName || '',
     department: b?.department || '',
     acquirer: b?.acquirer || '',
@@ -172,6 +193,7 @@ function markDirty() {
 /** FormCreate 回填写入协议头 */
 function onFcModelUpdate(val: Record<string, unknown>) {
   Object.assign(form, val);
+  if (!numberEditable.value) form.agreementNo = props.detail?.agreementNo || '';
   markDirty();
 }
 
@@ -185,6 +207,12 @@ function isFieldShown(field: ModuleInnerFieldItem) {
 
 function isFieldEditable(field: ModuleInnerFieldItem) {
   if (!isDetailPageEditable()) return false;
+  if (field.key === 'agreementNo')
+    return (
+      numberEditable.value &&
+      fieldEditable('agreementNo') &&
+      (!field.accessField || fieldEditable(field.accessField))
+    );
   if (field.accessField) return fieldEditable(field.accessField);
   return true;
 }
@@ -259,6 +287,9 @@ async function getValues() {
     useFcRuntime.value && fcRuntimeRef.value
       ? (cloneJson(fcRuntimeRef.value.getValues()) as BasicInfo)
       : cloneJson(form);
+  basic.agreementNo = numberEditable.value
+    ? String(basic.agreementNo ?? '').trim()
+    : props.detail?.agreementNo || '';
   return {
     basic,
     agreementNo: basic.agreementNo,
@@ -276,11 +307,19 @@ defineExpose({ validate, getValues, isDirty });
 
 <template>
   <div>
+    <p v-if="isDetailPageEditable()" class="mb-3 text-xs text-gray-500">
+      {{
+        numberEditable
+          ? '草稿阶段可修改协议编号，编号不能重复；提交后将锁定。'
+          : '协议编号已锁定，提交后的协议不支持直接改号。'
+      }}
+    </p>
     <FcRuntime
       v-if="useFcRuntime && fcRule"
       ref="fcRuntimeRef"
       :rule="fcRule"
       :editable="isDetailPageEditable()"
+      :agreement-no-editable="numberEditable"
       :model-value="model"
       @change="markDirty"
       @update:model-value="onFcModelUpdate"

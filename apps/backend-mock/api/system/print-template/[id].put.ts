@@ -1,4 +1,4 @@
-import { eventHandler, getRouterParam, readBody } from 'h3';
+import { eventHandler, getRouterParam, readBody, setResponseStatus } from 'h3';
 import { updatePrintTemplate } from '~/utils/mock-print-template';
 import { useResponseError, useResponseSuccess } from '~/utils/response';
 import { assertSystemAccess, SYSTEM_AUTH } from '~/utils/system-api-auth';
@@ -13,12 +13,12 @@ export default eventHandler(async (event) => {
     const body = await readBody(event);
     const node = updatePrintTemplate(id, body || {});
     if (!node) {
-      return useResponseError(event, '打印模板不存在', { statusCode: 404 });
+      setResponseStatus(event, 404);
+      return useResponseError('打印模板不存在');
     }
     return useResponseSuccess(node);
   } catch (error: any) {
-    return useResponseError(event, error?.message || '更新失败', {
-      statusCode: 400,
-    });
+    setResponseStatus(event, 400);
+    return useResponseError(error?.message || '更新失败');
   }
 });

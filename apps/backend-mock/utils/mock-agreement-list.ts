@@ -3,6 +3,9 @@
  * 优先：页面配置里该 scene 的 statusIn；其次：内置 SCENE_STATUS_MAP
  * 列表写操作会改本数组，保证提交/删除后列表与详情状态一致
  */
+import { randomUUID } from 'node:crypto';
+
+import { AgreementStore } from './agreement-store';
 import { pageSchemaStore } from './mock-page-schema';
 
 export interface AgreeListRow {
@@ -16,8 +19,8 @@ export interface AgreeListRow {
   batchGroup: string;
 }
 
-/** 全量协议池（可变，供列表写操作同步） */
-export const AGREE_ALL_ROWS: AgreeListRow[] = [
+/** 仅在尚无存档时使用的内置演示数据。 */
+const DEFAULT_AGREE_ROWS: AgreeListRow[] = [
   {
     id: 'A001',
     agreementNo: 'LL-4-015',
@@ -89,6 +92,21 @@ export const AGREE_ALL_ROWS: AgreeListRow[] = [
     batchGroup: '-',
   },
 ];
+
+/** Only the bundled records may use sample detail data. */
+const demoAgreementNos = new Set(
+  DEFAULT_AGREE_ROWS.map((row) => row.agreementNo),
+);
+
+export const agreementStore = new AgreementStore(DEFAULT_AGREE_ROWS);
+export const AGREE_ALL_ROWS = agreementStore.rows;
+
+export function isDemoAgreementNo(agreementNo: string) {
+  const row = findAgreeListRow(agreementNo);
+  return row
+    ? DEFAULT_AGREE_ROWS.some((seed) => seed.id === row.id)
+    : demoAgreementNos.has(agreementNo);
+}
 
 /** 内置场景 → 状态白名单（页面配置未配 statusIn 时使用） */
 const SCENE_STATUS_MAP: Record<string, string[] | undefined> = {
@@ -167,7 +185,32 @@ export function queryAgreeListByScene(options: {
  * @param agreementNo 协议编号
  */
 export function findAgreeListRow(agreementNo: string) {
-  return AGREE_ALL_ROWS.find((r) => r.agreementNo === String(agreementNo));
+  // oxlint-disable-next-line unicorn/no-array-callback-reference -- This repository lookup accepts a record reference, not a callback.
+  return agreementStore.find(agreementNo);
+}
+
+/** 发起流程时持久化锁定；实例写入失败时可撤销本次新加的锁。 */
+export function lockAgreementNumber(reference: string) {
+  const row = findAgreeListRow(reference);
+  if (!row) throw new Error('协议不存在或已删除');
+  const added = agreementStore.update((draft) => {
+    const number = !draft.lockedIds.includes(row.id);
+    const body = !draft.workflowLockedIds?.includes(row.id);
+    if (number) draft.lockedIds.push(row.id);
+    if (body) (draft.workflowLockedIds ??= []).push(row.id);
+    return { number, body };
+  });
+  return () => {
+    if (added.number || added.body)
+      agreementStore.update((draft) => {
+        if (added.number)
+          draft.lockedIds = draft.lockedIds.filter((id) => id !== row.id);
+        if (added.body)
+          draft.workflowLockedIds = draft.workflowLockedIds?.filter(
+            (id) => id !== row.id,
+          );
+      });
+  };
 }
 
 /**
@@ -179,15 +222,35 @@ export function patchAgreeListRow(
   agreementNo: string,
   patch: Partial<AgreeListRow>,
 ) {
-  const row = findAgreeListRow(agreementNo);
-  if (!row) return null;
-  // 忽略 undefined，避免误清空列表字段
-  for (const [k, v] of Object.entries(patch)) {
-    if (v !== undefined) {
-      (row as Record<string, any>)[k] = v;
+  const original = findAgreeListRow(agreementNo);
+  if (!original) return null;
+  return agreementStore.update((draft) => {
+    const row = draft.rows.find((item) => item.id === original.id);
+    if (!row) throw new Error('协议不存在或已删除，请刷新列表');
+    // 标识不可修改；忽略 undefined，允许明确清空字段。
+    const { id: _id, agreementNo: _number, ...fields } = patch;
+    Object.assign(
+      row,
+      Object.fromEntries(
+        Object.entries(fields).filter(([, value]) => value !== undefined),
+      ),
+    );
+    if (
+      (row.statusValue !== '草稿' || row.isSigned === '已签约') &&
+      !draft.lockedIds.includes(row.id)
+    )
+      draft.lockedIds.push(row.id);
+    const detail = draft.details[row.id];
+    if (detail) {
+      detail.statusValue = row.statusValue;
+      detail.basic.statusValue = row.statusValue;
+      detail.signType = row.signType;
+      detail.isSigned = row.isSigned;
+      detail.basic.compensatee = row.compensatee;
+      detail.signing.houseAddress = row.houseAddress;
     }
-  }
-  return { ...row };
+    return row;
+  });
 }
 
 /**
@@ -195,19 +258,27 @@ export function patchAgreeListRow(
  * @param agreementNos 协议编号列表
  */
 export function removeAgreeListRows(agreementNos: string[]) {
-  const set = new Set(agreementNos.map(String));
-  let removed = 0;
-  for (let i = AGREE_ALL_ROWS.length - 1; i >= 0; i--) {
-    if (set.has(AGREE_ALL_ROWS[i]!.agreementNo)) {
-      AGREE_ALL_ROWS.splice(i, 1);
-      removed += 1;
+  const set = new Set(
+    agreementNos
+      .map((ref) => findAgreeListRow(ref)?.id)
+      .filter((id): id is string => !!id),
+  );
+  if (set.size === 0) return 0;
+  return agreementStore.update((draft) => {
+    const before = draft.rows.length;
+    for (const row of draft.rows.filter((item) => set.has(item.id))) {
+      Object.defineProperty(draft.aliases, row.agreementNo, {
+        value: row.id,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
     }
-  }
-  return removed;
+    draft.rows = draft.rows.filter((row) => !set.has(row.id));
+    for (const no of set) Reflect.deleteProperty(draft.details, no);
+    return before - draft.rows.length;
+  });
 }
-
-/** 避免同一毫秒内多次建行撞号 */
-let newAgreeSeq = 0;
 
 /**
  * 新建草稿协议行
@@ -219,19 +290,32 @@ export function createAgreeListRow(
     houseAddress?: string;
   } = {},
 ) {
-  const seq = String(AGREE_ALL_ROWS.length + 1).padStart(3, '0');
-  newAgreeSeq += 1;
-  const agreementNo = `LL-NEW-${Date.now()}-${seq}-${newAgreeSeq}`;
-  const row: AgreeListRow = {
-    id: `A-NEW-${seq}`,
-    agreementNo,
-    compensatee: input.compensatee || '新建被补偿人',
-    houseAddress: input.houseAddress || '待填写地址',
-    statusValue: '草稿',
-    signType: '正常签约',
-    isSigned: '未签约',
-    batchGroup: '-',
-  };
-  AGREE_ALL_ROWS.unshift(row);
-  return { ...row };
+  return agreementStore.update((draft) => {
+    draft.sequence++;
+    const uniqueId = randomUUID();
+    const year = String(new Date().getFullYear());
+    let next = draft.yearSequences[year] || 0;
+    let agreementNo: string;
+    do {
+      agreementNo = `LL-${year}-${String(++next).padStart(4, '0')}`;
+    } while (
+      draft.rows.some(
+        (row) => row.agreementNo === agreementNo || row.id === agreementNo,
+      ) ||
+      Object.hasOwn(draft.aliases, agreementNo)
+    );
+    draft.yearSequences[year] = next;
+    const row: AgreeListRow = {
+      id: `A-NEW-${uniqueId}`,
+      agreementNo,
+      compensatee: input.compensatee || '',
+      houseAddress: input.houseAddress || '',
+      statusValue: '草稿',
+      signType: '',
+      isSigned: '未签约',
+      batchGroup: '',
+    };
+    draft.rows.unshift(row);
+    return row;
+  });
 }

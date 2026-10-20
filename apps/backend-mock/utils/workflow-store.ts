@@ -26,7 +26,7 @@ const FILE = 'workflow.json';
 const CHANGE_LOG_LIMIT = 40;
 
 /**
- * 把本次按钮、时限、数据动作、字段权限差异追加到版本日志
+ * 把本次角色、按钮、时限、数据动作、字段权限差异追加到版本日志
  * @param current 该版本已有日志
  * @param before 对比基准
  * @param after 保存或发布后的设计

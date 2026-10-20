@@ -18,6 +18,8 @@ const LAYOUT_TYPES = new Set([
 
 /** 运行时访问上下文 */
 export interface FcRuntimeAccessCtx {
+  /** 编号可编辑性由服务端按生命周期判定；流程表单不传时默认锁定。 */
+  agreementNoEditable?: boolean;
   /** 详情是否处于编辑态 */
   pageEditable: boolean;
   /** 字段是否可见（逻辑名或 field key） */
@@ -91,10 +93,18 @@ function applyNodeRuntimeProps(node: FcRule, ctx: FcRuntimeAccessCtx) {
   }
 
   const props = { ...node.props };
+  const isAgreementNo =
+    field === 'agreementNo' || field === 'basic.agreementNo';
+  // 兼容曾把编号固定为 readonly/disabled 的旧模板。
+  if (isAgreementNo && ctx.agreementNoEditable) {
+    props.readonly = false;
+    props.disabled = false;
+  }
   const templateReadonly = props.readonly === true;
   const templateDisabled = props.disabled === true;
 
   const fieldCanEdit =
+    (!isAgreementNo || ctx.agreementNoEditable === true) &&
     ctx.pageEditable &&
     ctx.fieldEditable(accessKey) &&
     (accessKey === field ? true : ctx.fieldEditable(field));

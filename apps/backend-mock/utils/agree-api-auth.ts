@@ -4,14 +4,11 @@
 import type { EventHandlerRequest, H3Event } from 'h3';
 
 import { verifyAccessToken } from './jwt-utils';
-import {
-  findRbacUserByUsername,
-  resolveAccessCodes,
-} from './rbac-store';
+import { findRbacUserByUsername, resolveAccessCodes } from './rbac-store';
 import { forbiddenResponse, unAuthorizedResponse } from './response';
 
 /** 动作码 → 权限码（与前端 getAgreeActionAuthCode 一致） */
-export const AGREE_ACTION_AUTH: Record<string, string> = {
+export const AGREE_ACTION_AUTH = {
   add: 'Agree:add',
   delete: 'Agree:delete',
   edit: 'Agree:edit',
@@ -19,7 +16,7 @@ export const AGREE_ACTION_AUTH: Record<string, string> = {
   approve: 'Agree:approve',
   reject: 'Agree:reject',
   export: 'Agree:export',
-};
+} as const satisfies Record<string, string>;
 
 /** 详情区域 → 权限码 */
 export const AGREE_MODULE_AUTH: Record<string, string> = {
@@ -37,10 +34,10 @@ export const AGREE_MODULE_AUTH: Record<string, string> = {
  */
 export function matchAgreeAccessCodes(
   accessCodes: string[] | undefined,
-  need: string[] | string,
+  need: string | string[],
 ) {
   const needList = Array.isArray(need) ? need : [need];
-  if (!needList.length) return true;
+  if (needList.length === 0) return true;
   const set = new Set(accessCodes || []);
   if (set.has('Agree:*')) return true;
   if (
@@ -66,7 +63,7 @@ export function matchAgreeAccessCodes(
  */
 export function assertAgreeAccess(
   event: H3Event<EventHandlerRequest>,
-  need: string[] | string,
+  need: string | string[],
 ) {
   const userinfo = verifyAccessToken(event);
   if (!userinfo) {

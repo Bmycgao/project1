@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>节点表单组件验收</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import { createApp } from 'vue';
+      import { unmountGlobalLoading } from '@vben/utils';
+      import App from './node-form-app.vue';
+      import { setupFormCreate } from '../../src/plugins/form-create';
+      const app = createApp(App);
+      setupFormCreate(app);
+      app.mount('#app');
+      unmountGlobalLoading();
+    </script>
+    <style>
+      body {
+        font-family: system-ui;
+        background: #f5f7fb;
+        color: #253047;
+      }
+      main {
+        max-width: 900px;
+        margin: 32px auto;
+        padding: 32px;
+        background: white;
+        border-radius: 12px;
+      }
+      button {
+        padding: 8px 14px;
+        margin-top: 16px;
+        cursor: pointer;
+      }
+      pre {
+        padding: 16px;
+        background: #f5f7fb;
+      }
+    </style>
+  </body>
+</html>

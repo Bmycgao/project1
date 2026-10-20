@@ -1,10 +1,10 @@
 /** 内置详情模块 */
 export type BuiltinAgreeModuleKey =
   | 'basic'
-  | 'houses'
   | 'compensation'
-  | 'rewards'
-  | 'population';
+  | 'houses'
+  | 'population'
+  | 'rewards';
 
 /** 协议详情模块标识（含配置台新建的 custom_form_* / custom_table_*） */
 export type AgreementModuleKey = BuiltinAgreeModuleKey | (string & {});
@@ -37,9 +37,9 @@ export interface HouseRow {
   certNo: string;
   propertyType: string;
   /** 建筑面积 */
-  buildArea?: string | number;
+  buildArea?: number | string;
   /** 征收面积 */
-  expropriatedArea?: string | number;
+  expropriatedArea?: number | string;
   /** 房屋类型 */
   houseType?: string;
   /** 结构 */
@@ -49,7 +49,7 @@ export interface HouseRow {
   /** 楼层 */
   floor?: string;
   /** 评估价值 */
-  evalValue?: string | number;
+  evalValue?: number | string;
 }
 
 /** 基础信息表单（协议头 KV，对标详情页置顶表单） */
@@ -64,7 +64,7 @@ export interface BasicInfo {
   /** 被征收人 */
   compensatee: string;
   /** 协议金额 */
-  amount: string | number;
+  amount: number | string;
   /** 签约日期 */
   signDate: string;
   /** 状态展示值 */
@@ -81,7 +81,7 @@ export interface PopulationInfo {
   headName: string;
   idNo: string;
   /** 家庭人口 */
-  familySize: string | number;
+  familySize: number | string;
   phone: string;
   /** 户籍地址 */
   hukouAddress: string;
@@ -94,9 +94,9 @@ export interface CompensationRow {
   id: string;
   name: string;
   calcType: string;
-  quantity: string | number;
-  unitPrice: string | number;
-  amount: string | number;
+  quantity: number | string;
+  unitPrice: number | string;
+  amount: number | string;
   remark: string;
   [key: string]: unknown;
 }
@@ -106,7 +106,7 @@ export interface RewardRow {
   id: string;
   name: string;
   condition: string;
-  amount: string | number;
+  amount: number | string;
   remark: string;
   [key: string]: unknown;
 }
@@ -124,7 +124,7 @@ export interface SigningInfo {
   decorateEval: string;
   hasMortgage: string;
   mortgagee: string;
-  debtAmount: string | number;
+  debtAmount: number | string;
   hasSeal: string;
   sealCourt: string;
   /** 签约日期（展示格式由 fieldRules.displayFormat 控制） */
@@ -152,15 +152,19 @@ export interface MaterialRow {
 export interface CompensationInfo {
   settleType: string;
   settleAddress: string;
-  amount: string | number;
+  amount: number | string;
   remark: string;
 }
 
 /** 详情整体 */
 export interface AgreementDetail {
+  /** 服务端判定的编号编辑权限，内部 ID 始终不可修改。 */
+  agreementNoEditable?: boolean;
+  entryEditable?: boolean;
+  entryReadonlyReason?: string;
   id: string;
   agreementNo: string;
-  status: 'draft' | 'review' | 'submitted';
+  status: 'approved' | 'draft' | 'review' | 'submitted';
   statusValue: string;
   signType: string;
   isSigned: string;

@@ -32,7 +32,7 @@ async function getAgreementList(params: AgreementListQuery) {
 
 /**
  * 获取协议详情
- * @param agreementNo 协议编号
+ * @param agreementNo 内部 ID（兼容旧编号引用）
  * @param extra 列表带入的附加字段（首次初始化用）
  */
 async function getAgreementDetail(
@@ -40,13 +40,13 @@ async function getAgreementDetail(
   extra?: Recordable<any>,
 ) {
   return requestClient.get<AgreementDetail>('/biz/agreement/detail', {
-    params: { agreementNo, ...extra },
+    params: { ...extra, id: extra?.id || agreementNo },
   });
 }
 
 /**
  * 保存单个模块
- * @param agreementNo 协议编号
+ * @param agreementNo 内部 ID（兼容旧编号引用）
  * @param module 模块标识
  * @param data 模块 getValues 结果
  */
@@ -56,7 +56,7 @@ async function saveAgreementModule(
   data: Recordable<any>,
 ) {
   return requestClient.put<AgreementDetail>(`/biz/agreement/module/${module}`, {
-    agreementNo,
+    id: agreementNo,
     data,
   });
 }
@@ -78,46 +78,46 @@ async function submitAgreement(payload: Recordable<any>) {
 }
 
 /**
- * 列表批量提交复核（只需协议编号）
- * @param agreementNos 协议编号列表
+ * 列表批量提交复核（按内部 ID 定位）
+ * @param agreementIds 内部 ID 列表
  */
-async function submitAgreementBatch(agreementNos: string[]) {
+async function submitAgreementBatch(agreementIds: string[]) {
   return requestClient.post<{ items: AgreementDetail[]; total: number }>(
     '/biz/agreement/batch-submit',
-    { agreementNos },
+    { agreementIds },
   );
 }
 
 /**
  * 批量删除协议
- * @param agreementNos 协议编号列表
+ * @param agreementIds 内部 ID 列表
  */
-async function deleteAgreements(agreementNos: string[]) {
+async function deleteAgreements(agreementIds: string[]) {
   return requestClient.post<{ removed: number }>('/biz/agreement/delete', {
-    agreementNos,
+    agreementIds,
   });
 }
 
 /**
  * 列表审核通过
- * @param agreementNos 协议编号列表
+ * @param agreementIds 内部 ID 列表
  */
-async function approveAgreements(agreementNos: string[]) {
+async function approveAgreements(agreementIds: string[]) {
   return requestClient.post<{ items: AgreementDetail[]; total: number }>(
     '/biz/agreement/approve',
-    { agreementNos },
+    { agreementIds },
   );
 }
 
 /**
  * 列表驳回
- * @param agreementNos 协议编号列表
+ * @param agreementIds 内部 ID 列表
  * @param remark 驳回原因
  */
-async function rejectAgreements(agreementNos: string[], remark?: string) {
+async function rejectAgreements(agreementIds: string[], remark?: string) {
   return requestClient.post<{ items: AgreementDetail[]; total: number }>(
     '/biz/agreement/reject',
-    { agreementNos, remark },
+    { agreementIds, remark },
   );
 }
 

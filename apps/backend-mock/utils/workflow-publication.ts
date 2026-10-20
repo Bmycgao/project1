@@ -1,7 +1,12 @@
-import type { WorkflowNode } from '../../shared/workflow';
+import type { WorkflowDocument, WorkflowNode } from '../../shared/workflow';
 import type { RuntimeActor, RuntimeForm } from '../../shared/workflow-runtime';
 
-import { validateWorkflow } from '../../shared/workflow';
+import { validateWorkflow, workflowButtonAction } from '../../shared/workflow';
+import {
+  mayHandleWorkflowNode,
+  mayStartWorkflow,
+  mayUseWorkflowButton,
+} from '../../shared/workflow-access';
 import { evaluateCondition } from '../../shared/workflow-expression';
 import {
   applyWorkflowDataActions,
@@ -17,6 +22,24 @@ import {
   getWorkflow,
   publishWorkflow,
 } from './workflow-store';
+
+function inAssigneeRange(node: WorkflowNode, actor: RuntimeActor) {
+  switch (node.assignee.type) {
+    case 'departmentLeader': {
+      return leaderUserIdsOf(node.assignee.ids).includes(actor.id);
+    }
+    case 'role': {
+      return actor.roleIds.some((id) => node.assignee.ids.includes(id));
+    }
+    case 'user': {
+      return node.assignee.ids.includes(actor.id);
+    }
+    default: {
+      // 发起人/表单字段在发布时没有具体实例，只能在运行时求值。
+      return true;
+    }
+  }
+}
 
 /**
  * 发布时检查办理人/抄送人仍有效，且范围内有流程办理权限
@@ -59,14 +82,8 @@ function checkPeople(
   if (
     ['departmentLeader', 'role', 'user'].includes(node.assignee.type) &&
     !actors.some((a) => {
-      const inRange =
-        node.assignee.type === 'role'
-          ? a.roleIds.some((r) => node.assignee.ids.includes(r))
-          : node.assignee.type === 'departmentLeader'
-            ? leaderUserIdsOf(node.assignee.ids).includes(a.id)
-            : node.assignee.ids.includes(a.id);
       return (
-        inRange &&
+        inAssigneeRange(node, a) &&
         a.codes.some((c) =>
           ['System:Workflow:Manage', 'Workflow:Use'].includes(c),
         )
@@ -83,6 +100,7 @@ function checkPeople(
  * @param allowedFields 已冻结的非表格字段
  */
 function checkDataActions(
+  doc: WorkflowDocument,
   node: WorkflowNode,
   add: (message: string) => void,
   form: RuntimeForm | undefined,
@@ -108,7 +126,12 @@ function checkDataActions(
         add(`数据动作来源字段「${from}」必须是流程中真实存在的字段`);
       else if (from === field) add('数据动作来源不能与目标相同');
     }
-    if (action.when !== 'arrive' && !node.buttons.includes(action.when))
+    if (
+      action.when !== 'arrive' &&
+      !node.buttons.some(
+        (code) => workflowButtonAction(doc, code) === action.when,
+      )
+    )
       add('数据动作时机对应的按钮未配置');
     if (action.when === 'submit' && node.type !== 'task')
       add('提交时数据动作仅用于填报节点');
@@ -134,26 +157,68 @@ export function publicationCheck(id: string) {
     ),
     ...Object.values(frozen.forms).flatMap((form) => form.actionFields || []),
   ]);
+  const buttonFields = new Set([
+    ...WORKFLOW_FIELD_CATALOG.map((field) => field.key),
+    ...Object.values(frozen.forms).flatMap((form) =>
+      form.fields.map((field) => field.key),
+    ),
+    'actorId',
+    'initiatorId',
+    'instanceStatus',
+    'nodeCode',
+  ]);
+  for (const button of doc.buttonCatalog || []) {
+    for (const [kind, condition] of [
+      ['显示', button.visibleWhen],
+      ['启用', button.enabledWhen],
+    ] as const) {
+      if (!condition?.trim()) continue;
+      try {
+        evaluateCondition(condition, {}, true, buttonFields);
+      } catch (error) {
+        issues.push({
+          message: `按钮「${button.label}」${kind}条件：${(error as Error).message}`,
+        });
+      }
+    }
+  }
   if (doc.status !== 'draft')
     issues.push({ message: '此版本已发布，不能重复发布' });
   const actors = workflowActors();
+  if (
+    [...(doc.startRoleIds || []), ...(doc.startDeniedRoleIds || [])].some(
+      (id) => !roleStore.some((role) => role.id === id && role.status === 1),
+    )
+  )
+    issues.push({ message: '发起权限配置中存在失效角色' });
+  if (
+    (doc.startRoleIds?.length || doc.startDeniedRoleIds?.length) &&
+    !actors.some(
+      (actor) =>
+        mayStartWorkflow(doc, actor) &&
+        (actor.codes.includes('Workflow:Start') ||
+          actor.codes.includes('System:Workflow:Manage')),
+    )
+  )
+    issues.push({ message: '允许发起的角色中没有具备流程发起权限的有效用户' });
   for (const node of doc.nodes.filter((n) =>
     ['approve', 'task'].includes(n.type),
   )) {
     const add = (message: string) =>
       issues.push({ nodeId: node.id, message: `${node.name}：${message}` });
-    if (!node.buttons.includes(node.type === 'task' ? 'submit' : 'pass'))
+    const actions = new Set(
+      node.buttons.map((code) => workflowButtonAction(doc, code)),
+    );
+    if (node.buttons.some((code) => !workflowButtonAction(doc, code)))
+      add('节点绑定了未导入或已失效的按钮资源');
+    if (!actions.has(node.type === 'task' ? 'submit' : 'pass'))
       add('请配置提交或通过按钮，避免任务无法完成');
-    if (node.buttons.includes(node.type === 'task' ? 'pass' : 'submit'))
+    if (actions.has(node.type === 'task' ? 'pass' : 'submit'))
       add('填报节点使用提交，审批节点使用通过，请移除不匹配的按钮');
-    if (
-      node.buttons.some(
-        (b) => !['pass', 'recall', 'reject', 'save', 'submit'].includes(b),
-      )
-    )
-      add(
-        '当前运行层支持保存、提交、通过、驳回和撤回；请取消尚未接入的自定义操作',
-      );
+    if (actions.has('transfer') && !node.allowTransfer)
+      add('绑定转办按钮前请开启允许转办');
+    if (actions.has('recall') && !node.allowRecall)
+      add('绑定撤回按钮前请开启允许撤回');
     if (
       node.type === 'task' &&
       (node.approveMode === 'all' ||
@@ -174,6 +239,50 @@ export function publicationCheck(id: string) {
         add('比例会签须设置 1 到 100 的整数百分比');
     }
     checkPeople(node, add, actors);
+    const roleIds = [
+      ...(node.handleRoleIds || []),
+      ...(node.handleDeniedRoleIds || []),
+      ...Object.values(node.buttonRoleIds || {}).flat(),
+      ...Object.values(node.buttonDeniedRoleIds || {}).flat(),
+    ];
+    if (
+      roleIds.some(
+        (id) => !roleStore.some((role) => role.id === id && role.status === 1),
+      )
+    )
+      add('办理或按钮限制中存在失效角色');
+    if (
+      (node.handleRoleIds?.length || node.handleDeniedRoleIds?.length) &&
+      !actors.some(
+        (actor) =>
+          inAssigneeRange(node, actor) &&
+          mayHandleWorkflowNode(node, actor) &&
+          (actor.codes.includes('Workflow:Use') ||
+            actor.codes.includes('System:Workflow:Manage')),
+      )
+    )
+      add('本节点允许办理的角色中没有具备办理权限的有效用户');
+    const requiredAction = node.type === 'task' ? 'submit' : 'pass';
+    const requiredCodes = node.buttons.filter(
+      (code) => workflowButtonAction(doc, code) === requiredAction,
+    );
+    if (
+      requiredCodes.some(
+        (code) =>
+          node.buttonRoleIds?.[code]?.length ||
+          node.buttonDeniedRoleIds?.[code]?.length,
+      ) &&
+      !requiredCodes.some((code) =>
+        actors.some(
+          (actor) =>
+            inAssigneeRange(node, actor) &&
+            mayUseWorkflowButton(node, code, actor) &&
+            (actor.codes.includes('Workflow:Use') ||
+              actor.codes.includes('System:Workflow:Manage')),
+        ),
+      )
+    )
+      add('提交或通过按钮没有可操作的有效用户');
     for (const mode of Object.values(node.fieldAccess || {}))
       if (!['edit', 'hidden', 'readonly'].includes(mode))
         add('字段权限配置不合法');
@@ -183,7 +292,7 @@ export function publicationCheck(id: string) {
       node.sla.warnHours >= node.sla.durationHours
     )
       add('临期提醒应小于办理时限');
-    checkDataActions(node, add, frozen.forms[node.id], sourceFields);
+    checkDataActions(doc, node, add, frozen.forms[node.id], sourceFields);
   }
   for (const node of doc.nodes.filter((n) => n.type === 'cc')) {
     const add = (message: string) =>

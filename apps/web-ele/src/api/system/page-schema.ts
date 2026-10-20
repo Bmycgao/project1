@@ -1,6 +1,13 @@
 import type { Recordable } from '@vben/types';
 
+import type {
+  PageSchemaKind,
+  PageSchemaUsage,
+} from '../../../../shared/page-schema';
+
 import { requestClient } from '#/api/request';
+
+export type { PageSchemaUsage } from '../../../../shared/page-schema';
 
 /** 配置化列表 - 页面字段 Schema */
 export namespace PageSchemaApi {
@@ -44,9 +51,10 @@ export namespace PageSchemaApi {
     columns: Column[];
     queryFields: QueryField[];
     mockCount?: number;
-    /** entity | template | scene */
-    schemaKind?: 'entity' | 'scene' | 'template';
+    /** detail 为独立办理详情；scene 保留已有业务列表及详情配置。 */
+    schemaKind?: PageSchemaKind;
     columnTemplateId?: string;
+    detailSchemaId?: string;
     scene?: string;
     buttons?: {
       /** 差异化操作绑定 */
@@ -54,6 +62,7 @@ export namespace PageSchemaApi {
       code: string;
       group?: string;
       label: string;
+      plain?: boolean;
       type?: string;
     }[];
     /** 场景数据范围：允许的状态值。空数组表示不过滤 */
@@ -184,6 +193,17 @@ async function getPageSchema(id: string) {
   );
 }
 
+async function getPageSchemaUsage(id: string) {
+  return requestClient.get<PageSchemaUsage>(`/system/page-schema/${id}/usage`);
+}
+
+async function separatePageSchemaDetail(id: string) {
+  return requestClient.post<{
+    detail: PageSchemaApi.PageSchema;
+    list: PageSchemaApi.PageSchema;
+  }>(`/system/page-schema/${id}/separate-detail`);
+}
+
 /** 创建页面配置 */
 async function createPageSchema(data: Omit<PageSchemaApi.PageSchema, 'id'>) {
   return requestClient.post('/system/page-schema', data);
@@ -253,6 +273,8 @@ export {
   getPageSchema,
   getPageSchemaHistory,
   getPageSchemaList,
+  getPageSchemaUsage,
   rollbackPageSchema,
+  separatePageSchemaDetail,
   updatePageSchema,
 };

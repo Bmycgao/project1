@@ -3,10 +3,14 @@
  * 流程监控：管理员查看全部实例，并可换人 / 挂起 / 激活 / 终止 / 催办。
  */
 import type { WorkflowContext } from '../../../../../shared/workflow-runtime';
+
 import type { WorkflowInstanceRow } from '#/api/workflow-runtime';
+
 import { computed, onActivated, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
+
 import { Page } from '@vben/common-ui';
+
 import {
   ElButton,
   ElDialog,
@@ -24,16 +28,18 @@ import {
   ElTableColumn,
   ElTag,
 } from 'element-plus';
+
 import {
   getWorkflowContext,
   getWorkflowInstances,
   interveneWorkflow,
 } from '#/api/workflow-runtime';
+
 import { newId } from '../../../../../shared/workflow';
 import {
   ACTION_LABELS,
-  INSTANCE_STATUS_LABELS,
   formatRemain,
+  INSTANCE_STATUS_LABELS,
 } from '../../../../../shared/workflow-runtime';
 
 const router = useRouter();
@@ -48,7 +54,7 @@ const interveneOpen = ref(false);
 const intervening = ref(false);
 const context = ref<WorkflowContext>();
 const interveneAction = ref<
-  'reassign' | 'suspend' | 'resume' | 'terminate' | 'urge'
+  'reassign' | 'resume' | 'suspend' | 'terminate' | 'urge'
 >('urge');
 const taskId = ref('');
 const targetUserId = ref('');
@@ -123,17 +129,17 @@ async function load() {
 }
 
 /** 打开实例只读检查页（无待办时不能办理） */
-function openInstance(row: WorkflowInstanceRow) {
+function openInstance(instanceId: string) {
   void router.push({
-    path: `/workflow/instances/${row.id}`,
+    path: `/workflow/instances/${instanceId}`,
     query: { from: 'monitor' },
   });
 }
 
 /** 打开干预弹窗并拉取候选人 */
-async function openIntervene(row: WorkflowInstanceRow) {
+async function openIntervene(instanceId: string) {
   try {
-    const result = await getWorkflowContext(row.id);
+    const result = await getWorkflowContext(instanceId);
     if (!result.canIntervene) {
       ElMessage.warning('当前实例不能干预');
       return;
@@ -212,21 +218,11 @@ onActivated(() => {
         <ElButton :loading="loading" @click="load">刷新</ElButton>
       </div>
       <div class="overview">
-        <span
-          ><b>{{ rows.length }}</b> 个实例</span
-        >
-        <span
-          ><b>{{ runningCount }}</b> 办理中</span
-        >
-        <span
-          ><b>{{ suspendedCount }}</b> 已挂起</span
-        >
-        <span
-          ><b>{{ completedCount }}</b> 已结束</span
-        >
-        <span
-          ><b>{{ terminatedCount }}</b> 已终止</span
-        >
+        <span><b>{{ rows.length }}</b> 个实例</span>
+        <span><b>{{ runningCount }}</b> 办理中</span>
+        <span><b>{{ suspendedCount }}</b> 已挂起</span>
+        <span><b>{{ completedCount }}</b> 已结束</span>
+        <span><b>{{ terminatedCount }}</b> 已终止</span>
       </div>
       <div class="flow-table">
         <div class="filters">
@@ -295,8 +291,9 @@ onActivated(() => {
                 v-if="row.urged && row.status === 'running'"
                 size="small"
                 type="warning"
-                >已催办</ElTag
               >
+                已催办
+              </ElTag>
             </template>
           </ElTableColumn>
           <ElTableColumn label="时限" min-width="130">
@@ -305,14 +302,16 @@ onActivated(() => {
                 v-if="row.slaStatus === 'overdue'"
                 type="danger"
                 size="small"
-                >{{ formatRemain(row.dueAt) }}</ElTag
               >
+                {{ formatRemain(row.dueAt) }}
+              </ElTag>
               <ElTag
                 v-else-if="row.slaStatus === 'dueSoon'"
                 type="warning"
                 size="small"
-                >{{ formatRemain(row.dueAt) }}</ElTag
               >
+                {{ formatRemain(row.dueAt) }}
+              </ElTag>
               <span v-else-if="row.dueAt">{{ formatRemain(row.dueAt) }}</span>
               <span v-else class="sub">—</span>
             </template>
@@ -320,9 +319,9 @@ onActivated(() => {
           <ElTableColumn prop="initiatorName" label="发起人" width="100" />
           <ElTableColumn label="状态" width="100">
             <template #default="{ row }">
-              <ElTag :type="statusType(row.status)">{{
-                INSTANCE_STATUS_LABELS[row.status] || row.status
-              }}</ElTag>
+              <ElTag :type="statusType(row.status)">
+                {{ INSTANCE_STATUS_LABELS[row.status] || row.status }}
+              </ElTag>
             </template>
           </ElTableColumn>
           <ElTableColumn label="到达 / 发起时间" min-width="175">
@@ -337,16 +336,17 @@ onActivated(() => {
           </ElTableColumn>
           <ElTableColumn label="操作" width="140" fixed="right">
             <template #default="{ row }">
-              <ElButton link type="primary" @click="openInstance(row)"
-                >查看</ElButton
-              >
+              <ElButton link type="primary" @click="openInstance(row.id)">
+                查看
+              </ElButton>
               <ElButton
                 v-if="row.status === 'running' || row.status === 'suspended'"
                 link
                 type="warning"
-                @click="openIntervene(row)"
-                >干预</ElButton
+                @click="openIntervene(row.id)"
               >
+                干预
+              </ElButton>
             </template>
           </ElTableColumn>
           <template #empty>
@@ -381,24 +381,28 @@ onActivated(() => {
               <ElRadio
                 v-if="context?.instance.status === 'running'"
                 value="reassign"
-                >换人</ElRadio
               >
+                换人
+              </ElRadio>
               <ElRadio
                 v-if="context?.instance.status === 'running'"
                 value="suspend"
-                >挂起</ElRadio
               >
+                挂起
+              </ElRadio>
               <ElRadio
                 v-if="context?.instance.status === 'suspended'"
                 value="resume"
-                >激活</ElRadio
               >
+                激活
+              </ElRadio>
               <ElRadio value="terminate">终止</ElRadio>
               <ElRadio
                 v-if="context?.instance.status === 'running'"
                 value="urge"
-                >催办</ElRadio
               >
+                催办
+              </ElRadio>
             </ElRadioGroup>
           </ElFormItem>
           <ElFormItem
@@ -457,15 +461,16 @@ onActivated(() => {
           </ElFormItem>
         </ElForm>
         <template #footer>
-          <ElButton :disabled="intervening" @click="interveneOpen = false"
-            >取消</ElButton
-          >
+          <ElButton :disabled="intervening" @click="interveneOpen = false">
+            取消
+          </ElButton>
           <ElButton
             type="primary"
             :loading="intervening"
             @click="submitIntervene"
-            >确认{{ ACTION_LABELS[interveneAction] }}</ElButton
           >
+            确认{{ ACTION_LABELS[interveneAction] }}
+          </ElButton>
         </template>
       </ElDialog>
     </div>

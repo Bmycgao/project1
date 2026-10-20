@@ -5,13 +5,18 @@ import type {
   WorkflowDocument,
   WorkflowRecord,
 } from './model';
+import type { WorkflowFamily } from './version-list';
+
 import { computed, onActivated, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { Page } from '@vben/common-ui';
+
 import { AccessControl, useAccess } from '@vben/access';
+import { Page } from '@vben/common-ui';
+
 import {
   ElButton,
   ElDialog,
+  ElDrawer,
   ElEmpty,
   ElForm,
   ElFormItem,
@@ -25,24 +30,30 @@ import {
   ElTableColumn,
   ElTag,
 } from 'element-plus';
+
 import {
   createWorkflow,
-  deleteWorkflow,
-  getWorkflowList,
   createWorkflowVersion,
+  deleteWorkflow,
   disableWorkflowVersion,
+  getWorkflowList,
 } from '#/api/system/workflow';
-import PublicationDialog from './publication-dialog.vue';
+
+import { WORKFLOW_AUTH } from '../../../../../shared/workflow-runtime';
 import {
   CATEGORIES,
   createDocument,
   createNode,
   diffWorkflowVersions,
   documentOf,
-  downloadWorkflowJson,
-  readWorkflowJsonFile,
 } from './model';
-import { WORKFLOW_AUTH } from '../../../../../shared/workflow-runtime';
+import { downloadWorkflowJson, readWorkflowJsonFile } from './model-io';
+import PublicationDialog from './publication-dialog.vue';
+import {
+  filterWorkflowFamilies,
+  groupWorkflowVersions,
+  workflowFamilyId,
+} from './version-list';
 
 const { hasAccessByCodes } = useAccess();
 /** 设计总权限可操作全部列表按钮；否则按单项码 */
@@ -55,12 +66,30 @@ const canDelete = canManage || hasAccessByCodes([WORKFLOW_AUTH.delete]);
 
 const router = useRouter();
 const publication = ref<InstanceType<typeof PublicationDialog>>();
+const versioning = ref(false);
 async function newVersion(row: WorkflowRecord) {
+  if (versioning.value) return;
+  versioning.value = true;
   try {
+    // Another window may have created a draft since the list was last opened.
+    await load();
+    const draft = families.value.find(
+      (family) => family.id === workflowFamilyId(row),
+    )?.draft;
+    if (draft) {
+      await edit(draft);
+      return;
+    }
     const version = await createWorkflowVersion(row.id);
     await load();
-    await router.push(`/system/workflow/edit/${version.id}`);
-  } catch {}
+    await edit(version);
+  } catch {
+  } finally {
+    versioning.value = false;
+  }
+}
+function edit(row: WorkflowRecord) {
+  return router.push(`/system/workflow/edit/${row.id}`);
 }
 async function disable(row: WorkflowRecord) {
   try {
@@ -94,14 +123,23 @@ const form = ref<WorkflowDocument>(createDocument());
 const diffOpen = ref(false);
 const diffBase = ref<WorkflowRecord>();
 const diffOtherId = ref('');
+const historyOpen = ref(false);
+const historyFamilyId = ref('');
+const families = computed(() => groupWorkflowVersions(records.value));
+const historyFamily = computed(() =>
+  families.value.find((family) => family.id === historyFamilyId.value),
+);
+function openHistory(family: WorkflowFamily) {
+  historyFamilyId.value = family.id;
+  historyOpen.value = true;
+}
 const bases = computed(() => [...new Set(records.value.map((r) => r.base))]);
 const filtered = computed(() =>
-  records.value.filter(
-    (r) =>
-      (!category.value || r.category === category.value) &&
-      (!base.value || r.base === base.value) &&
-      `${r.name} ${r.code}`.toLowerCase().includes(keyword.value.toLowerCase()),
-  ),
+  filterWorkflowFamilies(families.value, {
+    keyword: keyword.value,
+    category: category.value,
+    base: base.value,
+  }),
 );
 const displayed = computed(() =>
   filtered.value.slice((page.value - 1) * 10, page.value * 10),
@@ -123,9 +161,9 @@ async function load() {
 }
 /** 同一流程家族的其他版本，用于版本对比 */
 function familySiblings(row: WorkflowRecord) {
-  const family = row.familyId || row.id;
+  const family = workflowFamilyId(row);
   return records.value.filter(
-    (item) => item.id !== row.id && (item.familyId || item.id) === family,
+    (item) => item.id !== row.id && workflowFamilyId(item) === family,
   );
 }
 /** 版本下拉文案 */
@@ -141,12 +179,12 @@ function versionLabel(row: WorkflowRecord) {
 /** 打开只读版本对比，默认选中相邻版本 */
 function openDiff(row: WorkflowRecord) {
   diffBase.value = row;
-  const siblings = familySiblings(row).sort(
+  const siblings = familySiblings(row).toSorted(
     (a, b) => (a.version || 1) - (b.version || 1),
   );
   const current = row.version || 1;
   const previous = [...siblings]
-    .reverse()
+    .toReversed()
     .find((item) => (item.version || 1) < current);
   diffOtherId.value = (previous || siblings[0])?.id || '';
   diffOpen.value = true;
@@ -281,9 +319,9 @@ onActivated(() => {
         >
           <div class="hero-actions">
             <ElButton @click="jsonFile?.click()">导入 JSON</ElButton>
-            <ElButton type="primary" size="large" @click="openCreate()"
-              >＋ 新建流程</ElButton
-            >
+            <ElButton type="primary" size="large" @click="openCreate()">
+              ＋ 新建流程
+            </ElButton>
           </div>
         </AccessControl>
         <input
@@ -295,13 +333,7 @@ onActivated(() => {
         />
       </div>
       <div class="overview">
-        <span
-          ><b>{{ records.length }}</b> 个流程版本</span
-        ><span
-          ><b>{{ bases.length }}</b> 个所属基地</span
-        ><span class="overview-note"
-          >发布后可在“流程办理”中发起，历史实例沿用原版本。</span
-        >
+        <span><b>{{ families.length }}</b> 条流程</span><span><b>{{ records.length }}</b> 个版本</span><span><b>{{ bases.length }}</b> 个所属基地</span><span class="overview-note">发布后可在“流程办理”中发起，历史实例沿用原版本。</span>
       </div>
       <div class="flow-table">
         <div class="filters">
@@ -318,123 +350,152 @@ onActivated(() => {
             placeholder="全部分类"
             style="width: 140px"
             @change="page = 1"
-            ><ElOption
+          >
+            <ElOption
               v-for="item in CATEGORIES"
               :key="item"
               :value="item"
               :label="item"
-          /></ElSelect>
+            />
+          </ElSelect>
           <ElSelect
             v-model="base"
             clearable
             placeholder="全部基地"
             style="width: 170px"
             @change="page = 1"
-            ><ElOption
+          >
+            <ElOption
               v-for="item in bases"
               :key="item"
               :value="item"
               :label="item"
-          /></ElSelect>
+            />
+          </ElSelect>
           <ElButton :loading="loading" @click="load">刷新</ElButton>
         </div>
         <ElTable v-loading="loading" :data="displayed" row-key="id">
-          <ElTableColumn label="流程" min-width="230"
-            ><template #default="{ row }"
-              ><button
-                class="flow-name"
-                @click="router.push(`/system/workflow/edit/${row.id}`)"
-              >
-                {{ row.name }}
+          <ElTableColumn label="流程" min-width="230">
+            <template #default="{ row }">
+              <button class="flow-name" @click="edit(row.representative)">
+                {{ row.representative.name }}
               </button>
-              <div class="flow-code">{{ row.code }}</div></template
-            ></ElTableColumn
-          >
-          <ElTableColumn prop="category" label="业务分类" width="110" />
-          <ElTableColumn prop="base" label="所属基地" min-width="110" />
-          <ElTableColumn label="节点" width="75"
-            ><template #default="{ row }">{{
-              row.nodes.length
-            }}</template></ElTableColumn
-          >
-          <ElTableColumn label="状态" width="105"
-            ><template #default="{ row }"
-              ><ElTag
-                :type="row.status === 'published' ? 'success' : 'info'"
-                effect="plain"
-                >{{
-                  row.status === 'published'
-                    ? '已发布'
-                    : row.status === 'disabled'
-                      ? '已停用'
-                      : '草稿'
-                }}</ElTag
+              <div class="flow-code">
+                {{ row.representative.code }}
+              </div>
+            </template>
+          </ElTableColumn>
+          <ElTableColumn
+            prop="representative.category"
+            label="业务分类"
+            width="100"
+          />
+          <ElTableColumn
+            prop="representative.base"
+            label="所属基地"
+            min-width="110"
+          />
+          <ElTableColumn label="当前发布版" min-width="135">
+            <template #default="{ row }">
+              <ElButton
+                v-if="row.published"
+                link
+                type="success"
+                @click="edit(row.published)"
               >
-              <div class="flow-code">V{{ row.version || 1 }}</div></template
-            ></ElTableColumn
-          >
-          <ElTableColumn label="最后保存" min-width="185"
-            ><template #default="{ row }"
-              >{{
+                V{{ row.published.version || 1 }} · 已发布
+              </ElButton>
+              <span v-else class="flow-code">{{
+                row.versions.some(
+                  (item: WorkflowRecord) => item.status !== 'draft',
+                )
+                  ? '已停用，无可发起版本'
+                  : '尚未发布'
+              }}</span>
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="待发布草稿" min-width="120">
+            <template #default="{ row }">
+              <ElButton
+                v-if="row.draft"
+                link
+                type="primary"
+                @click="edit(row.draft)"
+              >
+                V{{ row.draft.version || 1 }} · 草稿
+              </ElButton>
+              <span v-else class="flow-code">无草稿</span>
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="版本历史" width="110">
+            <template #default="{ row }">
+              <ElButton
+                link
+                type="primary"
+                @click="openHistory(row as WorkflowFamily)"
+              >
+                {{ row.versions.length }} 个版本
+              </ElButton>
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="最后保存" min-width="185">
+            <template #default="{ row }">
+              {{
                 new Date(row.updatedAt).toLocaleString('zh-CN', {
                   hour12: false,
                 })
               }}
-              <div class="flow-code">{{ row.updatedBy }}</div></template
-            ></ElTableColumn
-          >
-          <ElTableColumn label="操作" width="430" fixed="right"
-            ><template #default="{ row }"
-              ><ElButton
+              <div class="flow-code">
+                {{
+                  row.versions.find(
+                    (item: WorkflowRecord) => item.updatedAt === row.updatedAt,
+                  )?.updatedBy
+                }}
+              </div>
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="操作" width="300" fixed="right">
+            <template #default="{ row }">
+              <ElButton
+                v-if="row.draft"
                 link
                 type="primary"
-                @click="router.push(`/system/workflow/edit/${row.id}`)"
-                >{{ row.status === 'draft' ? '设计' : '查看' }}</ElButton
-              ><ElButton
+                @click="edit(row.draft)"
+              >
+                编辑草稿
+</ElButton><ElButton
+                v-else-if="canVersion"
                 link
                 type="primary"
-                @click="openDiff(row as WorkflowRecord)"
-                >对比</ElButton
-              ><ElButton
+                :disabled="versioning"
+                @click="newVersion(row.published || row.latest)"
+              >
+                新建版本
+</ElButton><ElButton
+                v-if="row.published"
                 link
                 type="primary"
-                @click="downloadWorkflowJson(row as WorkflowRecord)"
-                >导出</ElButton
-              ><ElButton
-                v-if="canCopy"
+                @click="edit(row.published)"
+              >
+                查看发布版
+</ElButton><ElButton
                 link
                 type="primary"
-                @click="openCreate(row as WorkflowRecord)"
-                >复制</ElButton
-              ><ElButton
-                link
-                type="danger"
-                v-if="canDelete && row.status === 'draft'"
-                @click="remove(row as WorkflowRecord)"
-                >删除</ElButton
-              ><ElButton
-                v-if="canPublish && row.status === 'draft'"
+                @click="openHistory(row as WorkflowFamily)"
+              >
+                版本历史
+</ElButton><ElButton
+                v-if="canPublish && row.draft"
                 link
                 type="success"
-                @click="publication?.open(row.id)"
-                >发布</ElButton
-              ><ElButton
-                v-else-if="canVersion && row.status !== 'draft'"
-                link
-                type="primary"
-                @click="newVersion(row as WorkflowRecord)"
-                >新建版本</ElButton
-              ><ElButton
-                v-if="canDisable && row.status === 'published'"
-                link
-                type="warning"
-                @click="disable(row as WorkflowRecord)"
-                >停用</ElButton
-              ></template
-            ></ElTableColumn
-          >
-          <template #empty
-            ><ElEmpty
+                @click="publication?.open(row.draft.id)"
+              >
+                发布
+              </ElButton>
+            </template>
+          </ElTableColumn>
+          <template #empty>
+            <ElEmpty
               :description="
                 keyword || category || base
                   ? '没有符合条件的流程'
@@ -442,7 +503,8 @@ onActivated(() => {
                     ? '还没有流程，创建第一份草稿吧'
                     : '列表加载失败，请点击刷新'
               "
-          /></template>
+            />
+          </template>
         </ElTable>
         <ElPagination
           v-model:current-page="page"
@@ -451,10 +513,144 @@ onActivated(() => {
           layout="total, prev, pager, next"
           class="pagination"
         />
+        <p class="list-hint">
+          每条流程显示一行，分页按流程计数；对比、导出、复制及停用等操作在“版本历史”中。
+        </p>
       </div>
+      <ElDrawer
+        v-model="historyOpen"
+        :title="`${historyFamily?.representative.name || '流程'} · 版本历史`"
+        size="min(1080px, 95vw)"
+      >
+        <template v-if="historyFamily">
+          <p class="import-hint">
+            {{ historyFamily.representative.code }} ·
+            {{ historyFamily.representative.base }} · 共
+            {{ historyFamily.versions.length }} 个版本
+          </p>
+          <p class="import-hint">
+            当前发布版供新实例发起；历史实例继续使用原版本。已停用版本包含被新版替代或主动停用的版本，保留只读查看。
+          </p>
+          <div v-if="historyFamily.draft" class="history-draft">
+            <span>已有待发布草稿 V{{
+                historyFamily.draft.version || 1
+              }}，请继续编辑。</span>
+            <ElButton type="primary" @click="edit(historyFamily.draft)">
+              继续编辑草稿
+            </ElButton>
+          </div>
+          <ElTable :data="historyFamily.versions" row-key="id">
+            <ElTableColumn label="版本" width="85">
+              <template #default="{ row }"> V{{ row.version || 1 }} </template>
+            </ElTableColumn>
+            <ElTableColumn label="状态" width="115">
+              <template #default="{ row }">
+                <ElTag
+                  :type="row.status === 'published' ? 'success' : 'info'"
+                  effect="plain"
+                >
+                  {{
+                    row.status === 'published'
+                      ? '当前发布版'
+                      : row.status === 'draft'
+                        ? '草稿'
+                        : '已停用'
+                  }}
+                </ElTag>
+              </template>
+            </ElTableColumn>
+            <ElTableColumn prop="name" label="版本名称" min-width="150" />
+            <ElTableColumn label="节点" width="65">
+              <template #default="{ row }">
+                {{ row.nodes.length }}
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="最后保存 / 操作人" min-width="160">
+              <template #default="{ row }">
+                {{ formatLogTime(row.updatedAt) }}
+                <div class="flow-code">{{ row.updatedBy }}</div>
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="操作" min-width="340">
+              <template #default="{ row }">
+                <div class="version-actions">
+                  <ElButton
+                    link
+                    type="primary"
+                    @click="edit(row as WorkflowRecord)"
+                  >
+                    {{ row.status === 'draft' ? '编辑草稿' : '查看' }}
+                  </ElButton>
+                  <ElButton
+                    link
+                    type="primary"
+                    :disabled="historyFamily.versions.length < 2"
+                    @click="openDiff(row as WorkflowRecord)"
+                  >
+                    对比
+                  </ElButton>
+                  <ElButton
+                    link
+                    type="primary"
+                    @click="downloadWorkflowJson(row as WorkflowRecord)"
+                  >
+                    导出
+                  </ElButton>
+                  <ElButton
+                    v-if="canCopy"
+                    link
+                    type="primary"
+                    @click="openCreate(row as WorkflowRecord)"
+                  >
+                    复制为新流程
+                  </ElButton>
+                  <ElButton
+                    v-if="
+                      canVersion &&
+                      row.status !== 'draft' &&
+                      !historyFamily.draft
+                    "
+                    link
+                    type="primary"
+                    :disabled="versioning"
+                    @click="newVersion(row as WorkflowRecord)"
+                  >
+                    基于此版创建草稿
+                  </ElButton>
+                  <ElButton
+                    v-if="canDelete && row.status === 'draft'"
+                    link
+                    type="danger"
+                    @click="remove(row as WorkflowRecord)"
+                  >
+                    删除草稿
+                  </ElButton>
+                  <ElButton
+                    v-if="canPublish && row.status === 'draft'"
+                    link
+                    type="success"
+                    @click="publication?.open(row.id)"
+                  >
+                    发布
+                  </ElButton>
+                  <ElButton
+                    v-if="canDisable && row.status === 'published'"
+                    link
+                    type="warning"
+                    @click="disable(row as WorkflowRecord)"
+                  >
+                    停用
+                  </ElButton>
+                </div>
+              </template>
+            </ElTableColumn>
+          </ElTable>
+        </template>
+        <ElEmpty v-else description="此流程已不存在，请刷新列表" />
+      </ElDrawer>
       <ElDialog
         v-model="dialogOpen"
-        :title="importing ? '导入流程' : copying ? '复制流程' : '新建流程'"
+        :title="importing ? '导入流程' : copying ? '复制为新流程' : '新建流程'"
         width="530px"
         :close-on-click-modal="false"
         :close-on-press-escape="!saving"
@@ -463,55 +659,67 @@ onActivated(() => {
         <p v-if="importing" class="import-hint">
           已载入流程图节点和连线，请填写本环境唯一的流程编码后创建草稿。
         </p>
+        <p v-else-if="copying" class="import-hint">
+          创建独立流程，请填写新的流程编码。原流程和历史版本保持不变。
+        </p>
         <ElForm label-position="top" @submit.prevent="create">
-          <ElFormItem label="流程名称" required
-            ><ElInput
+          <ElFormItem label="流程名称" required>
+            <ElInput
               v-model="form.name"
               maxlength="80"
               placeholder="例如：协议审核签约"
-          /></ElFormItem>
-          <ElFormItem label="流程编码（同一基地内唯一）" required
-            ><ElInput
+            />
+          </ElFormItem>
+          <ElFormItem label="流程编码（同一基地内唯一）" required>
+            <ElInput
               v-model="form.code"
               maxlength="80"
               placeholder="例如：FL_XY_001"
-          /></ElFormItem>
+            />
+          </ElFormItem>
           <div class="form-row">
-            <ElFormItem label="所属基地编码" required
-              ><ElInput
+            <ElFormItem label="所属基地编码" required>
+              <ElInput
                 v-model="form.base"
                 maxlength="80"
-                placeholder="请输入业务基地编码" /></ElFormItem
-            ><ElFormItem label="业务分类"
-              ><ElSelect v-model="form.category"
-                ><ElOption
+                placeholder="请输入业务基地编码"
+              />
+</ElFormItem><ElFormItem label="业务分类">
+              <ElSelect v-model="form.category">
+                <ElOption
                   v-for="item in CATEGORIES"
                   :key="item"
                   :value="item"
-                  :label="item" /></ElSelect
-            ></ElFormItem>
+                  :label="item"
+                />
+              </ElSelect>
+            </ElFormItem>
           </div>
-          <ElFormItem label="绑定业务表" required
-            ><ElInput
+          <ElFormItem label="绑定业务表" required>
+            <ElInput
               v-model="form.businessTable"
               maxlength="80"
               placeholder="例如：XieYi"
-          /></ElFormItem>
-          <ElFormItem label="说明"
-            ><ElInput
+            />
+          </ElFormItem>
+          <ElFormItem label="说明">
+            <ElInput
               v-model="form.description"
               type="textarea"
               maxlength="500"
               :rows="2"
-          /></ElFormItem>
+            />
+          </ElFormItem>
         </ElForm>
-        <template #footer
-          ><ElButton :disabled="saving" @click="dialogOpen = false"
-            >取消</ElButton
-          ><ElButton type="primary" :loading="saving" @click="create">{{
-            importing ? '导入并设计' : copying ? '复制并设计' : '创建并设计'
-          }}</ElButton></template
-        >
+        <template #footer>
+          <ElButton :disabled="saving" @click="dialogOpen = false">
+            取消
+</ElButton><ElButton type="primary" :loading="saving" @click="create">
+            {{
+              importing ? '导入并设计' : copying ? '复制并设计' : '创建并设计'
+            }}
+          </ElButton>
+        </template>
       </ElDialog>
       <ElDialog v-model="diffOpen" title="版本差异" width="720px">
         <p v-if="diffBase" class="import-hint">
@@ -547,14 +755,15 @@ onActivated(() => {
                     ? 'danger'
                     : 'warning'
               "
-              >{{
+            >
+              {{
                 line.kind === 'add'
                   ? '新增'
                   : line.kind === 'remove'
                     ? '删除'
                     : '变更'
-              }}</ElTag
-            >
+              }}
+            </ElTag>
             {{ line.message }}
           </li>
         </ul>
@@ -568,9 +777,7 @@ onActivated(() => {
         />
         <div v-if="configLog.length" class="config-log">
           <p class="import-hint">
-            V{{
-              diffPair?.newer.version || 1
-            }}
+            V{{ diffPair?.newer.version || 1 }}
             配置变更日志：保存或发布时记下谁改了按钮、时限、数据动作和字段权限。只读，不改变已发起的实例。
           </p>
           <ul class="diff-list">
@@ -578,9 +785,9 @@ onActivated(() => {
               v-for="(entry, index) in configLog"
               :key="`${entry.at}-${index}`"
             >
-              <ElTag size="small" effect="plain">{{
-                entry.action === 'publish' ? '发布' : '保存'
-              }}</ElTag>
+              <ElTag size="small" effect="plain">
+                {{ entry.action === 'publish' ? '发布' : '保存' }}
+              </ElTag>
               <div>
                 <b>{{ entry.by }}</b>
                 <span class="log-time">{{ formatLogTime(entry.at) }}</span>
@@ -720,6 +927,34 @@ h1 {
   margin-top: 3px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
+}
+
+.list-hint {
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.history-draft {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px;
+  margin-bottom: 20px;
+  background: var(--el-color-primary-light-9);
+  border-radius: 8px;
+}
+
+.version-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.version-actions :deep(.el-button + .el-button) {
+  margin-left: 0;
 }
 
 .pagination {

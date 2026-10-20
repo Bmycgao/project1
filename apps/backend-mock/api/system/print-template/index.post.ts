@@ -1,4 +1,4 @@
-import { eventHandler, readBody } from 'h3';
+import { eventHandler, readBody, setResponseStatus } from 'h3';
 import { createPrintTemplate } from '~/utils/mock-print-template';
 import { useResponseError, useResponseSuccess } from '~/utils/response';
 import { assertSystemAccess, SYSTEM_AUTH } from '~/utils/system-api-auth';
@@ -13,8 +13,7 @@ export default eventHandler(async (event) => {
     const node = createPrintTemplate(body || {});
     return useResponseSuccess(node);
   } catch (error: any) {
-    return useResponseError(event, error?.message || '创建失败', {
-      statusCode: 400,
-    });
+    setResponseStatus(event, 400);
+    return useResponseError(error?.message || '创建失败');
   }
 });

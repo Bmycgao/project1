@@ -1,10 +1,19 @@
+/* oxlint-disable typescript/no-non-null-assertion -- Test fixtures intentionally assert that configured nodes and mounted controls exist. */
+import type { WorkflowDocument } from '../../shared/workflow';
 import type {
   RuntimeActor,
   RuntimeForm,
   WorkflowContext,
 } from '../../shared/workflow-runtime';
 
-import { readdirSync, rmSync } from 'node:fs';
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -12,24 +21,13 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDocument, createNode, newId } from '../../shared/workflow';
 import { BUSINESS_FIELDS } from '../../shared/workflow-runtime';
 import { sampleGraph } from '../../web-ele/src/views/system/workflow/model';
+import { assertAgreementEntryWrite } from './agreement-entry-access';
 import {
   getOrCreateAgreementDetail,
   saveAgreementDetailAll,
 } from './mock-agreement-detail';
 import { createAgreeListRow, findAgreeListRow } from './mock-agreement-list';
 import { createFcSchema } from './mock-fc-schema';
-const { directory, root } = await vi.hoisted(async () => {
-  const { mkdtempSync } = await import('node:fs');
-  const { tmpdir } = await import('node:os');
-  const { join } = await import('node:path');
-  const root = tmpdir();
-  return { directory: mkdtempSync(join(root, 'vben-workflow-runtime-')), root };
-});
-vi.mock('./mock-persist', () => ({
-  DATA_DIR: directory,
-  readPersistJson: () => null,
-  writePersistJson: () => undefined,
-}));
 import {
   actOnInstance,
   interveneInstance,
@@ -46,6 +44,20 @@ import {
   publishWorkflow,
   saveWorkflow,
 } from './workflow-store';
+
+const { directory, root } = await vi.hoisted(async () => {
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const root = tmpdir();
+  return { directory: mkdtempSync(join(root, 'vben-workflow-runtime-')), root };
+});
+vi.mock('./mock-persist', () => ({
+  DATA_DIR: directory,
+  readPersistJson: () => null,
+  writePersistJson: () => undefined,
+}));
+
 const operator: RuntimeActor = {
   id: 'entry',
   name: '经办人',
@@ -83,8 +95,8 @@ afterAll(() => {
     throw new Error('Unexpected test directory');
   rmSync(directory, { recursive: true });
 });
-function setup() {
-  const doc = {
+function setup(configure?: (doc: ReturnType<typeof createDocument>) => void) {
+  const doc: WorkflowDocument = {
     ...createDocument(),
     code: 'FL_RUNTIME',
     name: '审核签约',
@@ -98,6 +110,7 @@ function setup() {
       n.rejectMode = 'specified';
     }
   });
+  configure?.(doc);
   const draft = saveWorkflow(doc, 'admin');
   const forms = Object.fromEntries(
     doc.nodes
@@ -158,17 +171,7 @@ function setupWithCc(recipientIds = [outsider.id]) {
   return { definition, doc, cc, review };
 }
 function link(
-  doc: {
-    edges: {
-      condition: string;
-      id: string;
-      isDefault: boolean;
-      label: string;
-      source: string;
-      target: string;
-      type: 'pass';
-    }[];
-  },
+  doc: Pick<WorkflowDocument, 'edges'>,
   source: string,
   target: string,
 ) {
@@ -215,7 +218,7 @@ function setupParallel() {
   const join = createNode('parallel', 920, 200, 6);
   join.name = '汇聚';
   const endN = createNode('end', 1120, 200, 7);
-  const doc = {
+  const doc: WorkflowDocument = {
     ...createDocument(),
     code: 'FL_PAR',
     name: '并行签约',
@@ -287,9 +290,9 @@ function seedAgreement(amount = 1_200_000, houseAddress = '测试路1号') {
   saveAgreementDetailAll({
     ...detail,
     basic: { ...detail.basic, compensatee: '张某', amount },
-    houses: (detail.houses || []).map((house, index) =>
-      index === 0 ? { ...house, address: houseAddress } : house,
-    ),
+    houses: [
+      { id: 'test-house', address: houseAddress, certNo: '', propertyType: '' },
+    ],
     signing: { ...detail.signing, houseAddress },
   });
   return row.agreementNo;
@@ -330,6 +333,185 @@ function action(
   );
 }
 describe('published workflow runtime', () => {
+  it('rejects a missing house address before creating a task or locking the draft', () => {
+    const { definition } = setup();
+    const no = seedAgreement(1000, '');
+    const input = {
+      definitionId: definition.id,
+      agreementNo: no,
+      requestId: newId('start'),
+    };
+    expect(() => startInstance(input, operator, actors)).toThrow(
+      '请到「房屋信息」',
+    );
+    expect(listInstances(operator, 'started')).toHaveLength(0);
+    expect(getOrCreateAgreementDetail(no).agreementNoEditable).toBe(true);
+    const detail = getOrCreateAgreementDetail(no);
+    saveAgreementDetailAll({
+      ...detail,
+      houses: [{ ...detail.houses[0]!, address: '补充路1号' }],
+    });
+    const context = startInstance(input, operator, actors);
+    expect(context.instance.data.houseAddress).toBe('补充路1号');
+    expect(getOrCreateAgreementDetail(no).agreementNoEditable).toBe(false);
+  });
+
+  it('binds a reusable button code to a standard action without allowing action spoofing', () => {
+    const { definition } = setup((doc) => {
+      doc.buttonCatalog = [
+        {
+          code: 'SUBMIT_REVIEW',
+          action: 'submit',
+          label: '提交复核',
+          requireOpinion: true,
+        },
+      ];
+      const task = doc.nodes.find((node) => node.type === 'task')!;
+      task.buttons = task.buttons.map((code) =>
+        code === 'submit' ? 'SUBMIT_REVIEW' : code,
+      );
+    });
+    const context = start(definition.id);
+    expect(
+      context.buttons.find((button) => button.code === 'SUBMIT_REVIEW'),
+    ).toMatchObject({
+      action: 'submit',
+      label: '提交复核',
+      requireOpinion: true,
+    });
+    expect(() => action(context, operator, 'submit')).toThrow(
+      '当前节点不允许此操作',
+    );
+    expect(() =>
+      action(context, operator, 'save', { buttonCode: 'SUBMIT_REVIEW' }),
+    ).toThrow('按钮资源与动作类型不匹配');
+    expect(() =>
+      action(context, operator, 'submit', { buttonCode: 'SUBMIT_REVIEW' }),
+    ).toThrow('请填写办理意见');
+  });
+  it('uses a custom transfer button instead of the legacy transfer code', () => {
+    const { definition } = setup((doc) => {
+      doc.buttonCatalog = [
+        { code: 'HANDOFF', action: 'transfer', label: '交给同事' },
+      ];
+      const task = doc.nodes.find((node) => node.type === 'task')!;
+      task.allowTransfer = true;
+      task.buttons.push('HANDOFF');
+    });
+    const context = start(definition.id);
+    expect(
+      context.buttons.some(
+        (button) => button.code === 'HANDOFF' && button.action === 'transfer',
+      ),
+    ).toBe(true);
+    expect(context.buttons.some((button) => button.code === 'transfer')).toBe(
+      false,
+    );
+    expect(() =>
+      action(context, operator, 'transfer', { targetUserId: reviewer.id }),
+    ).toThrow('当前角色无权转办');
+    const result = action(context, operator, 'transfer', {
+      buttonCode: 'HANDOFF',
+      targetUserId: reviewer.id,
+    });
+    expect(result.instance.events.at(-1)?.action).toBe('transfer');
+  });
+  it('applies configured button visibility, disabled reasons, and required opinions on the server', () => {
+    const { definition } = setup((doc) => {
+      doc.buttonCatalog = [
+        {
+          action: 'save',
+          label: '暂存资料',
+          placement: 'top',
+          enabledWhen: 'BuChangJinE >= 2000000',
+          disabledReason: '金额不足，暂不可保存',
+        },
+        {
+          action: 'submit',
+          label: '提交审核',
+          visibleWhen: 'BuChangJinE >= 1000000',
+          requireOpinion: true,
+          confirmText: '确认提交审核？',
+        },
+      ];
+    });
+    const small = start(definition.id, 500_000);
+    expect(small.buttons.some((button) => button.code === 'submit')).toBe(
+      false,
+    );
+    expect(() => action(small, operator, 'submit')).toThrow('按钮当前不可用');
+    const normal = start(definition.id, 1_200_000);
+    expect(
+      normal.buttons.find((button) => button.code === 'save'),
+    ).toMatchObject({
+      enabled: false,
+      label: '暂存资料',
+      placement: 'top',
+      reason: '金额不足，暂不可保存',
+    });
+    expect(
+      normal.buttons.find((button) => button.code === 'submit'),
+    ).toMatchObject({
+      enabled: true,
+      label: '提交审核',
+      confirmText: '确认提交审核？',
+      requireOpinion: true,
+    });
+    expect(() => action(normal, operator, 'save')).toThrow(
+      '金额不足，暂不可保存',
+    );
+    expect(() => action(normal, operator, 'submit')).toThrow('请填写办理意见');
+  });
+  it('enforces workflow, node, and button role limits in the runtime', () => {
+    const { definition } = setup((doc) => {
+      doc.startRoleIds = ['entry'];
+      doc.startDeniedRoleIds = ['review'];
+      const task = doc.nodes.find((node) => node.type === 'task')!;
+      task.handleRoleIds = ['entry'];
+      task.buttonRoleIds = { save: ['review'] };
+      task.buttonDeniedRoleIds = { save: ['entry'] };
+    });
+    expect(() =>
+      startInstance(
+        {
+          definitionId: definition.id,
+          agreementNo: seedAgreement(),
+          requestId: newId('start'),
+        },
+        reviewer,
+        actors,
+      ),
+    ).toThrow('无权发起该流程');
+    const mixed = { ...operator, roleIds: ['entry', 'review'] };
+    expect(() =>
+      startInstance(
+        {
+          definitionId: definition.id,
+          agreementNo: seedAgreement(),
+          requestId: newId('start'),
+        },
+        mixed,
+        actors,
+      ),
+    ).toThrow('无权发起该流程');
+    const context = start(definition.id);
+    expect(context.buttons.some((button) => button.code === 'save')).toBe(
+      false,
+    );
+    expect(context.buttons.some((button) => button.code === 'submit')).toBe(
+      true,
+    );
+    expect(() => action(context, operator, 'save')).toThrow('不允许此操作');
+    expect(
+      workflowContext(context.instance.id, mixed).buttons.some(
+        (button) => button.code === 'save',
+      ),
+    ).toBe(false);
+    const revoked = { ...operator, roleIds: [] };
+    expect(workflowContext(context.instance.id, revoked).canAct).toBe(false);
+    expect(listInstances(revoked, 'todo')).toHaveLength(0);
+    expect(() => action(context, revoked, 'submit')).toThrow('无权办理该节点');
+  });
   it('lets a monitor list every instance while operators stay in their own todo', () => {
     const { definition } = setup();
     const started = start(definition.id);
@@ -354,11 +536,17 @@ describe('published workflow runtime', () => {
     expect(c.instance.currentNodeId).toBe(doc.nodes[2]!.id);
     expect(listInstances(reviewer, 'todo')).toHaveLength(1);
     c = workflowContext(c.instance.id, reviewer);
+    expect(() => assertAgreementEntryWrite(c.instance.bizId!)).toThrow(
+      '普通详情只读',
+    );
     expect(c.form.fields.every((f) => f.readonly)).toBe(true);
     c = action(c, reviewer, 'reject', {
       targetNodeId: doc.nodes[1]!.id,
       opinion: '请补充资料',
     });
+    expect(() => assertAgreementEntryWrite(c.instance.bizId!)).toThrow(
+      '普通详情只读',
+    );
     c = action(c, operator, 'submit', { data: { houseAddress: '修正路2号' } });
     expect(c.instance.currentNodeId).toBe(doc.nodes[2]!.id);
     c = action(c, reviewer, 'pass');
@@ -367,6 +555,11 @@ describe('published workflow runtime', () => {
     c = action(c, operator, 'submit');
     c = action(c, reviewer, 'pass');
     expect(c.instance.status).toBe('completed');
+    expect(() => assertAgreementEntryWrite(c.instance.bizId!)).not.toThrow(/./);
+    expect(getOrCreateAgreementDetail(c.instance.bizId!)).toMatchObject({
+      entryEditable: true,
+      agreementNoEditable: false,
+    });
     expect(c.instance.events.some((e) => e.action === 'reject')).toBe(true);
     expect(c.instance.events.at(-1)?.action).toBe('end');
     expect(listInstances(operator, 'started')).toHaveLength(1);
@@ -507,8 +700,9 @@ describe('published workflow runtime', () => {
   it('starts from an existing agreement and writes edits back', () => {
     const { definition } = setup();
     const agreementNo = seedAgreement(1_200_000, '原地址1号');
-    let c = start(definition.id, 1_200_000, agreementNo);
-    expect(c.instance.bizId).toBe(agreementNo);
+    const c = start(definition.id, 1_200_000, agreementNo);
+    expect(c.instance.bizId).toBe(findAgreeListRow(agreementNo)!.id);
+    expect(c.instance.businessNo).toBe(agreementNo);
     expect(c.instance.data.houseAddress).toBe('原地址1号');
     expect(c.instance.data.BuChangJinE).toBe(1_200_000);
     expect(() =>
@@ -523,12 +717,81 @@ describe('published workflow runtime', () => {
       ),
     ).toThrow('已有的协议');
     expect(() => start(definition.id, 1_200_000, agreementNo)).toThrow('在途');
-    c = action(c, operator, 'save', { data: { houseAddress: '回写路8号' } });
+    action(c, operator, 'save', { data: { houseAddress: '回写路8号' } });
     expect(getOrCreateAgreementDetail(agreementNo).houses[0]?.address).toBe(
       '回写路8号',
     );
     expect(findAgreeListRow(agreementNo)?.houseAddress).toBe('回写路8号');
   });
+  it('binds a renamed draft by internal ID, locks its number and restores legacy number bindings', () => {
+    const { definition } = setup();
+    const oldNo = seedAgreement(100_000, '改号验证地址');
+    const original = getOrCreateAgreementDetail(oldNo);
+    const newNo = `${oldNo}-R`;
+    saveAgreementDetailAll({
+      ...original,
+      basic: { ...original.basic, agreementNo: newNo },
+    });
+    let c = startInstance(
+      {
+        definitionId: definition.id,
+        agreementId: original.id,
+        requestId: newId('start'),
+      },
+      operator,
+      actors,
+    );
+    expect(c.instance).toMatchObject({ bizId: original.id, businessNo: newNo });
+    expect(getOrCreateAgreementDetail(original.id).agreementNoEditable).toBe(
+      false,
+    );
+    expect(() =>
+      saveAgreementDetailAll({
+        ...getOrCreateAgreementDetail(original.id),
+        basic: { ...original.basic, agreementNo: '审批中改号' },
+      }),
+    ).toThrow('不能修改编号');
+    expect(() => start(definition.id, 100_000, oldNo)).toThrow('在途');
+    const path = join(directory, 'workflow-instances.json');
+    const saved = JSON.parse(readFileSync(path, 'utf8'));
+    const legacy = saved.instances.find(
+      (instance: { id: string }) => instance.id === c.instance.id,
+    );
+    legacy.bizId = oldNo;
+    legacy.businessNo = oldNo;
+    writeFileSync(path, JSON.stringify(saved));
+    c = workflowContext(c.instance.id, operator);
+    expect(c.instance).toMatchObject({ bizId: original.id, businessNo: newNo });
+    c = action(c, operator, 'save', {
+      data: { houseAddress: '改号后的流程回写' },
+    });
+    expect(getOrCreateAgreementDetail(original.id).houses[0]!.address).toBe(
+      '改号后的流程回写',
+    );
+    expect(getOrCreateAgreementDetail(oldNo).id).toBe(original.id);
+  });
+
+  it('does not leave a draft number locked when saving the new instance fails', () => {
+    const { definition } = setup();
+    const agreementNo = seedAgreement(100_000, '存储失败验证');
+    const temporary = join(directory, 'workflow-instances.json.tmp');
+    mkdirSync(temporary);
+    try {
+      expect(() => start(definition.id, 100_000, agreementNo)).toThrow(/./);
+      expect(getOrCreateAgreementDetail(agreementNo).agreementNoEditable).toBe(
+        true,
+      );
+      expect(getOrCreateAgreementDetail(agreementNo).entryEditable).toBe(true);
+    } finally {
+      rmdirSync(temporary);
+    }
+    const c = start(definition.id, 100_000, agreementNo);
+    expect(c.instance.bizId).toBe(findAgreeListRow(agreementNo)!.id);
+    expect(getOrCreateAgreementDetail(agreementNo).agreementNoEditable).toBe(
+      false,
+    );
+  });
+
   it('does not write agreement data when routing fails', () => {
     const { definition } = setup();
     const agreementNo = seedAgreement(800_000, '锁定路3号');
@@ -591,7 +854,7 @@ describe('published workflow runtime', () => {
     const hijack = structuredClone(getOrCreateAgreementDetail(agreementNo));
     hijack.houses[0]!.address = '审批篡改路';
     hijack.basic.amount = 1;
-    c = action(c, reviewer, 'pass', { agreement: hijack });
+    action(c, reviewer, 'pass', { agreement: hijack });
     const afterApprove = getOrCreateAgreementDetail(agreementNo);
     expect(afterApprove.houses[0]?.address).toBe('办理改房屋路');
     expect(afterApprove.basic.amount).toBe(1_300_000);
@@ -665,7 +928,7 @@ describe('published workflow runtime', () => {
           revision: c.instance.revision,
           requestId: 'failed-body',
           action: 'submit',
-          agreement: patched,
+          agreement: { ...patched },
           data: { houseAddress: '不应保存' },
         },
         operator,
@@ -1559,7 +1822,7 @@ describe('published workflow runtime', () => {
         action: 'transfer',
         targetUserId: outsider.id,
         opinion: '请代填',
-        agreement: patched,
+        agreement: { ...patched },
       },
       operator,
       actors,
@@ -1919,8 +2182,16 @@ describe('published workflow runtime', () => {
       [...actors, monitor],
     );
     expect(ended.instance.status).toBe('terminated');
+    expect(() => assertAgreementEntryWrite(agreementNo)).not.toThrow(/./);
+    expect(getOrCreateAgreementDetail(agreementNo)).toMatchObject({
+      entryEditable: true,
+      agreementNoEditable: false,
+    });
     expect(start(definition.id, 1_200_000, agreementNo).instance.status).toBe(
       'running',
+    );
+    expect(() => assertAgreementEntryWrite(agreementNo)).toThrow(
+      '普通详情只读',
     );
   });
   it('computes natural-hour due time, notifies arrival, and ticks dueSoon or overdue', () => {
@@ -1980,7 +2251,7 @@ describe('published workflow runtime', () => {
     const { definition, doc } = setup();
     let c = start(definition.id);
     c = action(c, operator, 'submit');
-    c = action(workflowContext(c.instance.id, reviewer), reviewer, 'reject', {
+    action(workflowContext(c.instance.id, reviewer), reviewer, 'reject', {
       targetNodeId: doc.nodes[1]!.id,
       opinion: '请补充',
     });
@@ -2174,7 +2445,7 @@ describe('published workflow runtime', () => {
     expect(c.instance.data.legalOpinion).toBe('待审核');
     c = action(c, reviewer, 'pass');
     expect(
-      getOrCreateAgreementDetail(c.instance.bizId!).flowFields.legalOpinion,
+      getOrCreateAgreementDetail(c.instance.bizId!).flowFields?.legalOpinion,
     ).toBe('已通过');
     const broken = newWorkflowVersion(v2.id, 'admin');
     broken.nodes.find((n) => n.type === 'task')!.dataActions = [
@@ -2197,5 +2468,73 @@ describe('published workflow runtime', () => {
     expect(
       workflowContext(started.instance.id, operator).instance.data.BuChangJinE,
     ).toBe(1_200_000);
+  });
+  it('applies reject data actions before returning to the target node', () => {
+    const { definition } = setup();
+    const draft = newWorkflowVersion(definition.id, 'admin');
+    const chief = draft.nodes.find((n) => n.name === '科长审核')!;
+    const fill = draft.nodes.find((n) => n.type === 'task')!;
+    const supplement = createFcSchema({
+      id: newId('fc'),
+      name: '驳回结果表单',
+      kind: 'form',
+      usage: 'workflowSupplement',
+      status: 1,
+      rule: [{ type: 'textarea', field: 'reviewResult', title: '审核结果' }],
+    });
+    chief.supplementFormId = supplement.id;
+    chief.dataActions = [
+      { when: 'reject', kind: 'set', field: 'reviewResult', value: '待补正' },
+    ];
+    const saved = saveWorkflow(draft, 'admin', draft.id, draft.revision);
+    const frozen = freezeWorkflowForms(saved);
+    expect(frozen.issues).toEqual([]);
+    const published = publishWorkflow(
+      saved.id,
+      saved.revision,
+      frozen.forms,
+      'admin',
+    );
+    let context = action(start(published.id), operator, 'submit');
+    expect(context.instance.data.reviewResult).toBeUndefined();
+    expect(() =>
+      action(context, reviewer, 'reject', { opinion: '补正资料' }),
+    ).toThrow('驳回目标');
+    expect(
+      workflowContext(context.instance.id, reviewer).instance.data.reviewResult,
+    ).toBeUndefined();
+    context = action(context, reviewer, 'reject', {
+      targetNodeId: fill.id,
+      opinion: '补正资料',
+    });
+    expect(context.instance.currentNodeId).toBe(fill.id);
+    expect(
+      getOrCreateAgreementDetail(context.instance.bizId!).flowFields
+        ?.reviewResult,
+    ).toBe('待补正');
+  });
+  it('keeps the review task pending when a reject data action fails', () => {
+    const { definition, forms } = setup();
+    const draft = newWorkflowVersion(definition.id, 'admin');
+    const chief = draft.nodes.find((n) => n.name === '科长审核')!;
+    const fill = draft.nodes.find((n) => n.type === 'task')!;
+    chief.dataActions = [
+      { when: 'reject', kind: 'set', field: 'BuChangJinE', value: '不是数字' },
+    ];
+    const saved = saveWorkflow(draft, 'admin', draft.id, draft.revision);
+    const published = publishWorkflow(saved.id, saved.revision, forms, 'admin');
+    const context = action(start(published.id), operator, 'submit');
+    expect(() =>
+      action(context, reviewer, 'reject', {
+        targetNodeId: fill.id,
+        opinion: '补正资料',
+      }),
+    ).toThrow('数字');
+    const unchanged = workflowContext(context.instance.id, reviewer);
+    expect(unchanged.instance.currentNodeId).toBe(chief.id);
+    expect(unchanged.task?.status).toBe('pending');
+    expect(
+      unchanged.instance.events.some((item) => item.action === 'reject'),
+    ).toBe(false);
   });
 });

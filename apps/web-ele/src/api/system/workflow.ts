@@ -18,10 +18,18 @@ export const checkWorkflowPublication = (id: string) =>
   requestClient.get<PublicationCheck>(
     `/system/workflow/${encodeURIComponent(id)}/check`,
   );
-export const publishWorkflowVersion = (id: string, revision: number) =>
+export const getWorkflowMenuCatalogs = () =>
+  requestClient.get<{ id: string; title: string }[]>(
+    '/system/workflow/menu-catalogs',
+  );
+export const publishWorkflowVersion = (
+  id: string,
+  revision: number,
+  menu?: { generateMenu: boolean; menuParentId?: string; menuTitle?: string },
+) =>
   requestClient.post<WorkflowRecord>(
     `/system/workflow/${encodeURIComponent(id)}/publish`,
-    { revision },
+    { revision, ...menu },
   );
 export const createWorkflowVersion = (id: string) =>
   requestClient.post<WorkflowRecord>(

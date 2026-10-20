@@ -1,40 +1,86 @@
 <script setup lang="ts">
 import type { PublicationCheck } from '#/api/system/workflow';
+
 import { ref } from 'vue';
-import { ElAlert, ElButton, ElDialog, ElMessage } from 'element-plus';
+
+import {
+  ElAlert,
+  ElButton,
+  ElCheckbox,
+  ElDialog,
+  ElInput,
+  ElMessage,
+  ElOption,
+  ElSelect,
+} from 'element-plus';
+
 import {
   checkWorkflowPublication,
+  getWorkflowMenuCatalogs,
   publishWorkflowVersion,
 } from '#/api/system/workflow';
+import { $t } from '#/locales';
+import { useAuthStore } from '#/store';
 const emit = defineEmits<{
-  published: [];
   locate: [issue: PublicationCheck['issues'][number]];
+  published: [];
 }>();
+const authStore = useAuthStore();
 const visible = ref(false);
 const loading = ref(false);
 const publishing = ref(false);
 const check = ref<PublicationCheck>();
 const id = ref('');
+const generateMenu = ref(false);
+const menuTitle = ref('');
+const menuParentId = ref('');
+const menuCatalogs = ref<{ id: string; title: string }[]>([]);
 async function open(value: string) {
   id.value = value;
   visible.value = true;
   check.value = undefined;
+  generateMenu.value = false;
+  menuTitle.value = '';
+  menuParentId.value = '';
+  menuCatalogs.value = [];
   loading.value = true;
   try {
     check.value = await checkWorkflowPublication(value);
+    try {
+      menuCatalogs.value = await getWorkflowMenuCatalogs();
+    } catch {
+      /* Root menu remains available. */
+    }
   } catch {
   } finally {
     loading.value = false;
   }
 }
 async function publish() {
-  if (!check.value || check.value.issues.length) return;
+  if (!check.value || check.value.issues.length > 0) return;
   publishing.value = true;
   try {
-    await publishWorkflowVersion(id.value, check.value.revision);
-    ElMessage.success('版本已发布，可以发起新流程');
+    const result = await publishWorkflowVersion(
+      id.value,
+      check.value.revision,
+      {
+        generateMenu: generateMenu.value,
+        menuTitle: menuTitle.value,
+        menuParentId: menuParentId.value || undefined,
+      },
+    );
+    const warning = (result as typeof result & { menuWarning?: string })
+      .menuWarning;
+    if (warning) ElMessage.warning(warning);
+    else
+      ElMessage.success(
+        generateMenu.value
+          ? '版本已发布，流程菜单已生成'
+          : '版本已发布，可以发起新流程',
+      );
     visible.value = false;
     emit('published');
+    if (generateMenu.value && !warning) authStore.reloadAccess();
   } catch {
   } finally {
     publishing.value = false;
@@ -53,7 +99,7 @@ defineExpose({ open });
   >
     <div v-loading="loading" style="min-height: 150px">
       <template v-if="check">
-        <h3 style=" margin-bottom: 16px;font-size: 18px">
+        <h3 style="margin-bottom: 16px; font-size: 18px">
           {{ check.name }} · V{{ check.version }}
         </h3>
         <p style="margin-bottom: 16px">
@@ -71,6 +117,36 @@ defineExpose({ open });
           type="error"
           :closable="false"
         />
+        <ElCheckbox
+          v-if="!check.issues.length"
+          v-model="generateMenu"
+          style="margin-top: 16px"
+        >
+          发布后生成流程菜单（已有菜单则继续使用）
+        </ElCheckbox>
+        <div
+          v-if="generateMenu && !check.issues.length"
+          style="display: flex; gap: 10px; margin-top: 10px"
+        >
+          <ElInput
+            v-model="menuTitle"
+            :placeholder="`菜单名称，默认：${check.name}`"
+            style="flex: 1"
+          />
+          <ElSelect
+            v-model="menuParentId"
+            placeholder="顶层菜单"
+            clearable
+            style="width: 190px"
+          >
+            <ElOption
+              v-for="catalog in menuCatalogs"
+              :key="catalog.id"
+              :label="$t(catalog.title)"
+              :value="catalog.id"
+            />
+          </ElSelect>
+        </div>
         <div style="max-height: 280px; margin-top: 12px; overflow: auto">
           <button
             v-for="(issue, i) in check.issues"
@@ -115,15 +191,15 @@ defineExpose({ open });
       </template>
       <ElButton v-else-if="!loading" @click="open(id)">检查失败，重试</ElButton>
     </div>
-    <template #footer
-      ><ElButton :disabled="publishing" @click="visible = false">取消</ElButton
-      ><ElButton
+    <template #footer>
+      <ElButton :disabled="publishing" @click="visible = false">取消</ElButton><ElButton
         type="primary"
         :loading="publishing"
         :disabled="!check || check.issues.length > 0 || loading"
         @click="publish"
-        >确认发布</ElButton
-      ></template
-    >
+      >
+        确认发布
+      </ElButton>
+    </template>
   </ElDialog>
 </template>

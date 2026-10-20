@@ -11,13 +11,14 @@ import type { FcRuleMap } from '../fc/types';
  */
 import type { AgreementDetail, AgreementModuleKey } from '../types';
 
-import { computed, provide, ref, watch } from 'vue';
+import { computed, nextTick, provide, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import { Page } from '@vben/common-ui';
 import { useAccessStore } from '@vben/stores';
 
 import {
+  ElAlert,
   ElButton,
   ElEmpty,
   ElMessage,
@@ -33,6 +34,7 @@ import {
 } from '#/api';
 import { hasWorkflowRuntimeAccess } from '#/api/workflow-runtime';
 
+import { agreementStatusTagType } from '../../../../../../shared/agreement-demo-status';
 import {
   isCustomAgreeModule,
   resolveAgreeModulesForPage,
@@ -54,7 +56,6 @@ import {
 } from '../config/module-inner-config';
 import { loadAgreeDetailPageConfig } from '../config/resolve-runtime';
 import { getAgreeListPathByScene } from '../config/scene-paths';
-import { buildAgreementDetail } from '../data/mock-data';
 import { buildDefaultFcRuleMap } from '../fc/default-rules';
 
 /** 顶栏摘要卡：指标 + 点击后切到的模块 */
@@ -72,12 +73,20 @@ const router = useRouter();
 const accessStore = useAccessStore();
 
 /** 加载列模板 fieldRules 并注入给子模块 */
-useProvideAgreeFieldRules('PS_AGREE_COLS');
+const fieldAccess = useProvideAgreeFieldRules(null);
 
 const loading = ref(false);
 const saving = ref(false);
+const loadError = ref('');
 /** 是否整页编辑（对齐参考图：浏览 / 切换到编辑） */
 const editing = ref(false);
+const detail = ref<AgreementDetail | null>(null);
+const entryReadonlyReason = computed(() =>
+  detail.value && detail.value.entryEditable !== true
+    ? detail.value.entryReadonlyReason ||
+      '当前协议暂不可编辑，请刷新资料后查看最新状态。'
+    : '',
+);
 /** 列表带入的详情模式：edit / view / audit */
 const detailMode = computed(() => {
   const mode = String(route.query.mode || 'view');
@@ -88,8 +97,8 @@ const detailMode = computed(() => {
  * 是否允许改数（审核态不允许）
  */
 const canEnterEdit = computed(() => {
+  if (detail.value?.entryEditable !== true) return false;
   if (detailMode.value === 'audit') return false;
-  if (detailMode.value === 'edit') return true;
   return canOperateAgreeAction('edit', accessStore.accessCodes);
 });
 /** 注入给子模块：仅整页编辑态可改 */
@@ -106,7 +115,7 @@ useProvideAgreeDetailEditable(pageEditable);
 /** 当前是否处于可改状态 */
 const isEditing = computed(() => pageEditable.value);
 
-const detail = ref<AgreementDetail | null>(null);
+const isDraft = computed(() => detail.value?.statusValue === '草稿');
 /** 场景挂载的模块配置（来自 page-schema.modules） */
 const moduleMounts = ref<AgreeModuleMount[] | null>(null);
 /** 基础信息内部字段配置 */
@@ -152,10 +161,8 @@ function bindModuleApi(key: string, el: any) {
 /** 当前胶囊选中的模块（含基础信息） */
 const activeModule = ref<AgreementModuleKey>('basic');
 
-/** 协议编号（路由参数） */
-const agreementNo = computed(() =>
-  decodeURIComponent(String(route.params.agreementNo || '')),
-);
+/** 新链接使用内部 ID；旧的协议编号链接由后端兼容解析。 */
+const agreementNo = computed(() => String(route.params.agreementNo || ''));
 
 /**
  * 当前可见区域 = 场景挂载 ∩ 角色 Agree:Module:*（已按 order 排序）
@@ -172,18 +179,22 @@ const tabModules = computed(() =>
 const summaryCards = computed<SummaryCardItem[]>(() => {
   const d = detail.value;
   if (!d) return [];
-  const amount = Number(d.basic?.amount ?? 0);
-  const amountText = Number.isFinite(amount)
-    ? amount.toLocaleString('zh-CN', {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      })
-    : String(d.basic?.amount ?? '-');
+  const rawAmount = d.basic?.amount;
+  const amount = Number(rawAmount);
+  const amountText =
+    rawAmount === '' || rawAmount === null || rawAmount === undefined
+      ? '未填写'
+      : Number.isFinite(amount)
+        ? `¥ ${amount.toLocaleString('zh-CN', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          })}`
+        : String(rawAmount);
   return [
     {
       key: 'amount',
       label: '协议总金额',
-      value: `¥ ${amountText}`,
+      value: amountText,
       tone: 'purple',
       target: isModuleShown('basic') ? 'basic' : undefined,
     },
@@ -197,7 +208,7 @@ const summaryCards = computed<SummaryCardItem[]>(() => {
     {
       key: 'family',
       label: '家庭人口',
-      value: String(d.population?.familySize ?? 0),
+      value: String(d.population?.familySize ?? '') || '未填写',
       tone: 'blue',
       target: isModuleShown('population') ? 'population' : undefined,
     },
@@ -336,6 +347,7 @@ function onSummaryClick(card: SummaryCardItem) {
 
 /** 加载详情 */
 async function loadDetail() {
+  loadError.value = '';
   if (!agreementNo.value) {
     detail.value = null;
     ElMessage.error('缺少协议编号');
@@ -350,6 +362,7 @@ async function loadDetail() {
       scene: String(route.query.scene || 'entry'),
     });
     moduleMounts.value = pageCfg.modules;
+    fieldAccess.rules.value = pageCfg.fieldRules;
     basicInnerConfig.value = pageCfg.basicInner;
     housesInnerConfig.value = pageCfg.housesInner;
     compensationInnerConfig.value = pageCfg.compensationInner;
@@ -358,28 +371,20 @@ async function loadDetail() {
     customInnerMap.value = pageCfg.customInners;
     fcRules.value = pageCfg.fcRules || buildDefaultFcRuleMap();
 
-    try {
-      detail.value = await getAgreementDetail(agreementNo.value, {
-        id: String(route.query.id || ''),
-        compensatee: String(route.query.compensatee || ''),
-        houseAddress: String(route.query.houseAddress || ''),
-      });
-    } catch {
-      detail.value = buildAgreementDetail(agreementNo.value, {
-        id: String(route.query.id || ''),
-        compensatee: String(route.query.compensatee || ''),
-        houseAddress: String(route.query.houseAddress || ''),
-        agreementNo: agreementNo.value,
-      });
-      ElMessage.warning('详情接口暂不可用，已使用本地演示数据');
-    }
+    detail.value = await getAgreementDetail(agreementNo.value, {
+      id: String(route.query.id || ''),
+      compensatee: String(route.query.compensatee || ''),
+      houseAddress: String(route.query.houseAddress || ''),
+    });
+    editing.value = route.query.edit === '1' && canEnterEdit.value;
     // 按配置选择第一个标签；内容区模块始终展开。
     const firstTab = tabModules.value[0]?.key;
     if (firstTab) activeModule.value = firstTab;
     clearDirty();
   } catch (error: any) {
     detail.value = null;
-    ElMessage.error(error?.message || '加载详情失败');
+    loadError.value = error?.message || '协议资料加载失败，请重试';
+    ElMessage.error(loadError.value);
   } finally {
     loading.value = false;
   }
@@ -396,6 +401,12 @@ async function collectAll(): Promise<AgreementDetail | null> {
     if (extraForms) next.extraForms = { ...next.extraForms, ...extraForms };
     if (extraTables) next.extraTables = { ...next.extraTables, ...extraTables };
   }
+  // 内部 ID 不变，展示编号从基础信息表单读取。
+  next.id = detail.value.id;
+  next.agreementNo = detail.value.agreementNoEditable
+    ? String(next.basic?.agreementNo ?? detail.value.agreementNo).trim()
+    : detail.value.agreementNo;
+  next.basic = { ...next.basic, agreementNo: next.agreementNo };
   return next;
 }
 
@@ -404,84 +415,54 @@ async function collectAll(): Promise<AgreementDetail | null> {
  * @param key 模块
  */
 async function saveModule(key: AgreementModuleKey) {
+  if (!isEditing.value) return;
   if (!isModuleShown(key)) {
     ElMessage.error('当前场景未挂载或无权限操作该区域');
     return;
   }
   const api = moduleApi(key);
   if (!api) return;
-  if (!(await api.validate())) {
-    focusModule(key);
-    return;
-  }
+  // 保存允许暂存不完整资料，不按模拟状态决定必填；提交时统一校验。
   saving.value = true;
   try {
     const values = await Promise.resolve(api.getValues());
-    const current = detail.value;
-    if (!current) return;
-    try {
-      detail.value = await saveAgreementModule(agreementNo.value, key, values);
-    } catch {
-      const next = cloneJson(current) as AgreementDetail;
-      if (values.extraForms) {
-        next.extraForms = { ...next.extraForms, ...values.extraForms };
-      }
-      if (values.extraTables) {
-        next.extraTables = {
-          ...next.extraTables,
-          ...values.extraTables,
-        };
-      }
-      if (!values.extraForms && !values.extraTables) {
-        Object.assign(next, values);
-      }
-      detail.value = next;
-      ElMessage.warning('接口暂不可用，已保存到本页内存');
-      clearDirty(key);
-      return;
-    }
+    detail.value = await saveAgreementModule(
+      detail.value?.id || agreementNo.value,
+      key,
+      values,
+    );
     clearDirty(key);
     const label = visibleModules.value.find((m) => m.key === key)?.label || key;
     ElMessage.success(`「${label}」已保存`);
   } catch (error: any) {
     ElMessage.error(error?.message || '保存失败');
+    await refreshEntryAccess();
   } finally {
     saving.value = false;
   }
 }
 
 async function saveAll() {
-  for (const m of visibleModules.value) {
-    const ok = await moduleApi(m.key)?.validate();
-    if (!ok) {
-      focusModule(m.key);
-      return;
-    }
-  }
+  if (!isEditing.value) return;
+  // 正文暂存与模拟状态无关，完整必填检查在 submitReview 执行。
   const all = await collectAll();
   if (!all) return;
   saving.value = true;
   try {
-    try {
-      detail.value = await saveAgreementAll(all);
-    } catch {
-      detail.value = cloneJson(all);
-      ElMessage.warning('接口暂不可用，已保存到本页内存');
-      clearDirty();
-      editing.value = false;
-      return;
-    }
+    detail.value = await saveAgreementAll(all);
     clearDirty();
     editing.value = false;
-    ElMessage.success('全部模块已保存');
+    ElMessage.success(isDraft.value ? '草稿已保存' : '全部模块已保存');
   } catch (error: any) {
     ElMessage.error(error?.message || '全部保存失败');
+    await refreshEntryAccess();
   } finally {
     saving.value = false;
   }
 }
 
 async function submitReview() {
+  if (!canEnterEdit.value) return;
   for (const m of visibleModules.value) {
     const ok = await moduleApi(m.key)?.validate();
     if (!ok) {
@@ -493,24 +474,27 @@ async function submitReview() {
   if (!all) return;
   saving.value = true;
   try {
-    try {
-      detail.value = await submitAgreement(all);
-    } catch {
-      detail.value = {
-        ...cloneJson(all),
-        status: 'review',
-        statusValue: '待复核',
-      };
-      ElMessage.warning('接口暂不可用，已在本页标记为待复核');
-      clearDirty();
-      return;
-    }
+    detail.value = await submitAgreement(all);
     clearDirty();
     ElMessage.success('已提交复核');
   } catch (error: any) {
     ElMessage.error(error?.message || '提交失败');
+    await refreshEntryAccess();
   } finally {
     saving.value = false;
+  }
+}
+
+/** 旧编辑页保存失败后同步最新入口权限，保留未保存的表单内容。 */
+async function refreshEntryAccess() {
+  if (!detail.value) return;
+  try {
+    const latest = await getAgreementDetail(detail.value.id);
+    detail.value.entryEditable = latest.entryEditable;
+    detail.value.entryReadonlyReason = latest.entryReadonlyReason;
+    detail.value.agreementNoEditable = latest.agreementNoEditable;
+  } catch {
+    // 保留原错误和未保存内容；再次保存仍由服务端检查。
   }
 }
 
@@ -542,12 +526,30 @@ watch(
   () => loadDetail(),
   { immediate: true },
 );
+
+// 从发起流程的缺资料提示进入时，定位到实际需要补充的模块。
+watch(
+  () => [route.query.module, loading.value] as const,
+  async ([module, isLoading]) => {
+    if (!module || isLoading || !detail.value) return;
+    await nextTick();
+    selectModule(String(module) as AgreementModuleKey);
+  },
+  { flush: 'post' },
+);
 </script>
 
 <template>
   <!-- 不传 title：避免与多页签、下方操作栏重复占高 -->
   <Page>
-    <ElEmpty v-if="!detail && !loading" description="暂无详情数据" />
+    <ElEmpty
+      v-if="!detail && !loading"
+      :description="loadError || '暂无详情数据'"
+    >
+      <ElButton v-if="loadError" type="primary" @click="loadDetail">
+        重新加载
+      </ElButton>
+    </ElEmpty>
     <div v-else-if="loading" v-loading="true" class="min-h-40"></div>
 
     <template v-else-if="detail">
@@ -559,13 +561,16 @@ watch(
           <div class="flex flex-wrap items-center gap-2">
             <ElButton size="small" @click="onBack">返回列表</ElButton>
             <span class="text-base font-semibold text-gray-900">
-              {{ detail.basic?.agreementName || detail.agreementNo }}
+              {{
+                detail.basic?.agreementName ||
+                (isDraft ? '未命名协议' : detail.agreementNo)
+              }}
             </span>
             <ElTag
               size="small"
-              :type="detail.status === 'review' ? 'warning' : 'info'"
+              :type="agreementStatusTagType(detail.statusValue)"
             >
-              {{ detail.statusValue }}
+              {{ detail.statusValue || '—' }}
             </ElTag>
           </div>
           <div class="mt-1 text-xs text-gray-400">
@@ -580,7 +585,7 @@ watch(
             @click="
               router.push({
                 path: '/workflow',
-                query: { agreementNo },
+                query: { agreementId: detail.id },
               })
             "
           >
@@ -596,7 +601,7 @@ watch(
               切换到编辑
             </ElButton>
             <ElButton
-              v-if="detailMode === 'edit'"
+              v-if="detailMode === 'edit' && canEnterEdit"
               type="primary"
               :loading="saving"
               @click="submitReview"
@@ -607,10 +612,10 @@ watch(
           <template v-else>
             <ElButton :loading="saving" @click="cancelEdit">取消编辑</ElButton>
             <ElButton type="primary" :loading="saving" @click="saveAll">
-              全部保存
+              {{ isDraft ? '保存草稿' : '全部保存' }}
             </ElButton>
             <ElButton
-              v-if="detailMode === 'edit'"
+              v-if="detailMode === 'edit' && canEnterEdit"
               type="primary"
               plain
               :loading="saving"
@@ -621,6 +626,15 @@ watch(
           </template>
         </div>
       </div>
+
+      <ElAlert
+        v-if="entryReadonlyReason"
+        :title="entryReadonlyReason"
+        type="info"
+        :closable="false"
+        show-icon
+        class="mb-3"
+      />
 
       <!-- 摘要指标：单行紧凑，可点击跳转 -->
       <div class="agree-summary mb-3">
@@ -661,9 +675,9 @@ watch(
             plain
             :loading="saving"
             @click="saveModule(item.key)"
-            >
-保存本模块
-</ElButton>
+          >
+            保存本模块
+          </ElButton>
         </template>
         <template #default="{ item }">
           <DetailModule

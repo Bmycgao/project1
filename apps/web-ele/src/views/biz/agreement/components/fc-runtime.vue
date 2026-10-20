@@ -5,15 +5,18 @@
  */
 import type { FcFormOption, FcRule } from '../fc/types';
 
-import { computed, ref, watch } from 'vue';
+import { computed, ref } from 'vue';
 
 import { ElMessage } from 'element-plus';
 
+import FormRuntime from '#/components/form-runtime/index.vue';
+
 import { useAgreeFieldAccess } from '../access/use-field-access';
 import { prepareFcRuntimeRule } from '../fc/apply-runtime';
-import { buildFcFormOption, cloneFcRule } from '../fc/types';
+import { buildFcFormOption } from '../fc/types';
 
 const props = defineProps<{
+  agreementNoEditable?: boolean;
   /** 兼容旧 prop：整表单禁用 */
   disabled?: boolean;
   /** 详情是否可编辑（优先于 disabled） */
@@ -32,8 +35,7 @@ const emit = defineEmits<{
 const { fieldVisible, fieldEditable, isDetailPageEditable } =
   useAgreeFieldAccess();
 
-const fapi = ref<any>(null);
-const formData = ref<Record<string, unknown>>({ ...props.modelValue });
+const runtime = ref<InstanceType<typeof FormRuntime>>();
 const option = ref<FcFormOption>(buildFcFormOption());
 
 /** 页面是否处于可编辑态 */
@@ -46,83 +48,74 @@ const pageEditable = computed(() => {
 /** 叠加权限与设计器 props 后的 rule */
 const runtimeRule = computed(() =>
   prepareFcRuntimeRule(props.rule || [], {
+    agreementNoEditable: props.agreementNoEditable,
     pageEditable: pageEditable.value,
     fieldVisible,
     fieldEditable,
   }),
 );
 
-const innerRule = ref<FcRule[]>(cloneFcRule(runtimeRule.value));
-
-watch(
-  runtimeRule,
-  (rule) => {
-    innerRule.value = cloneFcRule(rule);
-  },
-  { deep: true },
-);
-
-watch(
-  () => props.modelValue,
-  (val) => {
-    formData.value = { ...val };
-    if (!fapi.value || !val) return;
-    try {
-      fapi.value.coverValue?.(val);
-    } catch {
-      fapi.value.setValue?.(val);
-    }
-  },
-  { deep: true },
-);
-
-function onChange() {
-  emit('change');
-  const data = fapi.value?.formData?.() || formData.value;
-  emit('update:modelValue', data);
-}
-
 /**
  * 校验必填（走 FormCreate 校验）
  */
 async function validate() {
-  if (!fapi.value?.validate) return true;
-  try {
-    await fapi.value.validate();
-    return true;
-  } catch {
-    ElMessage.warning('请完善必填项');
-    return false;
-  }
+  const valid = await runtime.value?.validate();
+  if (!valid) ElMessage.warning('请完善必填项');
+  return !!valid;
 }
 
 /**
  * 取出当前表单值
  */
 function getValues(): Record<string, unknown> {
-  return fapi.value?.formData?.() || { ...formData.value };
+  return runtime.value?.getValues() || { ...props.modelValue };
 }
 
 defineExpose({ validate, getValues });
 </script>
 
 <template>
-  <form-create
-    v-model="formData"
-    v-model:api="fapi"
-    class="agree-fc-runtime"
-    :rule="innerRule"
-    :option="option"
-    @change="onChange"
-  />
+  <div class="agree-fc-container">
+    <FormRuntime
+      ref="runtime"
+      :model-value="modelValue"
+      class="agree-fc-runtime"
+      :rule="runtimeRule"
+      :option="option"
+      @update:model-value="emit('update:modelValue', $event)"
+      @change="emit('change')"
+    />
+  </div>
 </template>
 
 <style scoped>
+.agree-fc-container {
+  min-width: 0;
+  container-type: inline-size;
+}
+
 .agree-fc-runtime :deep(.el-form-item) {
   margin-bottom: 16px;
 }
 
 .agree-fc-runtime :deep(.el-form-item__label) {
   color: #606266;
+}
+
+/* Use the module's available width, including half-width cards and preview frames. */
+@container (max-width: 600px) {
+  .agree-fc-runtime :deep(.el-row > .el-col) {
+    flex: 0 0 100%;
+    max-width: 100%;
+    margin-left: 0;
+  }
+
+  .agree-fc-runtime :deep(.el-form-item__content) {
+    min-width: 0;
+  }
+
+  .agree-fc-runtime :deep(.el-date-editor.el-input) {
+    width: 100%;
+  }
 }
 </style>

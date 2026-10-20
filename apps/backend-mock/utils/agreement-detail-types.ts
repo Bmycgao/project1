@@ -110,9 +110,14 @@ export interface CompensationInfo {
 }
 
 export interface AgreementDetail {
+  /** 服务端计算：仅从未提交过的草稿允许调整展示编号。 */
+  agreementNoEditable?: boolean;
+  /** 普通协议详情入口的写权限；流程办理页使用自己的节点权限。 */
+  entryEditable?: boolean;
+  entryReadonlyReason?: string;
   id: string;
   agreementNo: string;
-  status: 'draft' | 'review' | 'submitted';
+  status: 'approved' | 'draft' | 'review' | 'submitted';
   statusValue: string;
   signType: string;
   isSigned: string;

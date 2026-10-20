@@ -1,3 +1,4 @@
+import { evaluateCondition } from './workflow-expression';
 /** Workflow design contract shared by the editor, publication API and runtime. */
 import { WORKFLOW_FIELD_CATALOG } from './workflow-runtime';
 
@@ -17,6 +18,28 @@ export type AssigneeType =
   | 'role'
   | 'user';
 export type WorkflowDetailMode = 'formOnly' | 'inherit' | 'override';
+export type WorkflowButtonAction =
+  | 'pass'
+  | 'recall'
+  | 'reject'
+  | 'save'
+  | 'submit'
+  | 'transfer';
+/** Reusable within a workflow and frozen with every published version. */
+export interface WorkflowButtonConfig {
+  /** Stable resource code; legacy inline entries use action as code. */
+  code?: string;
+  action: WorkflowButtonAction;
+  label: string;
+  placement?: 'bottom' | 'top';
+  style?: 'danger' | 'default' | 'primary' | 'warning';
+  /** Safe expressions over saved instance data plus nodeCode/instanceStatus/actorId/initiatorId. */
+  visibleWhen?: string;
+  enabledWhen?: string;
+  disabledReason?: string;
+  confirmText?: string;
+  requireOpinion?: boolean;
+}
 export interface WorkflowNode {
   id: string;
   code: string;
@@ -38,6 +61,14 @@ export interface WorkflowNode {
   /** 节点补充表单；formOnly 时作为唯一办理表单。 */
   supplementFormId?: string;
   buttons: string[];
+  /** 额外允许办理本节点的角色；未配置时只按办理人策略判断。 */
+  handleRoleIds?: string[];
+  /** 命中任一角色时禁止办理，优先于允许角色。 */
+  handleDeniedRoleIds?: string[];
+  /** 各标准按钮额外允许的角色；未配置时由待办人按节点按钮办理。 */
+  buttonRoleIds?: Record<string, string[]>;
+  /** 各按钮禁止操作的角色，优先于允许角色。 */
+  buttonDeniedRoleIds?: Record<string, string[]>;
   rejectMode: 'initiator' | 'previous' | 'specified';
   resubmitMode: 'restart' | 'return';
   allowRecall: boolean;
@@ -55,6 +86,8 @@ export interface WorkflowNode {
   approveRatio?: number;
   /** Optional per-field restrictions. Roles and template restrictions can only narrow these. */
   fieldAccess?: Record<string, 'edit' | 'hidden' | 'readonly'>;
+  /** Read-only projections: supplement-form field key -> saved workflow field key. */
+  fieldBindings?: Record<string, string>;
   /** 未设置时继承节点类型默认值；隐藏/只读限制整个模块。 */
   moduleAccess?: Record<string, 'edit' | 'hidden' | 'inherit' | 'readonly'>;
   /** 子流程节点绑定的已发布流程编码（同基地） */
@@ -71,7 +104,13 @@ export interface WorkflowNode {
   /** 到达或点按钮时给字段赋值 / 抄字段（不含公式） */
   dataActions?: WorkflowDataAction[];
 }
-export const DATA_ACTION_WHENS = ['arrive', 'save', 'submit', 'pass'] as const;
+export const DATA_ACTION_WHENS = [
+  'arrive',
+  'save',
+  'submit',
+  'pass',
+  'reject',
+] as const;
 export const DATA_ACTION_KINDS = ['set', 'copy'] as const;
 export const DATA_ACTION_POLICIES = [
   'always',
@@ -98,6 +137,7 @@ export const DATA_ACTION_WHEN_LABELS: Record<WorkflowDataActionWhen, string> = {
   save: '保存时',
   submit: '提交时',
   pass: '通过时',
+  reject: '驳回时',
 };
 export const DATA_ACTION_KIND_LABELS: Record<WorkflowDataActionKind, string> = {
   set: '赋固定值',
@@ -128,8 +168,14 @@ export interface WorkflowDocument {
   base: string;
   businessTable: string;
   description: string;
+  /** 允许发起此流程的角色；未配置时沿用全局发起权限。 */
+  startRoleIds?: string[];
+  /** 命中任一角色时禁止发起，优先于允许角色。 */
+  startDeniedRoleIds?: string[];
   /** 全流程人工节点默认继承的办理详情页面；空值使用内置协议详情。 */
   defaultDetailViewId?: string;
+  /** Shared button resources referenced by node.buttons. Missing entries use legacy defaults. */
+  buttonCatalog?: WorkflowButtonConfig[];
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   viewport: { x: number; y: number; zoom: number };
@@ -145,7 +191,7 @@ export interface WorkflowRecord extends WorkflowDocument {
   revision: number;
   updatedAt: string;
   updatedBy: string;
-  /** 保存或发布时记下的按钮、时限、数据动作、字段权限变更，只读，不参与流转 */
+  /** 保存或发布时记下的角色、按钮、时限、数据动作、字段权限变更，只读，不参与流转 */
   changeLog?: WorkflowChangeEntry[];
 }
 /** 一次保存或发布产生的配置变更 */
@@ -193,12 +239,14 @@ export interface WorkflowOptionField {
   options?: { label: string; value: boolean | number | string }[];
   type?:
     | 'boolean'
+    | 'choiceList'
     | 'date'
     | 'number'
     | 'select'
     | 'table'
     | 'text'
-    | 'textarea';
+    | 'textarea'
+    | 'time';
 }
 export const NODE_LABELS: Record<NodeType, string> = {
   start: '开始',
@@ -218,6 +266,63 @@ export const STANDARD_BUTTONS = [
   { code: 'reject', label: '驳回' },
   { code: 'recall', label: '撤回' },
 ];
+export const WORKFLOW_BUTTON_ACTIONS: WorkflowButtonAction[] = [
+  'save',
+  'submit',
+  'pass',
+  'reject',
+  'transfer',
+  'recall',
+];
+export function workflowButtonConfig(
+  doc: Pick<WorkflowDocument, 'buttonCatalog'>,
+  code: string,
+): WorkflowButtonConfig {
+  const custom = doc.buttonCatalog?.find(
+    (item) => (item.code || item.action) === code,
+  );
+  const action = custom?.action || code;
+  return {
+    code,
+    action: action as WorkflowButtonAction,
+    label:
+      custom?.label ||
+      STANDARD_BUTTONS.find((item) => item.code === action)?.label ||
+      (action === 'transfer' ? '转办' : action),
+    placement: custom?.placement || 'bottom',
+    style:
+      custom?.style ||
+      (() => {
+        if (action === 'reject' || action === 'recall') {
+          return 'danger';
+        }
+        if (action === 'transfer') {
+          return 'warning';
+        }
+        if (action === 'save') {
+          return 'default';
+        }
+        return 'primary';
+      })(),
+    visibleWhen: custom?.visibleWhen || '',
+    enabledWhen: custom?.enabledWhen || '',
+    disabledReason: custom?.disabledReason || '',
+    confirmText: custom?.confirmText || '',
+    requireOpinion: custom?.requireOpinion || action === 'reject',
+  };
+}
+export function workflowButtonAction(
+  doc: Pick<WorkflowDocument, 'buttonCatalog'>,
+  code: string,
+): undefined | WorkflowButtonAction {
+  const resource = doc.buttonCatalog?.find(
+    (item) => (item.code || item.action) === code,
+  );
+  if (resource) return resource.action;
+  return WORKFLOW_BUTTON_ACTIONS.includes(code as WorkflowButtonAction)
+    ? (code as WorkflowButtonAction)
+    : undefined;
+}
 export function newId(prefix: string) {
   // getRandomValues also works on intranet HTTP pages, where randomUUID may be unavailable.
   const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
@@ -269,6 +374,7 @@ export function createDocument(): WorkflowDocument {
     businessTable: 'XieYi',
     description: '',
     defaultDetailViewId: '',
+    buttonCatalog: [],
     nodes: [],
     edges: [],
     viewport: { x: 60, y: 100, zoom: 1 },
@@ -333,6 +439,33 @@ export function validateWorkflow(doc: WorkflowDocument): WorkflowIssue[] {
     });
   if (!doc.base.trim()) issues.push({ message: '请填写所属基地编码' });
   if (!doc.businessTable.trim()) issues.push({ message: '请填写绑定业务表' });
+  const buttonCodes = new Set<string>();
+  for (const button of doc.buttonCatalog || []) {
+    const code = button.code || button.action;
+    if (buttonCodes.has(code.toLowerCase()))
+      issues.push({ message: `按钮「${code}」重复配置` });
+    buttonCodes.add(code.toLowerCase());
+    if (
+      WORKFLOW_BUTTON_ACTIONS.includes(code as WorkflowButtonAction) &&
+      button.action !== code
+    )
+      issues.push({ message: `内置按钮「${code}」不能改变动作类型` });
+    if (!button.label.trim())
+      issues.push({ message: `按钮「${code}」缺少名称` });
+    for (const [kind, expression] of [
+      ['显示', button.visibleWhen],
+      ['启用', button.enabledWhen],
+    ] as const) {
+      if (!expression) continue;
+      try {
+        evaluateCondition(expression, {}, true);
+      } catch (error) {
+        issues.push({
+          message: `按钮「${button.label}」${kind}条件错误：${(error as Error).message}`,
+        });
+      }
+    }
+  }
   const starts = doc.nodes.filter((n) => n.type === 'start');
   const ends = doc.nodes.filter((n) => n.type === 'end');
   if (starts.length !== 1)
@@ -349,7 +482,8 @@ export function validateWorkflow(doc: WorkflowDocument): WorkflowIssue[] {
     const seen = new Set<string>();
     const queue = [from];
     while (queue.length > 0) {
-      const id = queue.pop()!;
+      const id = queue.pop();
+      if (id === undefined) break;
       if (seen.has(id)) continue;
       seen.add(id);
       for (const edge of normal) {
@@ -392,7 +526,9 @@ export function validateWorkflow(doc: WorkflowDocument): WorkflowIssue[] {
       if (!outgoing.some((e) => e.type === 'pass')) add('至少需要一条通过连线');
       if (
         node.type !== 'cc' &&
-        node.buttons.includes('reject') &&
+        node.buttons.some(
+          (code) => workflowButtonAction(doc, code) === 'reject',
+        ) &&
         !outgoing.some((e) => e.type === 'reject')
       )
         add('已配置驳回按钮，请绘制允许的驳回连线');
@@ -494,9 +630,10 @@ export function validateWorkflow(doc: WorkflowDocument): WorkflowIssue[] {
   );
   const queue = doc.nodes.filter((n) => !indegrees.get(n.id)).map((n) => n.id);
   while (queue.length > 0) {
-    const id = queue.pop()!;
+    const id = queue.pop();
+    if (id === undefined) break;
     for (const edge of normal.filter((e) => e.source === id)) {
-      const count = indegrees.get(edge.target)! - 1;
+      const count = (indegrees.get(edge.target) || 0) - 1;
       indegrees.set(edge.target, count);
       if (!count) queue.push(edge.target);
     }
@@ -557,18 +694,56 @@ export function isWorkflowDocument(input: unknown): input is WorkflowDocument {
   const d = input as WorkflowDocument;
   const str = (v: unknown) => typeof v === 'string' && v.length <= 5000;
   const ids = (v: unknown): v is string[] =>
-    Array.isArray(v) && v.length <= 500 && v.every(str);
+    Array.isArray(v) && v.length <= 500 && v.every((value) => str(value));
   if (
     d.schemaVersion !== 1 ||
     ![d.code, d.name, d.category, d.base, d.businessTable, d.description].every(
-      str,
+      (value) => str(value),
     ) ||
-    (d.defaultDetailViewId !== undefined && !str(d.defaultDetailViewId))
+    (d.defaultDetailViewId !== undefined && !str(d.defaultDetailViewId)) ||
+    (d.buttonCatalog !== undefined &&
+      (!Array.isArray(d.buttonCatalog) ||
+        d.buttonCatalog.length > 100 ||
+        !d.buttonCatalog.every(
+          (button) =>
+            button &&
+            WORKFLOW_BUTTON_ACTIONS.includes(button.action) &&
+            (button.code === undefined ||
+              (typeof button.code === 'string' &&
+                /^[A-Za-z][\w-]{0,79}$/.test(button.code))) &&
+            str(button.label) &&
+            button.label.length <= 80 &&
+            (button.placement === undefined ||
+              ['bottom', 'top'].includes(button.placement)) &&
+            (button.style === undefined ||
+              ['danger', 'default', 'primary', 'warning'].includes(
+                button.style,
+              )) &&
+            [
+              'visibleWhen',
+              'enabledWhen',
+              'disabledReason',
+              'confirmText',
+            ].every(
+              (key) =>
+                button[key as keyof WorkflowButtonConfig] === undefined ||
+                (typeof button[key as keyof WorkflowButtonConfig] ===
+                  'string' &&
+                  String(button[key as keyof WorkflowButtonConfig]).length <=
+                    1000),
+            ) &&
+            (button.requireOpinion === undefined ||
+              typeof button.requireOpinion === 'boolean'),
+        ))) ||
+    (d.startRoleIds !== undefined && !ids(d.startRoleIds)) ||
+    (d.startDeniedRoleIds !== undefined && !ids(d.startDeniedRoleIds))
   )
     return false;
   if (
     !d.viewport ||
-    ![d.viewport.x, d.viewport.y, d.viewport.zoom].every(Number.isFinite) ||
+    ![d.viewport.x, d.viewport.y, d.viewport.zoom].every((value) =>
+      Number.isFinite(value),
+    ) ||
     d.viewport.zoom < 0.25 ||
     d.viewport.zoom > 2
   )
@@ -584,10 +759,10 @@ export function isWorkflowDocument(input: unknown): input is WorkflowDocument {
     !d.nodes.every(
       (n) =>
         n &&
-        [n.id, n.code, n.name, n.description].every(str) &&
+        [n.id, n.code, n.name, n.description].every((value) => str(value)) &&
         n.id &&
         Object.hasOwn(NODE_LABELS, n.type) &&
-        [n.x, n.y].every(Number.isFinite) &&
+        [n.x, n.y].every((value) => Number.isFinite(value)) &&
         n.assignee &&
         ['departmentLeader', 'field', 'initiator', 'role', 'user'].includes(
           n.assignee.type,
@@ -601,7 +776,40 @@ export function isWorkflowDocument(input: unknown): input is WorkflowDocument {
           ['formOnly', 'inherit', 'override'].includes(n.detailMode)) &&
         (n.detailViewId === undefined || str(n.detailViewId)) &&
         (n.supplementFormId === undefined || str(n.supplementFormId)) &&
+        (n.fieldBindings === undefined ||
+          (!!n.fieldBindings &&
+            typeof n.fieldBindings === 'object' &&
+            !Array.isArray(n.fieldBindings) &&
+            Object.keys(n.fieldBindings).length <= 100 &&
+            Object.entries(n.fieldBindings).every(([target, source]) =>
+              [target, source].every(
+                (key) =>
+                  typeof key === 'string' &&
+                  /^[A-Za-z_][\w.]*$/.test(key) &&
+                  !key
+                    .split('.')
+                    .some((part) =>
+                      ['__proto__', 'constructor', 'prototype'].includes(part),
+                    ),
+              ),
+            ))) &&
         ids(n.buttons) &&
+        (n.handleRoleIds === undefined || ids(n.handleRoleIds)) &&
+        (n.handleDeniedRoleIds === undefined || ids(n.handleDeniedRoleIds)) &&
+        (n.buttonRoleIds === undefined ||
+          (!!n.buttonRoleIds &&
+            typeof n.buttonRoleIds === 'object' &&
+            !Array.isArray(n.buttonRoleIds) &&
+            Object.entries(n.buttonRoleIds).every(
+              ([key, roles]) => /^[A-Za-z][\w-]{0,79}$/.test(key) && ids(roles),
+            ))) &&
+        (n.buttonDeniedRoleIds === undefined ||
+          (!!n.buttonDeniedRoleIds &&
+            typeof n.buttonDeniedRoleIds === 'object' &&
+            !Array.isArray(n.buttonDeniedRoleIds) &&
+            Object.entries(n.buttonDeniedRoleIds).every(
+              ([key, roles]) => /^[A-Za-z][\w-]{0,79}$/.test(key) && ids(roles),
+            ))) &&
         ['initiator', 'previous', 'specified'].includes(n.rejectMode) &&
         ['restart', 'return'].includes(n.resubmitMode) &&
         typeof n.allowRecall === 'boolean' &&
@@ -652,7 +860,9 @@ export function isWorkflowDocument(input: unknown): input is WorkflowDocument {
     !d.edges.every(
       (e) =>
         e &&
-        [e.id, e.source, e.target, e.label, e.condition].every(str) &&
+        [e.id, e.source, e.target, e.label, e.condition].every((value) =>
+          str(value),
+        ) &&
         e.id &&
         ['condition', 'pass', 'reject'].includes(e.type) &&
         typeof e.isDefault === 'boolean',
@@ -737,6 +947,26 @@ function buttonsText(node: WorkflowNode) {
   const text = (node.buttons || []).map((code) => buttonLabel(code)).join('、');
   return text || '无';
 }
+function rolePolicyText(allowed?: string[], denied?: string[]) {
+  const allow = allowed?.length ? allowed.toSorted().join('、') : '不限制';
+  const deny = denied?.length ? denied.toSorted().join('、') : '无';
+  return `允许角色：${allow}；禁止角色：${deny}`;
+}
+function buttonRolePolicyText(node: WorkflowNode) {
+  const keys = new Set([
+    ...Object.keys(node.buttonRoleIds || {}),
+    ...Object.keys(node.buttonDeniedRoleIds || {}),
+  ]);
+  return (
+    [...keys]
+      .toSorted()
+      .map(
+        (code) =>
+          `${buttonLabel(code)}（${rolePolicyText(node.buttonRoleIds?.[code], node.buttonDeniedRoleIds?.[code])}）`,
+      )
+      .join('、') || '无'
+  );
+}
 /** 办理时限文案；未填小时数视为不限 */
 function slaText(node: WorkflowNode) {
   const hours = node.sla?.durationHours || 0;
@@ -777,6 +1007,14 @@ function fieldAccessText(node: WorkflowNode) {
       ([key, mode]) => `${fieldLabel(key)}${FIELD_ACCESS_LABELS[mode] || mode}`,
     )
     .join('、');
+}
+function fieldBindingsText(node: WorkflowNode) {
+  return (
+    Object.entries(node.fieldBindings || {})
+      .toSorted(([left], [right]) => left.localeCompare(right))
+      .map(([target, source]) => `${target}←${source}`)
+      .join('、') || '无'
+  );
 }
 function moduleAccessText(node: WorkflowNode) {
   const labels: Record<string, string> = {
@@ -824,16 +1062,27 @@ function configuredParts(node: WorkflowNode) {
     parts.push(`办理详情（${detailBindingText(node)}）`);
   if (node.moduleAccess) parts.push(`模块权限（${moduleAccessText(node)}）`);
   if (node.buttons?.length) parts.push(`按钮（${buttonsText(node)}）`);
+  if (node.handleRoleIds?.length || node.handleDeniedRoleIds?.length)
+    parts.push(
+      `办理角色（${rolePolicyText(node.handleRoleIds, node.handleDeniedRoleIds)}）`,
+    );
+  if (
+    Object.keys(node.buttonRoleIds || {}).length > 0 ||
+    Object.keys(node.buttonDeniedRoleIds || {}).length > 0
+  )
+    parts.push(`按钮角色（${buttonRolePolicyText(node)}）`);
   if (node.sla?.durationHours) parts.push(`时限（${slaText(node)}）`);
   if (node.dataActions?.length)
     parts.push(`数据动作（${dataActionsText(node)}）`);
   if (Object.keys(node.fieldAccess || {}).length > 0)
     parts.push(`字段权限（${fieldAccessText(node)}）`);
+  if (Object.keys(node.fieldBindings || {}).length > 0)
+    parts.push(`字段取值（${fieldBindingsText(node)}）`);
   return parts;
 }
 
 /**
- * 对比两个版本在按钮、时限、数据动作、字段权限上的差异
+ * 对比两个版本在权限、按钮、时限、数据动作和字段配置上的差异
  * @param before 旧版本设计
  * @param after 新版本设计
  */
@@ -842,9 +1091,34 @@ export function diffWorkflowConfig(
   after: WorkflowDocument,
 ): string[] {
   const lines: string[] = [];
+  const buttonCodes = new Set([
+    ...(before.buttonCatalog || []).map(
+      (button) => button.code || button.action,
+    ),
+    ...(after.buttonCatalog || []).map(
+      (button) => button.code || button.action,
+    ),
+  ]);
+  for (const code of buttonCodes) {
+    const previous = before.buttonCatalog?.find(
+      (button) => (button.code || button.action) === code,
+    );
+    const next = after.buttonCatalog?.find(
+      (button) => (button.code || button.action) === code,
+    );
+    if (JSON.stringify(previous || null) !== JSON.stringify(next || null))
+      lines.push(`按钮资源「${code}」配置已变更`);
+  }
   if ((before.defaultDetailViewId || '') !== (after.defaultDetailViewId || ''))
     lines.push(
       `流程默认办理详情由${before.defaultDetailViewId || '内置协议详情'}改为${after.defaultDetailViewId || '内置协议详情'}`,
+    );
+  if (
+    rolePolicyText(before.startRoleIds, before.startDeniedRoleIds) !==
+    rolePolicyText(after.startRoleIds, after.startDeniedRoleIds)
+  )
+    lines.push(
+      `流程发起角色由${rolePolicyText(before.startRoleIds, before.startDeniedRoleIds)}改为${rolePolicyText(after.startRoleIds, after.startDeniedRoleIds)}`,
     );
   const beforeNodes = new Map(before.nodes.map((node) => [node.id, node]));
   const afterNodes = new Map(after.nodes.map((node) => [node.id, node]));
@@ -863,6 +1137,20 @@ export function diffWorkflowConfig(
       buttonsText(prev),
       buttonsText(next),
     );
+    pushConfigChange(
+      lines,
+      next.name,
+      '办理角色',
+      rolePolicyText(prev.handleRoleIds, prev.handleDeniedRoleIds),
+      rolePolicyText(next.handleRoleIds, next.handleDeniedRoleIds),
+    );
+    pushConfigChange(
+      lines,
+      next.name,
+      '按钮角色',
+      buttonRolePolicyText(prev),
+      buttonRolePolicyText(next),
+    );
     pushConfigChange(lines, next.name, '时限', slaText(prev), slaText(next));
     pushConfigChange(
       lines,
@@ -877,6 +1165,13 @@ export function diffWorkflowConfig(
       '字段权限',
       fieldAccessText(prev),
       fieldAccessText(next),
+    );
+    pushConfigChange(
+      lines,
+      next.name,
+      '字段取值',
+      fieldBindingsText(prev),
+      fieldBindingsText(next),
     );
     pushConfigChange(
       lines,
@@ -1018,6 +1313,9 @@ export function documentOf(record: WorkflowDocument): WorkflowDocument {
     businessTable,
     description,
     defaultDetailViewId,
+    buttonCatalog,
+    startRoleIds,
+    startDeniedRoleIds,
     nodes,
     edges,
     viewport,
@@ -1032,6 +1330,9 @@ export function documentOf(record: WorkflowDocument): WorkflowDocument {
       businessTable,
       description,
       defaultDetailViewId: defaultDetailViewId || '',
+      buttonCatalog: buttonCatalog || [],
+      startRoleIds,
+      startDeniedRoleIds,
       nodes,
       edges,
       viewport,

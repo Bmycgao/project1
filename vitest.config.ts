@@ -1,10 +1,19 @@
+import { fileURLToPath } from 'node:url';
+
 import Vue from '@vitejs/plugin-vue';
 import VueJsx from '@vitejs/plugin-vue-jsx';
 import { configDefaults, defineConfig } from 'vitest/config';
 
 export default defineConfig({
   plugins: [Vue(), VueJsx()],
+  resolve: {
+    alias: {
+      '~': fileURLToPath(new URL('apps/backend-mock', import.meta.url)),
+    },
+  },
   test: {
+    // Keep FormCreate and Element Plus on the same ESM/injection context as Vite.
+    server: { deps: { inline: [/@form-create\//, /element-plus/] } },
     environment: 'happy-dom',
     environmentOptions: {
       happyDOM: {

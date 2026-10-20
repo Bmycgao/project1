@@ -2,6 +2,7 @@
 import type { UserInfo } from './mock-data';
 
 import { WORKFLOW_AUTH } from '../../shared/workflow-runtime';
+import { customModuleCodesForPermissionIds } from './agreement-module-resources';
 import { ensureMenuStoreHydrated } from './menu-store';
 /**
  * RBAC 内存存储：角色权限 + 用户绑角色
@@ -161,17 +162,18 @@ const VIEWER_MODULE_PERM_IDS = collectIdsByAuthCodes([
 const WORKFLOW_RUNTIME_IDS = [
   findMenuIdByName('WorkflowTasks'),
   findMenuIdByName('WorkflowInstance'),
-].filter((id): id is number | string => id != null);
+].filter((id): id is number | string => id !== null && id !== undefined);
 /** 发起流程按钮 */
 const WORKFLOW_START_IDS = collectIdsByAuthCodes([WORKFLOW_AUTH.start]);
 /** 流程设计菜单及列表按钮 */
 const WORKFLOW_DESIGN_IDS = collectIdsByMenuNames([
   'SystemWorkflow',
   'SystemWorkflowEdit',
+  'SystemWorkflowButtons',
 ]);
 /** 流程监控菜单（管理员查看全部实例） */
 const WORKFLOW_MONITOR_IDS = [findMenuIdByName('SystemWorkflowMonitor')].filter(
-  (id): id is number | string => id != null,
+  (id): id is number | string => id !== null && id !== undefined,
 );
 
 const ENTRY_PERM_IDS = [
@@ -443,6 +445,15 @@ if (!readPersistJson<{ done: boolean }>('workflow-menu-migration.json')?.done) {
   }
   writePersistJson('workflow-menu-migration.json', { done: true });
 }
+if (
+  !readPersistJson<{ done: boolean }>('workflow-button-menu-migration.json')
+    ?.done
+) {
+  const buttonMenuId = findMenuIdByName('SystemWorkflowButtons');
+  if (buttonMenuId !== null && buttonMenuId !== undefined)
+    grantNewMenuToDefaultRoles(buttonMenuId);
+  writePersistJson('workflow-button-menu-migration.json', { done: true });
+}
 
 /**
  * 给演示角色补上新增的「详情区域」按钮 ID（兼容已落盘的旧 rbac.json）
@@ -641,10 +652,8 @@ function collectAuthCodes(
 ) {
   for (const node of list) {
     const id = String(node.id);
-    if (!allowedIds || allowedIds.has(id)) {
-      if (node.authCode) {
-        out.add(String(node.authCode));
-      }
+    if ((!allowedIds || allowedIds.has(id)) && node.authCode) {
+      out.add(String(node.authCode));
     }
     if (node.children?.length) {
       // 超管走全部；普通用户仍递归，由子节点自己的 id 判断
@@ -666,6 +675,8 @@ export function resolveAccessCodes(user: RbacUser): string[] {
   }
   const allowed = resolvePermissionIds(user);
   collectAuthCodes(MOCK_MENU_LIST, allowed, codes);
+  for (const code of customModuleCodesForPermissionIds(allowed))
+    codes.add(code);
   return [...codes];
 }
 
@@ -686,6 +697,8 @@ export function resolveAccessCodesByRoleId(roleId: string): string[] {
 
   const allowed = new Set((role.permissions || []).map(String));
   collectAuthCodes(MOCK_MENU_LIST, allowed, codes);
+  for (const code of customModuleCodesForPermissionIds(allowed))
+    codes.add(code);
   return [...codes];
 }
 
@@ -713,6 +726,7 @@ export function grantNewMenuToDefaultRoles(
     ...(extraRoleIds || []).map(String),
   ]);
   const [normalizedId] = normalizePermIds([menuId]);
+  if (normalizedId === undefined) return false;
   let changed = false;
 
   for (const roleId of targets) {

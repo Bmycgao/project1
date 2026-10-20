@@ -2,15 +2,9 @@
  * 各详情块默认 FormCreate rule（字段 key 与业务数据对齐）
  * 表格使用 tableForm + props.columns，便于设计器 loadRule / 运行时渲染
  */
-type FcRule = Record<string, any>;
+import { buildAgreementDemoStatusOptions } from './agreement-demo-status';
 
-const STATUS_OPTIONS = [
-  { label: '告知单', value: '告知单' },
-  { label: '待复核', value: '待复核' },
-  { label: '待生效', value: '待生效' },
-  { label: '已签约', value: '已签约' },
-  { label: '组长已复核', value: '组长已复核' },
-];
+type FcRule = Record<string, any>;
 
 /**
  * 生成输入类字段
@@ -105,7 +99,11 @@ function tableForm(field: string, title: string, columns: FcRule[]): FcRule[] {
 /** 基础信息默认表单 */
 export function buildDefaultBasicFcRule(): FcRule[] {
   return [
-    field({ field: 'agreementNo', title: '协议编号', required: true }),
+    field({
+      field: 'agreementNo',
+      title: '协议编号',
+      required: true,
+    }),
     field({ field: 'agreementName', title: '协议名称', required: true }),
     field({ field: 'department', title: '所属部门' }),
     field({ field: 'acquirer', title: '征收人' }),
@@ -127,7 +125,7 @@ export function buildDefaultBasicFcRule(): FcRule[] {
       field: 'statusValue',
       title: '状态',
       span: 16,
-      options: STATUS_OPTIONS,
+      options: buildAgreementDemoStatusOptions(),
     }),
     field({
       type: 'textarea',

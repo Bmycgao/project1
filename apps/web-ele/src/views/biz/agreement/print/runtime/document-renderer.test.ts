@@ -16,7 +16,7 @@ describe('renderDocumentTable header attrs', () => {
       },
       { rewardItems: [{ name: 'a', amount: 1 }] } as any,
     );
-    const headers = [...table.querySelectorAll('thead td')];
+    const headers = [...table.querySelectorAll<HTMLElement>('thead td')];
     expect(headers).toHaveLength(2);
     expect(headers[0]?.dataset.docHeader).toBe('1');
     expect(headers[0]?.dataset.docLeafStart).toBe('0');

@@ -253,6 +253,7 @@ export async function loadAgreeDetailPageConfig(opts: {
   customInners: Record<string, ModuleInnerConfig>;
   /** FormCreate 各块 rule */
   fcRules: FcRuleMap;
+  fieldRules: AgreeFieldRule[];
   housesInner: ModuleInnerConfig;
   modules: AgreeModuleMount[];
   populationInner: ModuleInnerConfig;
@@ -267,6 +268,7 @@ export async function loadAgreeDetailPageConfig(opts: {
     populationInner: buildDefaultPopulationModuleInner(),
     customInners: {} as Record<string, ModuleInnerConfig>,
     fcRules: buildDefaultFcRuleMap(),
+    fieldRules: [...DEFAULT_AGREE_FIELD_RULES],
   };
   const schemaId =
     String(opts.schemaId || '').trim() ||
@@ -275,8 +277,23 @@ export async function loadAgreeDetailPageConfig(opts: {
   if (!schemaId) {
     return empty;
   }
+  let explicitDetail = false;
   try {
-    const schema = await getPageSchema(schemaId);
+    let schema = await getPageSchema(schemaId);
+    explicitDetail =
+      !!schema?.detailSchemaId || schema?.schemaKind === 'detail';
+    if (schema?.detailSchemaId) {
+      const targetId = schema.detailSchemaId;
+      if (schema.status !== 1) throw new Error('列表页面已停用');
+      schema = await getPageSchema(targetId);
+      if (schema?.schemaKind !== 'detail')
+        throw new Error('关联的办理详情不存在，请检查页面配置');
+    }
+    if (
+      explicitDetail &&
+      (schema.status !== 1 || !schema.modules?.some((module) => module.enabled))
+    )
+      throw new Error('办理详情已停用或未启用模块，请检查页面配置');
     const inner = schema?.moduleInner as
       | Record<string, ModuleInnerConfig>
       | undefined;
@@ -316,6 +333,7 @@ export async function loadAgreeDetailPageConfig(opts: {
     }
     return {
       modules,
+      fieldRules: (schema.fieldRules || []) as AgreeFieldRule[],
       basicInner: normalizeBasicModuleInner(inner?.basic),
       housesInner: normalizeHousesModuleInner(inner?.houses, inner?.basic),
       compensationInner: normalizeCompensationModuleInner(inner?.compensation),
@@ -326,9 +344,12 @@ export async function loadAgreeDetailPageConfig(opts: {
         (schema as any)?.fcBindings,
         modules,
         (schema as any)?.fcRules,
+        { strict: explicitDetail },
       ),
     };
-  } catch {
+  } catch (error) {
+    // Explicit references must never silently render the default five modules.
+    if (explicitDetail || opts.schemaId) throw error;
     return empty;
   }
 }

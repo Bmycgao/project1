@@ -1,8 +1,15 @@
 /**
  * mock 本地落盘：配置台改动能跨重启保留（目录已在 .gitignore）
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /** backend-mock/data 目录 */
@@ -37,12 +44,30 @@ export function readPersistJson<T>(fileName: string): null | T {
  * @param fileName 文件名
  * @param data 数据
  */
-export function writePersistJson(fileName: string, data: unknown) {
+export function writePersistJson(
+  fileName: string,
+  data: unknown,
+  options: { atomic?: boolean } = {},
+) {
+  let temporary = '';
   try {
     ensureDataDir();
     const full = join(DATA_DIR, fileName);
-    writeFileSync(full, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+    const content = `${JSON.stringify(data, null, 2)}\n`;
+    if (options.atomic) {
+      temporary = `${full}.${process.pid}-${Date.now()}.tmp`;
+      writeFileSync(temporary, content, 'utf8');
+      renameSync(temporary, full);
+    } else writeFileSync(full, content, 'utf8');
   } catch (error) {
+    if (temporary && existsSync(temporary)) {
+      try {
+        unlinkSync(temporary);
+      } catch {
+        /* 原始错误优先。 */
+      }
+    }
+    if (options.atomic) throw error;
     console.warn('[mock-persist] 写入失败', fileName, error);
   }
 }

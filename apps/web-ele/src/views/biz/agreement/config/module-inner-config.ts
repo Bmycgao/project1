@@ -2,6 +2,7 @@
  * 详情模块「内部」配置：子块 + 字段显隐/顺序
  * 5 块：basic/population 表单可增删字段；houses/compensation/rewards 表格
  */
+import { buildAgreementDemoStatusOptions } from '../../../../../../shared/agreement-demo-status';
 import { cloneJson } from '../clone';
 
 /** 表单控件类型（基础信息 / 签约 / 补偿） */
@@ -342,13 +343,7 @@ function stripLegacyBasicTables(
  * 基础信息默认目录：协议头 KV 表单（可拖顺序/占宽）
  */
 export function buildDefaultBasicModuleInner(): ModuleInnerConfig {
-  const statusOptions = [
-    { label: '告知单', value: '告知单' },
-    { label: '待复核', value: '待复核' },
-    { label: '待生效', value: '待生效' },
-    { label: '已签约', value: '已签约' },
-    { label: '组长已复核', value: '组长已复核' },
-  ];
+  const statusOptions = buildAgreementDemoStatusOptions();
   return {
     sections: [
       {

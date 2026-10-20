@@ -1,17 +1,16 @@
 import { eventHandler } from 'h3';
 import { runtimeRequest } from '~/utils/workflow-runtime-api';
 import { listWorkflows } from '~/utils/workflow-store';
+
+import { mayStartWorkflow } from '../../../shared/workflow-access';
+import { startableWorkflowDefinition } from '../../../shared/workflow-runtime';
 export default eventHandler((event) =>
-  runtimeRequest(event, () =>
-    listWorkflows()
-      .filter((d) => d.status === 'published')
-      .map((d) => ({
-        id: d.id,
-        name: d.name,
-        base: d.base,
-        version: d.version,
-        category: d.category,
-        businessTable: d.businessTable,
-      })),
+  runtimeRequest(
+    event,
+    (actor) =>
+      listWorkflows()
+        .filter((d) => d.status === 'published' && mayStartWorkflow(d, actor))
+        .map((value) => startableWorkflowDefinition(value)),
+    'start',
   ),
 );

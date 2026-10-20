@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/* oxlint-disable typescript/no-non-null-assertion -- Existing canvas code checks selection and document invariants before accessing these values. */
 import type { AgreePrintData } from '../types';
 import type {
   CanvasFieldDropPayload,
@@ -115,7 +116,7 @@ const guide = ref<null | {
   width: number;
 }>(null);
 const busy = ref(false);
-const error = ref('');
+const renderError = ref('');
 const defaultHint =
   '选中后拖动「调间距」或「排序」。点表头打开编辑明细表；表体可拖选合并/拆分。';
 const hint = ref(defaultHint);
@@ -438,7 +439,7 @@ function mountHeaderFilterButton(td: HTMLElement, canFilter: boolean) {
       event.stopPropagation();
       const wrap = td.closest<HTMLElement>('[data-doc-key]');
       if (!wrap) return;
-      const rect = btn.getBoundingClientRect();
+      const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
       emit('headerFilterRequested', {
         key: wrap.dataset.docKey || '',
         field: td.dataset.docHeaderField || '',
@@ -537,7 +538,7 @@ watch(
     const version = ++generation;
     if (!props.templateJson) return;
     busy.value = true;
-    error.value = '';
+    renderError.value = '';
     try {
       const prepared = preparePrintTemplate(
         props.templateJson,
@@ -550,7 +551,7 @@ watch(
       host.value?.replaceChildren(html);
       selectOutline();
     } catch (error) {
-      if (version === generation) error.value = (error as Error).message;
+      if (version === generation) renderError.value = (error as Error).message;
     } finally {
       if (version === generation) busy.value = false;
     }
@@ -766,22 +767,30 @@ function target(event: DragPoint) {
       })[0] || null;
     bounds = cell?.firstElementChild?.getBoundingClientRect();
   }
-  const placement =
-    bounds &&
-    event.clientY >= bounds.top &&
-    event.clientY <= bounds.bottom &&
-    event.clientX > bounds.right - Math.min(32, bounds.width * 0.15) &&
-    event.clientX <= bounds.right
-      ? 'beside'
-      : bounds &&
-          event.clientY >= bounds.top &&
-          event.clientY <= bounds.bottom &&
-          event.clientX >= bounds.left &&
-          event.clientX < bounds.left + Math.min(32, bounds.width * 0.15)
-        ? 'beside-before'
-        : bounds && event.clientY < bounds.top + bounds.height / 2
-          ? 'before'
-          : 'after';
+  const placement = (() => {
+    if (
+      bounds &&
+      event.clientY >= bounds.top &&
+      event.clientY <= bounds.bottom &&
+      event.clientX > bounds.right - Math.min(32, bounds.width * 0.15) &&
+      event.clientX <= bounds.right
+    ) {
+      return 'beside';
+    }
+    if (
+      bounds &&
+      event.clientY >= bounds.top &&
+      event.clientY <= bounds.bottom &&
+      event.clientX >= bounds.left &&
+      event.clientX < bounds.left + Math.min(32, bounds.width * 0.15)
+    ) {
+      return 'beside-before';
+    }
+    if (bounds && event.clientY < bounds.top + bounds.height / 2) {
+      return 'before';
+    }
+    return 'after';
+  })();
   return {
     cell,
     paper,
@@ -1105,7 +1114,9 @@ defineExpose({
       <button type="button" @click="emit('bodySplitRequested')">拆分</button>
       <button type="button" @click="emit('bodyFormulaRequested')">计算</button>
     </div>
-    <p v-if="error" class="document-error" role="alert">{{ error }}</p>
+    <p v-if="renderError" class="document-error" role="alert">
+      {{ renderError }}
+    </p>
     <div
       v-if="selectionBox && !busy"
       class="document-drag-handles"

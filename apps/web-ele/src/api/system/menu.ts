@@ -1,3 +1,5 @@
+import type { WorkflowRecord } from '../../../../shared/workflow';
+
 import { requestClient } from '#/api/request';
 
 /** 系统菜单相关类型与接口 */
@@ -17,11 +19,11 @@ export namespace SystemMenuApi {
     component?: string;
     id: string;
     meta?: {
+      [key: string]: any;
       icon?: string;
       keepAlive?: boolean;
       order?: number;
       title?: string;
-      [key: string]: any;
     };
     name: string;
     path?: string;
@@ -36,6 +38,28 @@ export namespace SystemMenuApi {
  */
 async function getMenuList() {
   return requestClient.get<SystemMenuApi.SystemMenu[]>('/system/menu/list');
+}
+
+async function getPublishedWorkflowMenuOptions() {
+  return requestClient.get<WorkflowRecord[]>('/system/menu/workflows');
+}
+
+async function getMenuPreview(
+  params: { roleId?: string; userId?: string } = {},
+) {
+  return requestClient.get<{
+    menus: SystemMenuApi.SystemMenu[];
+    roles: { id: string; name: string }[];
+    users: { id: string; name: string; username: string }[];
+  }>('/system/menu/preview', { params });
+}
+
+async function moveMenu(
+  id: string,
+  targetId: string,
+  position: 'after' | 'before' | 'inner',
+) {
+  return requestClient.post('/system/menu/move', { id, targetId, position });
 }
 
 /**
@@ -94,7 +118,10 @@ export {
   createMenu,
   deleteMenu,
   getMenuList,
+  getMenuPreview,
+  getPublishedWorkflowMenuOptions,
   isMenuNameExists,
   isMenuPathExists,
+  moveMenu,
   updateMenu,
 };

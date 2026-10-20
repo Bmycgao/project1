@@ -6,6 +6,8 @@ import type {
   WorkflowDetailView,
 } from './workflow-runtime';
 
+import { canAccessAgreementModule } from './agreement-module-access';
+
 export const DEFAULT_WORKFLOW_MODULES = [
   { key: 'basic', label: '基础信息', widgetKind: 'form' },
   { key: 'houses', label: '房屋信息', widgetKind: 'table' },
@@ -24,15 +26,18 @@ export function moduleDataPath(
     rewards: 'rewardItems',
     population: 'population',
   };
-  return roots[module.key]
-    ? [roots[module.key]!]
+  const root = roots[module.key];
+  return root
+    ? [root]
     : [
         module.widgetKind === 'table' ? 'extraTables' : 'extraForms',
         module.key,
       ];
 }
 export function readPath(value: any, path: string[]): any {
-  return path.reduce((current, key) => current?.[key], value);
+  let current = value;
+  for (const key of path) current = current?.[key];
+  return current;
 }
 export function writePath(
   target: Record<string, any>,
@@ -41,7 +46,8 @@ export function writePath(
 ) {
   let parent = target;
   for (const key of path.slice(0, -1)) parent = parent[key] ||= {};
-  parent[path.at(-1)!] = value;
+  const key = path.at(-1);
+  if (key !== undefined) parent[key] = value;
 }
 function permits(codes: string[], required?: string[]) {
   return (
@@ -79,7 +85,7 @@ export function effectiveDetailView(
     const access = node.moduleAccess?.[source.key] || 'inherit';
     if (
       access === 'hidden' ||
-      !permits(actor.codes, source.authCode ? [source.authCode] : undefined)
+      !canAccessAgreementModule(actor.codes, source.key, source.authCode)
     )
       continue;
     const moduleLocked = !canAct || access === 'readonly';
@@ -108,13 +114,13 @@ export function effectiveDetailView(
           !!field.editableCodeGroups?.some(
             (group) => !permits(actor.codes, group),
           ),
-        children: field.children?.map(fieldAccess),
+        children: field.children?.map((value) => fieldAccess(value)),
       };
       if (result.children?.some((child) => child.hidden || child.readonly))
         result.readonly = true;
       return result;
     }
-    const fields = source.fields.map(fieldAccess);
+    const fields = source.fields.map((value) => fieldAccess(value));
     // 表格有锁定列时暂时整表只读，避免改行/删行绕过列限制。
     const readonly =
       moduleLocked || fields.every((f) => f.hidden || f.readonly);
@@ -146,7 +152,7 @@ function filterRules(
       rule.props.columns = rule.props.columns
         .map((column: any) => ({
           ...column,
-          rule: filterRules(column.rule || [], field.children!),
+          rule: filterRules(column.rule || [], field.children || []),
         }))
         .filter((column: any) => column.rule.length);
       if (field.readonly) {
@@ -173,7 +179,7 @@ function projectObject(
     result[field.key] =
       field.children && Array.isArray(value[field.key])
         ? value[field.key].map((row: any) =>
-            projectObject(row, field.children!, writable),
+            projectObject(row, field.children || [], writable),
           )
         : value[field.key];
   }

@@ -1,4 +1,10 @@
-import { buildDefaultFcBindingsForModules } from './mock-fc-schema';
+import type { PageSchemaKind } from '../../shared/page-schema';
+
+import { pageSchemaSaveIssue } from '../../shared/page-schema';
+import {
+  buildDefaultFcBindingsForModules,
+  findFcSchema,
+} from './mock-fc-schema';
 /**
  * 配置化列表：页面字段 Schema + 演示数据
  * 协议场景用 PS_AGREE_*；实体列表可由「页面配置」新建后挂到动态列表页
@@ -53,11 +59,14 @@ export interface PageSchema {
   /**
    * entity=独立实体列表；
    * template=列模板（只定义列）；
-   * scene=场景视图（引用列模板；可覆盖 columns 显隐/顺序）
+   * scene=场景视图（引用列模板；可覆盖 columns 显隐/顺序）；
+   * detail=独立办理详情（模块与表单布局，不依赖列表）
    */
-  schemaKind?: 'entity' | 'scene' | 'template';
+  schemaKind?: PageSchemaKind;
   /** scene 引用的列模板 ID */
   columnTemplateId?: string;
+  /** 业务列表实时引用的独立办理详情；空值保留旧版内嵌详情。 */
+  detailSchemaId?: string;
   /** 列表场景码，请求业务 list 时带上 */
   scene?: string;
   /** 工具栏按钮（场景配置，可带差异化 bind） */
@@ -74,6 +83,7 @@ export interface PageSchema {
     code: string;
     group?: string;
     label: string;
+    plain?: boolean;
     type?: string;
   }[];
   /** 场景允许的状态值。空数组表示不过滤 */
@@ -285,53 +295,6 @@ function buildBasicInnerFull(): ModuleInnerSchema {
   };
 }
 
-/** 权利人表格种子（旧结构保留，供迁移对照） */
-function _buildRightHoldersInnerFull(): ModuleInnerSchema {
-  return {
-    sections: [
-      {
-        key: 'rightHolders',
-        label: '权利人信息',
-        subtitle: '可新增多位权利人',
-        enabled: true,
-        order: 10,
-        fields: [
-          {
-            key: 'agreementNo',
-            label: '协议编号',
-            enabled: true,
-            order: 10,
-            minWidth: 120,
-          },
-          {
-            key: 'name',
-            label: '姓名',
-            enabled: true,
-            order: 20,
-            minWidth: 100,
-          },
-          {
-            key: 'idNo',
-            label: '身份证号/营业执照号',
-            enabled: true,
-            order: 30,
-            minWidth: 180,
-            accessField: 'idNo',
-          },
-          {
-            key: 'phone',
-            label: '联系电话',
-            enabled: true,
-            order: 40,
-            minWidth: 120,
-            accessField: 'phone',
-          },
-        ],
-      },
-    ],
-  };
-}
-
 /** 房屋表格种子 */
 function buildHousesInnerFull(): ModuleInnerSchema {
   return {
@@ -419,154 +382,6 @@ function buildHousesInnerFull(): ModuleInnerSchema {
             enabled: true,
             order: 100,
             minWidth: 140,
-          },
-        ],
-      },
-    ],
-  };
-}
-
-/** 签约信息内部字段种子（全量） */
-function _buildSigningInnerFull(): ModuleInnerSchema {
-  const yesNo = [
-    { label: '是', value: '是' },
-    { label: '否', value: '否' },
-  ];
-  return {
-    sections: [
-      {
-        key: 'signing',
-        label: '签约信息',
-        subtitle: '按房屋维度维护签约要素',
-        enabled: true,
-        order: 10,
-        fields: [
-          {
-            key: 'houseAddress',
-            label: '房屋地址',
-            enabled: true,
-            order: 10,
-            controlType: 'input',
-            span: 24,
-            required: true,
-          },
-          {
-            key: 'compensateMethod',
-            label: '补偿方式',
-            enabled: true,
-            order: 20,
-            controlType: 'select',
-            span: 12,
-            required: true,
-            options: [
-              { label: '产权调换', value: '产权调换' },
-              { label: '货币补偿', value: '货币补偿' },
-              { label: '货币+调换', value: '货币+调换' },
-            ],
-          },
-          {
-            key: 'decorateEval',
-            label: '装修装饰评估',
-            enabled: true,
-            order: 30,
-            controlType: 'yesno',
-            span: 12,
-            options: yesNo,
-          },
-          {
-            key: 'hasMortgage',
-            label: '是否存在抵押',
-            enabled: true,
-            order: 40,
-            controlType: 'yesno',
-            span: 12,
-            options: yesNo,
-          },
-          {
-            key: 'mortgagee',
-            label: '抵押权人',
-            enabled: true,
-            order: 50,
-            controlType: 'input',
-            span: 12,
-          },
-          {
-            key: 'debtAmount',
-            label: '担保主债权金额',
-            enabled: true,
-            order: 60,
-            controlType: 'input',
-            span: 12,
-            accessField: 'debtAmount',
-          },
-          {
-            key: 'signDate',
-            label: '签约日期',
-            enabled: true,
-            order: 70,
-            controlType: 'date',
-            span: 12,
-            accessField: 'signDate',
-            placeholder: '选择日期',
-          },
-          {
-            key: 'hasSeal',
-            label: '是否存在查封',
-            enabled: true,
-            order: 80,
-            controlType: 'yesno',
-            span: 12,
-            options: yesNo,
-          },
-          {
-            key: 'sealCourt',
-            label: '查封法院',
-            enabled: true,
-            order: 90,
-            controlType: 'input',
-            span: 24,
-          },
-        ],
-      },
-      {
-        key: 'contact',
-        label: '通讯信息',
-        subtitle: '用于送达与紧急联系',
-        enabled: true,
-        order: 20,
-        fields: [
-          {
-            key: 'address',
-            label: '通讯地址',
-            enabled: true,
-            order: 10,
-            controlType: 'input',
-            span: 24,
-          },
-          {
-            key: 'contact',
-            label: '联系人',
-            enabled: true,
-            order: 20,
-            controlType: 'input',
-            span: 12,
-          },
-          {
-            key: 'phone',
-            label: '联系电话',
-            enabled: true,
-            order: 30,
-            controlType: 'input',
-            span: 12,
-            accessField: 'phone',
-          },
-          {
-            key: 'emergency',
-            label: '紧急联系人',
-            enabled: true,
-            order: 40,
-            controlType: 'input',
-            span: 12,
           },
         ],
       },
@@ -846,26 +661,6 @@ function buildHousesInnerViewSubset() {
       ...sec,
       fields: sec.fields.map((f) => {
         if (f.key === 'propertyType' || f.key === '_selection') {
-          return { ...f, enabled: false };
-        }
-        return f;
-      }),
-    })),
-  };
-}
-
-/** 查看场景签约：卸下部分字段做演示 */
-function _buildSigningInnerViewSubset() {
-  const full = _buildSigningInnerFull();
-  return {
-    sections: full.sections.map((sec) => ({
-      ...sec,
-      fields: sec.fields.map((f) => {
-        if (
-          f.key === 'mortgagee' ||
-          f.key === 'sealCourt' ||
-          f.key === 'emergency'
-        ) {
           return { ...f, enabled: false };
         }
         return f;
@@ -1331,7 +1126,7 @@ function ensureModuleInnerFromSeed() {
     );
     if (idx === -1) continue;
     const current = pageSchemaStore[idx];
-    if (!current) continue;
+    if (!current || current.detailSchemaId) continue;
     const nextInner = {
       ...current.moduleInner,
     } as NonNullable<PageSchema['moduleInner']>;
@@ -1384,7 +1179,7 @@ function migrateAgreeFiveModules() {
   for (let idx = 0; idx < pageSchemaStore.length; idx++) {
     const current = pageSchemaStore[idx];
     if (!current) continue;
-    if (current.schemaKind !== 'scene') continue;
+    if (current.schemaKind !== 'scene' || current.detailSchemaId) continue;
     const seed = MOCK_PAGE_SCHEMAS.find(
       (s) => String(s.id) === String(current.id),
     );
@@ -1480,7 +1275,8 @@ function migrateLegacyBasicTables() {
   let changed = false;
   for (let idx = 0; idx < pageSchemaStore.length; idx++) {
     const current = pageSchemaStore[idx];
-    if (!current) continue;
+    if (!current || current.detailSchemaId || current.schemaKind === 'detail')
+      continue;
     const inner = current.moduleInner;
     const sections = inner?.basic?.sections;
     if (!sections?.length) continue;
@@ -1516,7 +1312,8 @@ function migrateLegacyMaterialModules() {
   let changed = false;
   for (let idx = 0; idx < pageSchemaStore.length; idx++) {
     const current = pageSchemaStore[idx];
-    if (!current) continue;
+    if (!current || current.detailSchemaId || current.schemaKind === 'detail')
+      continue;
     let rowChanged = false;
     let modules = current.modules ? [...current.modules] : [];
     const sign = modules.find((m) => m.key === 'signMaterial');
@@ -1612,7 +1409,7 @@ function ensureSceneModulesFromSeed() {
     );
     if (idx === -1) continue;
     const current = pageSchemaStore[idx];
-    if (!current) continue;
+    if (!current || current.detailSchemaId) continue;
     if (!current.modules?.length) {
       pageSchemaStore[idx] = {
         ...current,
@@ -1732,7 +1529,7 @@ function ensureFcBindingsFromSeed() {
   for (let i = 0; i < pageSchemaStore.length; i += 1) {
     const schema = pageSchemaStore[i];
     if (!schema) continue;
-    if (schema.schemaKind !== 'scene') continue;
+    if (schema.schemaKind !== 'scene' || schema.detailSchemaId) continue;
     if (schema.fcBindings && Object.keys(schema.fcBindings).length > 0)
       continue;
     const keys =
@@ -1749,12 +1546,14 @@ function ensureFcBindingsFromSeed() {
 /**
  * 落盘当前配置与历史
  */
-function persistPageSchemaStore() {
-  writePersistJson(PERSIST_FILE, {
+function persistPageSchemaStore(atomic = false) {
+  const data = {
     schemas: pageSchemaStore,
     history: pageSchemaHistory,
     schemaIdSeed,
-  });
+  };
+  if (atomic) writePersistJson(PERSIST_FILE, data, { atomic: true });
+  else writePersistJson(PERSIST_FILE, data);
 }
 
 hydratePageSchemaFromDisk();
@@ -1857,6 +1656,16 @@ export function findPageSchema(id: string) {
  * @param data 表单数据
  */
 export function createPageSchema(data: Partial<PageSchema>) {
+  const node = buildPageSchema(data);
+  pageSchemaStore.push(node);
+  persistPageSchemaStore();
+  return node;
+}
+
+function buildPageSchema(input: Partial<PageSchema>) {
+  validateDetailReference(input);
+  const data = withoutLinkedDetailFields(input);
+  validateDetailPageSchema(data);
   const id = `PS${schemaIdSeed++}`;
   const kind = data.schemaKind || 'entity';
   const defaultColumns: PageSchema['columns'] = [
@@ -1874,24 +1683,27 @@ export function createPageSchema(data: Partial<PageSchema>) {
   const node: PageSchema = {
     id,
     name: data.name || `page_${id}`,
-    title: data.title || '未命名列表',
+    title: data.title || (kind === 'detail' ? '未命名办理详情' : '未命名列表'),
     remark: data.remark || '',
     status: (data.status ?? 1) as 0 | 1,
     schemaKind: kind,
     columnTemplateId: data.columnTemplateId,
+    detailSchemaId: data.detailSchemaId,
     scene: data.scene,
     buttons: data.buttons,
     statusIn: data.statusIn,
     // 场景：列由模板提供，允许空 columns
-    columns:
-      kind === 'scene'
-        ? data.columns || []
-        : data.columns?.length
-          ? data.columns
-          : defaultColumns,
-    queryFields: data.queryFields?.length
-      ? data.queryFields
-      : [{ field: 'name', title: '名称', component: 'Input' }],
+    columns: (() => {
+      if (kind === 'detail') return [];
+      if (kind === 'scene') return data.columns || [];
+      return data.columns?.length ? data.columns : defaultColumns;
+    })(),
+    queryFields:
+      kind === 'detail'
+        ? []
+        : data.queryFields?.length
+          ? data.queryFields
+          : [{ field: 'name', title: '名称', component: 'Input' }],
     fieldRules: data.fieldRules,
     modules: data.modules,
     moduleInner: data.moduleInner,
@@ -1899,7 +1711,7 @@ export function createPageSchema(data: Partial<PageSchema>) {
     fcRules: data.fcRules,
     fcBindings:
       data.fcBindings ||
-      (kind === 'scene'
+      (kind === 'scene' || kind === 'detail'
         ? buildDefaultFcBindingsForModules(
             (data.modules || [])
               .filter((m) => m.enabled !== false)
@@ -1908,9 +1720,104 @@ export function createPageSchema(data: Partial<PageSchema>) {
         : undefined),
     mockCount: data.mockCount ?? 40,
   };
-  pageSchemaStore.push(node);
-  persistPageSchemaStore();
   return node;
+}
+
+function validateDetailReference(data: Partial<PageSchema>) {
+  if (!data.detailSchemaId) {
+    if (
+      data.schemaKind === 'scene' &&
+      !data.modules?.some((module) => module.enabled)
+    )
+      throw new Error('业务列表必须关联独立详情，或保留有效的旧版内嵌详情');
+    return;
+  }
+  if (data.schemaKind !== 'scene')
+    throw new Error('只有业务列表可以关联办理详情');
+  const target = pageSchemaStore.find(
+    (page) => page.id === data.detailSchemaId,
+  );
+  if (
+    !target ||
+    target.schemaKind !== 'detail' ||
+    target.status !== 1 ||
+    !target.modules?.some((module) => module.enabled)
+  )
+    throw new Error('关联的办理详情不存在、已停用或没有启用模块，请重新选择');
+}
+
+/** Referencing lists never persist a second, divergent copy of detail layout. */
+function withoutLinkedDetailFields(
+  data: Partial<PageSchema>,
+): Partial<PageSchema> {
+  return data.schemaKind === 'scene' && data.detailSchemaId
+    ? {
+        ...data,
+        modules: [],
+        moduleInner: {},
+        fcBindings: {},
+        fcRules: {},
+        epicSchemas: {},
+      }
+    : data;
+}
+
+/** Explicit migration keeps the list id and its menu/workflow references stable. */
+export function separatePageSchemaDetail(id: string) {
+  const index = pageSchemaStore.findIndex((page) => page.id === id);
+  const source = pageSchemaStore[index];
+  if (!source || source.schemaKind !== 'scene')
+    throw new Error('请选择旧版业务列表场景');
+  if (source.detailSchemaId) {
+    validateDetailReference(source);
+    const detail = findPageSchema(source.detailSchemaId);
+    if (!detail) throw new Error('详情页面配置不存在，请重新选择');
+    return { list: source, detail };
+  }
+  const template = source.columnTemplateId
+    ? findPageSchema(source.columnTemplateId)
+    : null;
+  const previousSeed = schemaIdSeed;
+  const detail = buildPageSchema({
+    schemaKind: 'detail',
+    name: `${source.name}_detail`,
+    title: `${source.title} · 办理详情`,
+    status: 1,
+    remark: `从「${source.title}」拆出的独立详情`,
+    modules: structuredClone(source.modules || []),
+    moduleInner: structuredClone(source.moduleInner || {}),
+    fcBindings:
+      source.fcBindings ||
+      buildDefaultFcBindingsForModules(
+        (source.modules || []).map((module) => module.key),
+      ),
+    fcRules: source.fcRules,
+    fieldRules: structuredClone([
+      ...(source.fieldRules || []),
+      ...(template?.fieldRules || []),
+    ]),
+  });
+  // All validation completes before either record changes. Save both in one store write.
+  const previousHistory = [...(pageSchemaHistory[id] || [])];
+  pushHistory(source);
+  const list = withoutLinkedDetailFields({
+    ...source,
+    detailSchemaId: detail.id,
+  }) as PageSchema;
+  pageSchemaStore[index] = list;
+  pageSchemaStore.push(detail);
+  try {
+    persistPageSchemaStore(true);
+  } catch (error) {
+    pageSchemaStore.pop();
+    pageSchemaStore[index] = source;
+    pageSchemaHistory[id] = previousHistory;
+    schemaIdSeed = previousSeed;
+    throw error;
+  }
+  const savedList = findPageSchema(id);
+  if (!savedList) throw new Error('列表页面配置不存在，请重新选择');
+  return { list: savedList, detail };
 }
 
 /**
@@ -1925,6 +1832,15 @@ export function updatePageSchema(id: string, data: Partial<PageSchema>) {
   if (idx === -1) return null;
   const prev = pageSchemaStore[idx];
   if (!prev) return null;
+  if (data.schemaKind && data.schemaKind !== (prev.schemaKind || 'entity'))
+    throw new Error('已有配置不能直接更改用途，请新建对应用途的页面');
+  validateDetailReference({ ...prev, ...data });
+  data = withoutLinkedDetailFields({
+    ...data,
+    schemaKind: prev.schemaKind,
+    detailSchemaId: data.detailSchemaId ?? prev.detailSchemaId,
+  });
+  validateDetailPageSchema({ ...prev, ...data });
   pushHistory(prev);
   pageSchemaStore[idx] = {
     ...prev,
@@ -1945,6 +1861,33 @@ export function updatePageSchema(id: string, data: Partial<PageSchema>) {
   };
   persistPageSchemaStore();
   return pageSchemaStore[idx];
+}
+
+/** Validate standalone detail pages even when submitted outside the editor. */
+function validateDetailPageSchema(data: Partial<PageSchema>) {
+  if (data.schemaKind !== 'detail') return;
+  if (!data.name?.trim() || !data.title?.trim())
+    throw new Error('请填写内部编码和页面名称');
+  const issue = pageSchemaSaveIssue(data);
+  if (issue) throw new Error(issue);
+  for (const module of data.modules || []) {
+    if (!module.enabled) continue;
+    const template = findFcSchema(data.fcBindings?.[module.key] || '');
+    if (
+      !template ||
+      template.status !== 1 ||
+      template.usage === 'workflowSupplement' ||
+      template.kind !==
+        (module.widgetKind ||
+          (['compensation', 'houses', 'rewards'].includes(module.key) ||
+          module.key.startsWith('custom_table_')
+            ? 'table'
+            : 'form'))
+    )
+      throw new Error(
+        `请为「${module.label || module.key}」选择可用且类型匹配的详情模板`,
+      );
+  }
 }
 
 /**

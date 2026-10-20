@@ -31,7 +31,7 @@ const emits = defineEmits<{
 const formData = ref<SystemMenuApi.SystemMenu>();
 const id = ref<string>();
 /** 抽屉传入的上级 id（新增下级时带入，防止表单未回填丢失） */
-const parentId = ref<string | number>();
+const parentId = ref<number | string>();
 
 const [Form, formApi] = useVbenForm({
   schema: useFormSchema(),
@@ -44,7 +44,21 @@ const [Form, formApi] = useVbenForm({
  */
 async function normalizeMenuPayload(values: Record<string, any>) {
   const component = String(values.component || '').trim();
-  const meta = { ...(values.meta || {}) };
+  const meta = { ...values.meta };
+
+  if (values.type === 'menu' && meta.workflowFamilyId) {
+    const familyId = String(meta.workflowFamilyId);
+    return {
+      ...values,
+      component: '/workflow/index',
+      path: `/workflow-flow/${familyId}`,
+      meta,
+      pid: values.pid ?? parentId.value,
+    };
+  }
+  delete meta.workflowFamilyId;
+  delete meta.workflowCode;
+  delete meta.workflowBase;
 
   if (isAgreeListComponent(component)) {
     const sceneSchemaId = meta.sceneSchemaId || meta.schemaId;
@@ -106,21 +120,17 @@ const [Drawer, drawerApi] = useVbenDrawer({
     const payload = await normalizeMenuPayload(values);
 
     // 协议列表必须选场景
-    if (
-      isAgreeListComponent(payload.component) &&
-      !payload.meta?.schemaId
-    ) {
+    if (isAgreeListComponent(payload.component) && !payload.meta?.schemaId) {
       const { ElMessage } = await import('element-plus');
       ElMessage.warning('请选择协议场景（决定按钮与数据范围）');
       return;
-    }    const isCreate = !id.value;
+    }
+    const isCreate = !id.value;
     drawerApi.lock();
     try {
-      if (id.value) {
-        await updateMenu(id.value, payload as any);
-      } else {
-        await createMenu(payload as any);
-      }
+      await (id.value
+        ? updateMenu(id.value, payload as any)
+        : createMenu(payload as any));
       emits('success', { created: isCreate });
       drawerApi.close();
     } catch {
@@ -142,10 +152,7 @@ const [Drawer, drawerApi] = useVbenDrawer({
       ensureComponentOption(data.component);
       // 编辑协议菜单时：用 schemaId 回填场景下拉
       const patch = { ...data } as Record<string, any>;
-      if (
-        isAgreeListComponent(data.component) &&
-        data.meta?.schemaId
-      ) {
+      if (isAgreeListComponent(data.component) && data.meta?.schemaId) {
         patch.meta = {
           ...data.meta,
           sceneSchemaId: data.meta.schemaId,

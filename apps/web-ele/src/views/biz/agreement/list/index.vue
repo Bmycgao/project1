@@ -34,6 +34,10 @@ import {
 import { getAgreementList } from '#/api';
 import { getAgreementDetail } from '#/api/biz/agreement';
 
+import {
+  agreementStatusFilterOptions,
+  agreementStatusTagType,
+} from '../../../../../../shared/agreement-demo-status';
 import { filterColumnsByFieldRules } from '../access/field-access';
 import {
   filterButtonsByAccessCodes,
@@ -102,26 +106,12 @@ const tableColumns = computed(() =>
   ),
 );
 
-const statusOptions = computed(() => {
-  if (runtime.value?.statusIn?.length) return runtime.value.statusIn;
-  return ['告知单', '待复核', '组长已复核', '签约已确认', '草稿'];
-});
-
-/**
- * 状态 Tag 样式
- * @param status 状态文案
- */
-function statusType(status: string) {
-  if (status.includes('确认') || status.includes('通过')) return 'success';
-  if (
-    status.includes('复核') ||
-    status.includes('审核') ||
-    status.includes('待')
-  )
-    return 'warning';
-  if (status.includes('锁定')) return 'danger';
-  return 'info';
-}
+const statusOptions = computed(() =>
+  agreementStatusFilterOptions(runtime.value?.statusIn, [
+    ...tableData.value.map((row) => row.statusValue),
+    statusFilter.value,
+  ]),
+);
 
 /** 加载页面配置 / 本地场景 */
 async function loadRuntime() {
@@ -154,25 +144,9 @@ async function loadList() {
     });
     tableData.value = res?.items || [];
   } catch {
-    const { MOCK_AGREEMENT_LIST } = await import('../data/mock-data');
-    let list = [...MOCK_AGREEMENT_LIST];
-    const statusIn = runtime.value?.statusIn || [];
-    if (statusIn.length > 0) {
-      list = list.filter((r) => statusIn.includes(r.statusValue));
-    }
-    const kw = keyword.value.trim();
-    if (kw) {
-      list = list.filter((r) =>
-        [r.agreementNo, r.compensatee, r.houseAddress].some((v) =>
-          String(v).includes(kw),
-        ),
-      );
-    }
-    if (statusFilter.value) {
-      list = list.filter((r) => r.statusValue === statusFilter.value);
-    }
-    tableData.value = list;
-    ElMessage.warning('列表接口暂不可用，已使用本地场景过滤数据');
+    tableData.value = [];
+    selected.value = [];
+    ElMessage.error('协议列表加载失败，请重新查询');
   } finally {
     loading.value = false;
   }
@@ -182,16 +156,20 @@ async function loadList() {
  * 进入详情（带上来源菜单 path，供侧栏高亮）
  * @param row 行数据
  */
-function goDetail(row: AgreementListItem | Record<string, unknown>) {
+function goDetail(
+  row: AgreementListItem | Record<string, unknown>,
+  options?: { edit?: boolean },
+) {
   const item = row as unknown as AgreementListItem;
   router.push({
     name: 'BizAgreementDetail',
-    params: { agreementNo: item.agreementNo },
+    params: { agreementNo: item.id },
     query: {
       id: item.id,
       compensatee: item.compensatee,
       houseAddress: item.houseAddress,
       mode: runtime.value?.detailMode || 'view',
+      edit: options?.edit ? '1' : undefined,
       scene: runtime.value?.scene,
       schemaId: runtime.value?.schemaId || '',
       from: runtime.value?.title,
@@ -217,16 +195,16 @@ async function openPrintPreview(
   title?: string,
 ) {
   try {
-    const detail = await getAgreementDetail(row.agreementNo, {
+    const detail = await getAgreementDetail(row.id, {
       id: row.id,
       compensatee: row.compensatee,
       houseAddress: row.houseAddress,
     });
     printPreviewDetail.value = detail;
   } catch {
-    const { buildAgreementDetail } = await import('../data/mock-data');
-    printPreviewDetail.value = buildAgreementDetail(row.agreementNo);
-    ElMessage.warning('详情接口暂不可用，已使用本地 mock 数据预览');
+    printPreviewDetail.value = null;
+    ElMessage.error('协议资料加载失败，请重试后再打印');
+    return;
   }
   printPreviewTemplateCode.value = templateCode;
   printPreviewTitle.value = title || '打印预览';
@@ -437,8 +415,8 @@ watch(
             </ElLink>
           </template>
           <template v-else-if="col.field === 'statusValue'" #default="{ row }">
-            <ElTag size="small" :type="statusType(row.statusValue)">
-              {{ row.statusValue }}
+            <ElTag size="small" :type="agreementStatusTagType(row.statusValue)">
+              {{ row.statusValue || '—' }}
             </ElTag>
           </template>
           <template v-else-if="col.field === 'isSigned'" #default="{ row }">

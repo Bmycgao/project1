@@ -42,6 +42,15 @@ const routes: RouteRecordRaw[] = [
         component: () => import('#/views/system/workflow/monitor.vue'),
       },
       {
+        path: 'workflow/buttons',
+        name: 'SystemWorkflowButtons',
+        meta: {
+          icon: 'mdi:gesture-tap-button',
+          title: '按钮管理',
+        },
+        component: () => import('#/views/system/workflow-button/list.vue'),
+      },
+      {
         path: 'user',
         name: 'SystemUser',
         meta: {

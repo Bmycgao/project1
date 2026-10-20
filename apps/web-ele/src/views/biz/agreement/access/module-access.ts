@@ -5,7 +5,10 @@
  */
 import type { AgreementModuleKey } from '../types';
 
-import { matchAccessCodes } from './field-access';
+import {
+  agreementModuleAuthCode,
+  canAccessAgreementModule,
+} from '../../../../../../shared/agreement-module-access';
 
 /** 详情模块在画布上的组件形态 */
 export type AgreeModuleWidgetKind = 'form' | 'table';
@@ -165,7 +168,7 @@ export function createCustomAgreeModule(opts: {
         : '自定义表单，可增删字段',
     widgetKind,
     custom: true,
-    authCode: 'Agree:Module:custom',
+    authCode: agreementModuleAuthCode(key),
   };
 }
 
@@ -183,7 +186,7 @@ export function metaFromMount(mount: AgreeModuleMount): AgreeModuleMeta {
     key: mount.key,
     label: mount.label || '自定义组件',
     desc: mount.desc || (widgetKind === 'table' ? '自定义表格' : '自定义表单'),
-    authCode: mount.authCode || 'Agree:Module:custom',
+    authCode: agreementModuleAuthCode(String(mount.key), mount.authCode),
     widgetKind,
   };
 }
@@ -296,7 +299,7 @@ export function normalizeAgreeModuleMounts(
           item.desc || (widgetKind === 'table' ? '自定义表格' : '自定义表单'),
         widgetKind,
         custom: true,
-        authCode: item.authCode || 'Agree:Module:custom',
+        authCode: agreementModuleAuthCode(String(item.key), item.authCode),
       };
     });
   return [...builtins, ...customMounts];
@@ -326,19 +329,8 @@ export function isAgreeModuleVisible(
   key: AgreementModuleKey,
   accessCodes: string[] | undefined,
 ) {
-  const set = new Set(accessCodes || []);
-  if (set.has('Agree:*') || set.has('Agree:Module:*')) return true;
-  if (isCustomAgreeModule(String(key))) {
-    if (set.has('Agree:Module:custom')) return true;
-    return [...set].some((c) => String(c).startsWith('Agree:Module:'));
-  }
   const meta = AGREE_DETAIL_MODULES.find((m) => m.key === key);
-  if (!meta) return false;
-  const need = [meta.authCode];
-  if (key === 'population') {
-    need.push('Agree:Module:rightHolders');
-  }
-  return matchAccessCodes(accessCodes, need);
+  return canAccessAgreementModule(accessCodes, String(key), meta?.authCode);
 }
 
 /**
@@ -387,8 +379,8 @@ export function resolveAgreeModulesForPage(
  * @param key 模块
  */
 export function getAgreeModuleAuthCode(key: AgreementModuleKey) {
-  return (
-    AGREE_DETAIL_MODULES.find((m) => m.key === key)?.authCode ||
-    `Agree:Module:${isCustomAgreeModule(String(key)) ? 'custom' : key}`
+  return agreementModuleAuthCode(
+    String(key),
+    AGREE_DETAIL_MODULES.find((m) => m.key === key)?.authCode,
   );
 }

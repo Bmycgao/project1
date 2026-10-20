@@ -245,6 +245,15 @@
               if (!Array.isArray(nodes)) return;
               nodes.forEach(function (node) {
                 if (!node || typeof node !== 'object') return;
+                // Store a single time as local HH:mm:ss instead of a serialized Date.
+                if (node.type === 'timePicker' && !node.props?.isRange) {
+                  node.props = { ...node.props, valueFormat: 'HH:mm:ss' };
+                  if (typeof node.value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(node.value)) {
+                    const time = new Date(node.value);
+                    if (Number.isFinite(time.getTime())) node.value = [time.getHours(), time.getMinutes(), time.getSeconds()]
+                      .map(function (part) { return String(part).padStart(2, '0'); }).join(':');
+                  }
+                }
                 if (node.col && node.col.span != null) {
                   const n = Number(node.col.span);
                   if (!Number.isNaN(n)) node.col.span = n;
@@ -510,14 +519,24 @@
               }
             }
 
+            let previewTimer;
+            let lastPreview = '';
             onMounted(async function () {
               window.addEventListener('resize', onResize);
               window.addEventListener('message', onMessage);
               await nextTick();
               post({ type: 'fc-ready' });
+              previewTimer = setInterval(function () {
+                if (document.hidden) return;
+                const ruleJson = JSON.stringify(readRule());
+                if (ruleJson === lastPreview) return;
+                lastPreview = ruleJson;
+                post({ type: 'fc-preview-rule', ruleJson });
+              }, 1000);
             });
 
             onBeforeUnmount(function () {
+              clearInterval(previewTimer);
               window.removeEventListener('resize', onResize);
               window.removeEventListener('message', onMessage);
             });

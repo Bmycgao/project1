@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+import type { PageSchemaKind } from '../../../../../../shared/page-schema';
 import type { AgreeFieldRule } from '../../../biz/agreement/access/field-access';
 import type { AgreeModuleMount } from '../../../biz/agreement/access/module-access';
 import type { AgreeButtonBind } from '../../../biz/agreement/actions';
@@ -53,12 +54,16 @@ import {
   getFcSchemaList,
   getPageSchema,
   getPageSchemaHistory,
+  getPageSchemaList,
+  getPageSchemaUsage,
   getRoleAccessCodes,
   getRoleList,
   rollbackPageSchema,
+  separatePageSchemaDetail,
   updatePageSchema,
 } from '#/api';
 
+import { pageSchemaSaveIssue } from '../../../../../../shared/page-schema';
 import { DEFAULT_AGREE_FIELD_RULES } from '../../../biz/agreement/access/field-access';
 import {
   AGREE_DETAIL_MODULES,
@@ -96,10 +101,12 @@ import {
   getDefaultQueryFields,
   useFormSchema,
 } from '../data';
+import { detailTemplateIssue } from '../detail-designer-model';
 import { buildSchemaPreview } from '../preview-runtime';
 import DetailDesigner from './detail-designer.vue';
+import Usage from './usage.vue';
 
-const emits = defineEmits<{ success: [] }>();
+const emits = defineEmits<{ success: [kind: PageSchemaKind] }>();
 
 const formData = ref<PageSchemaApi.PageSchema>();
 const id = ref<string>();
@@ -141,11 +148,16 @@ const fcBindingsMap = ref<FcBindingsMap>({ ...DEFAULT_FC_BINDINGS });
 /** 配置台新建业务组件的内部配置 */
 const customInnerMap = ref<Record<string, ModuleInnerConfig>>({});
 /** 当前配置类型（与表单 schemaKind 同步） */
-const schemaKind = ref<'entity' | 'scene' | 'template'>('entity');
+const schemaKind = ref<PageSchemaKind>('entity');
+const pageTitle = ref('');
 /** 抽屉步骤 */
 const configTab = ref('base');
 /** 场景是否单独保存列表列；否则沿用表头 */
 const columnOverride = ref(false);
+const detailSchemaId = ref('');
+const detailOptions = ref<PageSchemaApi.PageSchema[]>([]);
+const detailsLoading = ref(false);
+const detailsError = ref(false);
 /** 按钮的接口绑定默认收起 */
 const bindCollapse = ref<string[]>([]);
 
@@ -255,6 +267,7 @@ const [Form, formApi] = useVbenForm({
   handleValuesChange(values) {
     const kind = (values?.schemaKind || 'entity') as typeof schemaKind.value;
     schemaKind.value = kind;
+    pageTitle.value = String(values?.title || '');
   },
 });
 
@@ -274,14 +287,79 @@ const actionGroups = groupAgreeActions();
 
 /** 是否场景类型：模块/按钮 + 可覆盖列表列 */
 const isScene = computed(() => schemaKind.value === 'scene');
+const isDetail = computed(() => schemaKind.value === 'detail');
+const legacyDetailAvailable = computed(
+  () =>
+    isScene.value &&
+    !formData.value?.detailSchemaId &&
+    !!formData.value?.modules?.length,
+);
+const isLegacyScene = computed(
+  () => legacyDetailAvailable.value && !detailSchemaId.value,
+);
+const hasDetails = computed(() => isDetail.value || isLegacyScene.value);
+
+async function loadDetailOptions() {
+  detailsLoading.value = true;
+  detailsError.value = false;
+  try {
+    const awaitedResult1 = await getPageSchemaList({ status: 1 });
+    detailOptions.value = awaitedResult1.filter(
+      (page) =>
+        page.schemaKind === 'detail' &&
+        page.status === 1 &&
+        page.modules?.some((module) => module.enabled),
+    );
+  } catch {
+    detailsError.value = true;
+  } finally {
+    detailsLoading.value = false;
+  }
+}
+
+async function separateLegacyDetail() {
+  if (!id.value) return;
+  try {
+    await ElMessageBox.confirm(
+      '将按已保存的场景配置生成独立详情并建立关联，当前未保存的修改不会保留。原列表、菜单及配置历史保留，已发布流程不变。是否继续？',
+      '拆出独立详情',
+      { type: 'warning' },
+    );
+  } catch {
+    return;
+  }
+  drawerApi.lock();
+  try {
+    await separatePageSchemaDetail(id.value);
+    await fillForm(await getPageSchema(id.value));
+    await Promise.all([loadHistory(), loadDetailOptions()]);
+    configTab.value = 'reference';
+    emits('success', 'scene');
+    ElMessage.success('已拆出独立详情，后续布局请在对应详情页面维护');
+  } catch {
+    ElMessage.error('拆分详情未完成，请检查提示并刷新配置后重试');
+  } finally {
+    drawerApi.unlock();
+  }
+}
 
 watch(schemaKind, (kind) => {
-  if (kind === 'scene' && configTab.value === 'fields') {
-    configTab.value = 'list';
+  if (
+    kind === 'detail' &&
+    ['actions', 'fields', 'list', 'reference'].includes(configTab.value)
+  ) {
+    configTab.value = 'detail';
   }
   if (
-    kind !== 'scene' &&
-    ['actions', 'detail', 'list'].includes(configTab.value)
+    kind === 'scene' &&
+    (configTab.value === 'fields' ||
+      (configTab.value === 'detail' && !hasDetails.value))
+  ) {
+    configTab.value = configTab.value === 'detail' ? 'reference' : 'list';
+  }
+  if (
+    !['detail', 'scene'].includes(kind) &&
+    ['actions', 'detail', 'list', 'reference'].includes(configTab.value)
   ) {
     configTab.value = 'fields';
   }
@@ -700,10 +778,19 @@ async function runPreview() {
       .filter((c) => c.visible !== false)
       .toSorted((a, b) => (a.order ?? 999) - (b.order ?? 999));
     let previewRules = fieldRules.value;
+    let previewDetailRules: AgreeFieldRule[] | undefined;
+    let previewModules = buildSceneModules();
     const values = await formApi.getValues();
 
     // 场景：优先用本场景已配列；字段规则仍可从列模板继承
     if (schemaKind.value === 'scene') {
+      if (detailSchemaId.value) {
+        const target = await getPageSchema(detailSchemaId.value);
+        if (target.schemaKind !== 'detail' || target.status !== 1)
+          throw new Error('关联详情不可用，请先修复关联');
+        previewModules = (target.modules as AgreeModuleMount[]) || [];
+        previewDetailRules = (target.fieldRules as AgreeFieldRule[]) || [];
+      }
       const tplId = String(values.columnTemplateId || '').trim();
       if (tplId) {
         try {
@@ -727,10 +814,11 @@ async function runPreview() {
         schemaKind: schemaKind.value,
         columns: previewColumns,
         fieldRules: previewRules,
+        detailFieldRules: previewDetailRules,
         actionCodes: selectedActionCodes.value,
         actionBinds: actionBinds.value,
         sampleStatus: previewStatus.value || undefined,
-        modules: buildSceneModules(),
+        modules: previewModules,
       },
       roleCodes.codes,
     );
@@ -778,7 +866,7 @@ async function onRollback(versionId: string) {
     await fillForm(detail);
     await loadHistory();
     previewResult.value = null;
-    emits('success');
+    emits('success', schemaKind.value);
   } catch (error: any) {
     ElMessage.error(error?.message || '回滚失败');
   }
@@ -792,6 +880,10 @@ async function fillForm(detail: PageSchemaApi.PageSchema) {
   formData.value = detail;
   id.value = detail.id;
   schemaKind.value = detail.schemaKind || 'entity';
+  detailSchemaId.value = detail.detailSchemaId || '';
+  formApi.updateSchema([
+    { fieldName: 'schemaKind', componentProps: { disabled: true } },
+  ]);
   await formApi.setValues({
     name: detail.name,
     title: detail.title,
@@ -843,100 +935,160 @@ async function fillForm(detail: PageSchemaApi.PageSchema) {
   fcBindingsMap.value = mergeFcBindingsFromDetail(detail);
 }
 
+async function openReferencedPage(schemaId: string) {
+  try {
+    await ElMessageBox.confirm(
+      '切换配置将放弃当前未保存的修改，是否继续？',
+      '查看引用页面',
+    );
+  } catch {
+    return;
+  }
+  const detail = await getPageSchema(schemaId);
+  await fillForm(detail);
+  await loadHistory();
+  configTab.value = detail.schemaKind === 'detail' ? 'detail' : 'base';
+}
+
 const [Drawer, drawerApi] = useVbenDrawer({
-  class: 'w-[96vw] max-w-[1440px]',
+  class: 'w-[98vw] max-w-[1680px]',
   async onConfirm() {
     const { valid } = await formApi.validate();
-    if (!valid) return;
+    if (!valid) {
+      configTab.value = 'base';
+      return;
+    }
     const values = await formApi.getValues();
     const kind = (values.schemaKind || 'entity') as typeof schemaKind.value;
 
-    if (kind === 'scene') {
-      if (!values.scene) {
-        ElMessage.warning('场景类型必须填写场景码');
-        return;
-      }
-      if (!values.columnTemplateId) {
-        ElMessage.warning('场景类型必须填写列模板 ID');
-        return;
-      }
-      if (selectedActionCodes.value.length === 0) {
-        ElMessage.warning('请至少勾选一个已实现动作');
-        return;
-      }
-      if (!moduleLayoutRows.value.some((r) => r.enabled)) {
-        ElMessage.warning('请至少挂载一个详情模块');
-        return;
-      }
-      try {
-        const templates = await getFcSchemaList({ status: 1 });
-        const invalid = moduleLayoutRows.value.find(
-          (row) =>
-            row.enabled &&
-            !templates.some(
-              (template) =>
-                template.id === fcBindingsMap.value[row.key] &&
-                template.status === 1 &&
-                template.usage !== 'workflowSupplement' &&
-                template.kind === (row.widgetKind || 'form'),
-            ),
-        );
-        if (invalid) {
-          ElMessage.warning(`请为「${invalid.label}」选择可用且类型匹配的模板`);
-          configTab.value = 'detail';
+    if (
+      kind === 'scene' &&
+      !detailSchemaId.value &&
+      !legacyDetailAvailable.value
+    ) {
+      ElMessage.warning('请先关联一份独立办理详情');
+      configTab.value = 'reference';
+      return;
+    }
+
+    const issue = pageSchemaSaveIssue({
+      ...values,
+      schemaKind: kind,
+      detailSchemaId: detailSchemaId.value,
+      columns: columns.value,
+      buttons: selectedActionCodes.value,
+      modules: moduleLayoutRows.value,
+    });
+    if (issue) {
+      ElMessage.warning(issue);
+      return;
+    }
+
+    if (kind === 'scene' || kind === 'detail') {
+      if (kind === 'detail' || !detailSchemaId.value) {
+        try {
+          const templates = await getFcSchemaList({ status: 1 });
+          const invalid = moduleLayoutRows.value.find(
+            (row) =>
+              row.enabled &&
+              detailTemplateIssue(row, fcBindingsMap.value, templates),
+          );
+          if (invalid) {
+            ElMessage.warning(
+              detailTemplateIssue(invalid, fcBindingsMap.value, templates) ||
+                '模板关联已失效',
+            );
+            configTab.value = 'detail';
+            return;
+          }
+        } catch {
+          ElMessage.error('无法检查详情模板，请稍后重试');
           return;
         }
-      } catch {
-        ElMessage.error('无法检查详情模板，请稍后重试');
-        return;
+      } else {
+        try {
+          const target = await getPageSchema(detailSchemaId.value);
+          if (
+            target.schemaKind !== 'detail' ||
+            target.status !== 1 ||
+            !target.modules?.some((module) => module.enabled)
+          )
+            throw new Error('关联的办理详情不可用，请重新选择');
+        } catch {
+          ElMessage.warning('关联的办理详情不可用或加载失败，请刷新后重新选择');
+          configTab.value = 'reference';
+          return;
+        }
       }
       // 场景可继承列模板：仅当本场景已配列时才校验至少一列可见
-      if (columns.value.length > 0 && !columns.value.some((c) => c.visible)) {
+      if (
+        kind === 'scene' &&
+        columns.value.length > 0 &&
+        !columns.value.some((c) => c.visible)
+      ) {
         ElMessage.warning('至少保留一列可见的列表字段');
         configTab.value = 'list';
         return;
       }
-      if (!columnOverride.value && columns.value.length === 0) {
+      if (
+        kind === 'scene' &&
+        !columnOverride.value &&
+        columns.value.length === 0
+      ) {
         ElMessage.warning('还没有表头可沿用，请先选择共用表头或单独添加列');
         configTab.value = 'list';
         return;
       }
-    } else if (!columns.value.some((c) => c.visible)) {
-      ElMessage.warning('至少保留一列可见字段');
-      return;
     }
 
     /** 场景：按钮只存动作库解析结果；列可场景级覆盖（空则读时继承模板） */
     const payload =
-      kind === 'scene'
+      kind === 'scene' || kind === 'detail'
         ? ({
             ...values,
-            schemaKind: 'scene',
-            columns: columnOverride.value
-              ? columns.value.map((c, i) => ({
-                  ...c,
-                  cellType: c.cellType || 'text',
-                  order: c.order ?? (i + 1) * 10,
-                }))
-              : [],
-            queryFields: queryFields.value,
-            buttons: buildSceneButtons(),
-            statusIn: selectedStatusIn.value,
-            modules: buildSceneModules(),
-            moduleInner: {
-              basic: normalizeBasicModuleInner(basicInnerConfig.value),
-              houses: normalizeHousesModuleInner(housesInnerConfig.value),
-              compensation: normalizeCompensationModuleInner(
-                compensationInnerConfig.value,
-              ),
-              rewards: normalizeRewardsModuleInner(rewardsInnerConfig.value),
-              population: normalizePopulationModuleInner(
-                populationInnerConfig.value,
-              ),
-              ...customInnerMap.value,
-            },
+            schemaKind: kind,
+            detailSchemaId: kind === 'scene' ? detailSchemaId.value : '',
+            scene: kind === 'detail' ? undefined : values.scene,
+            columnTemplateId:
+              kind === 'detail' ? undefined : values.columnTemplateId,
+            columns:
+              kind === 'scene' && columnOverride.value
+                ? columns.value.map((c, i) => ({
+                    ...c,
+                    cellType: c.cellType || 'text',
+                    order: c.order ?? (i + 1) * 10,
+                  }))
+                : [],
+            queryFields: kind === 'detail' ? [] : queryFields.value,
+            buttons: kind === 'detail' ? [] : buildSceneButtons(),
+            statusIn: kind === 'detail' ? [] : selectedStatusIn.value,
+            ...(kind === 'detail' ? { fieldRules: fieldRules.value } : {}),
+            modules:
+              kind === 'scene' && detailSchemaId.value
+                ? []
+                : buildSceneModules(),
+            moduleInner:
+              kind === 'scene' && detailSchemaId.value
+                ? {}
+                : {
+                    basic: normalizeBasicModuleInner(basicInnerConfig.value),
+                    houses: normalizeHousesModuleInner(housesInnerConfig.value),
+                    compensation: normalizeCompensationModuleInner(
+                      compensationInnerConfig.value,
+                    ),
+                    rewards: normalizeRewardsModuleInner(
+                      rewardsInnerConfig.value,
+                    ),
+                    population: normalizePopulationModuleInner(
+                      populationInnerConfig.value,
+                    ),
+                    ...customInnerMap.value,
+                  },
             epicSchemas: undefined,
-            fcBindings: cloneFcBindingsMap(fcBindingsMap.value),
+            fcBindings:
+              kind === 'scene' && detailSchemaId.value
+                ? {}
+                : cloneFcBindingsMap(fcBindingsMap.value),
           } as any)
         : ({
             ...values,
@@ -953,16 +1105,30 @@ const [Drawer, drawerApi] = useVbenDrawer({
             statusIn: undefined,
           } as any);
 
+    if (id.value && formData.value?.status === 1 && values.status === 0) {
+      try {
+        const usage = await getPageSchemaUsage(id.value);
+        await ElMessageBox.confirm(
+          `停用会使实时读取此配置的入口或流程草稿不可用。当前实时引用 ${usage.liveCount} 处，冻结快照 ${usage.snapshotCount} 处；已发布流程保留原配置。`,
+          '停用影响',
+          { type: 'warning' },
+        );
+      } catch {
+        return;
+      }
+    }
     drawerApi.lock();
     try {
       await (id.value
         ? updatePageSchema(id.value, payload)
         : createPageSchema(payload));
-      emits('success');
+      emits('success', kind);
       ElMessage.success(
-        id.value
-          ? '已保存。打开挂了这份配置的菜单并刷新即可看到效果'
-          : '已创建。请到菜单管理新建菜单并选中这份配置，侧栏才会出现入口',
+        kind === 'detail'
+          ? '办理详情已保存，可供业务列表和流程引用；已发布流程继续使用原快照'
+          : id.value
+            ? '已保存。打开挂了这份配置的菜单并刷新即可看到效果'
+            : '已创建。请到菜单管理新建菜单并选中这份配置，侧栏才会出现入口',
       );
       drawerApi.close();
     } catch {
@@ -978,6 +1144,9 @@ const [Drawer, drawerApi] = useVbenDrawer({
     if (!isOpen) return;
     const data = drawerApi.getData<PageSchemaApi.PageSchema>();
     await formApi.reset();
+    formApi.updateSchema([
+      { fieldName: 'schemaKind', componentProps: { disabled: !!data?.id } },
+    ]);
     columns.value = [];
     queryFields.value = [];
     fieldRules.value = [];
@@ -992,10 +1161,13 @@ const [Drawer, drawerApi] = useVbenDrawer({
     populationInnerConfig.value = buildDefaultPopulationModuleInner();
     fcBindingsMap.value = { ...DEFAULT_FC_BINDINGS };
     customInnerMap.value = {};
-    schemaKind.value = 'entity';
+    schemaKind.value = data?.schemaKind || 'entity';
     columnOverride.value = false;
+    detailSchemaId.value = '';
+    detailOptions.value = [];
     configTab.value =
-      (data as undefined | { focusTab?: string })?.focusTab || 'base';
+      (data as undefined | { focusTab?: string })?.focusTab ||
+      (data?.id && data.schemaKind === 'detail' ? 'detail' : 'base');
     bindCollapse.value = [];
     previewResult.value = null;
     previewRoleName.value = '';
@@ -1004,6 +1176,7 @@ const [Drawer, drawerApi] = useVbenDrawer({
     id.value = data?.id;
     await nextTick();
     void loadRoleOptions();
+    void loadDetailOptions();
 
     if (data?.id) {
       try {
@@ -1022,34 +1195,137 @@ const [Drawer, drawerApi] = useVbenDrawer({
       }
     } else {
       id.value = undefined;
-      columns.value = getDefaultColumns();
+      columns.value = schemaKind.value === 'detail' ? [] : getDefaultColumns();
       normalizeColumnTypes(columns.value);
-      queryFields.value = getDefaultQueryFields();
+      queryFields.value =
+        schemaKind.value === 'detail' ? [] : getDefaultQueryFields();
       fieldRules.value = structuredClone(DEFAULT_AGREE_FIELD_RULES);
-      await formApi.setValues({ schemaKind: 'entity', status: 1 });
+      await formApi.setValues({ schemaKind: schemaKind.value, status: 1 });
     }
   },
 });
 
 const title = computed(() => {
+  if (isDetail.value)
+    return formData.value?.id ? '配置办理详情' : '新建办理详情';
   if (!formData.value?.id) return '新建页面配置';
-  return isScene.value ? '配置场景 · 详情组装' : '配置列表字段';
+  return isScene.value
+    ? isLegacyScene.value
+      ? '配置业务列表 · 兼容配置'
+      : '配置业务列表'
+    : '配置列表字段';
 });
 </script>
 
 <template>
   <Drawer :title="title">
     <ElAlert
+      v-if="isLegacyScene"
+      class="mb-3"
+      type="warning"
+      show-icon
+      :closable="false"
+      title="兼容配置：这份旧场景仍同时保存列表与详情"
+      description="已有入口继续使用。可在“关联详情”中拆出独立详情，多个列表和流程即可复用同一份布局。"
+    />
+    <ElAlert
       class="mb-3"
       type="info"
       show-icon
       :closable="false"
-      title="保存不会新建菜单，也不会生成一张新业务页"
-      description="业务场景改的是已经存在的协议列表。和现有菜单选同一个场景时，看到的是同一批协议。侧栏要出现新入口，请到菜单管理把菜单挂到这份配置上。"
+      :title="
+        isDetail
+          ? '办理详情组装资料模块，可供列表和流程引用'
+          : '列表配置保存后，业务页面重新加载时读取'
+      "
+      :description="
+        isDetail
+          ? '无需场景码、公共列方案或列表按钮。字段在表单模板中维护，办理权限在流程节点中设置。流程发布会冻结页面与表单配置；修改后需发布新版本，已发布版本继续使用原快照。'
+          : '列表负责列、数据范围和列表操作，关联的办理详情负责模块与表单布局。业务列表挂到菜单后访问；已发布流程继续使用冻结快照。'
+      "
     />
     <ElTabs v-model="configTab">
       <ElTabPane label="基础信息" name="base">
         <Form />
+      </ElTabPane>
+
+      <ElTabPane v-if="isScene" label="关联详情" name="reference">
+        <div class="rounded-lg border p-4">
+          <div class="mb-2 font-medium">点击列表记录时打开哪份详情</div>
+          <p class="mb-4 text-sm text-gray-500">
+            多个业务列表可以引用同一份办理详情。详情的模块、表单模板和布局在独立详情中维护。
+          </p>
+          <ElAlert
+            v-if="detailsError"
+            class="mb-3"
+            type="error"
+            title="详情选项加载失败，请刷新重试；已有关联不会自动清除。"
+            :closable="false"
+          />
+          <div class="flex items-center gap-3">
+            <ElSelect
+              v-model="detailSchemaId"
+              class="w-full max-w-[560px]"
+              filterable
+              clearable
+              :loading="detailsLoading"
+              placeholder="选择独立办理详情"
+            >
+              <ElOption
+                v-for="page in detailOptions"
+                :key="page.id"
+                :value="page.id"
+                :label="`${page.title}（${page.id}）`"
+              />
+              <ElOption
+                v-if="
+                  detailSchemaId &&
+                  !detailOptions.some((page) => page.id === detailSchemaId)
+                "
+                :value="detailSchemaId"
+                :label="`待核实或已失效：${detailSchemaId}`"
+                disabled
+              />
+            </ElSelect>
+            <ElButton :loading="detailsLoading" @click="loadDetailOptions">
+              刷新选项
+            </ElButton>
+            <ElButton
+              v-if="detailSchemaId"
+              link
+              type="primary"
+              @click="openReferencedPage(detailSchemaId)"
+            >
+              配置关联详情
+            </ElButton>
+          </div>
+          <ElAlert
+            v-if="detailSchemaId"
+            class="mt-4"
+            type="info"
+            :closable="false"
+            title="保存后使用关联详情"
+            description="业务列表下次打开记录时读取这份详情的最新配置；流程发布时冻结配置。修改独立详情会影响所有实时引用它的列表。"
+          />
+          <div
+            v-if="isLegacyScene"
+            class="mt-5 rounded border border-dashed p-4"
+          >
+            <div class="mb-2 font-medium">将当前旧场景的详情拆出</div>
+            <p class="mb-3 text-sm text-gray-500">
+              按已保存内容创建独立详情，并自动关联回当前列表。原内嵌配置保留在配置历史中，可回滚。
+            </p>
+            <ElButton type="primary" @click="separateLegacyDetail">
+              拆出独立详情并关联
+            </ElButton>
+          </div>
+          <p
+            v-if="!legacyDetailAvailable && !detailSchemaId"
+            class="mt-4 text-sm text-gray-500"
+          >
+            请先在「页面配置 → 办理详情」中新建并保存一份详情，再刷新此处选项。
+          </p>
+        </div>
       </ElTabPane>
 
       <!-- 场景：列表 -->
@@ -1232,13 +1508,15 @@ const title = computed(() => {
         </ElTable>
       </ElTabPane>
 
-      <ElTabPane v-if="isScene" label="详情" name="detail">
+      <ElTabPane v-if="hasDetails" label="详情编排" name="detail">
         <div class="mb-2 font-medium">详情组装</div>
         <p class="mb-2 text-xs text-gray-500">
           选择模块，设置显示区域、顺序与模板；预览使用实际详情组件和示例数据。
           隐藏模块保留业务数据。字段在表单模板中维护。
         </p>
         <DetailDesigner
+          :page-title="pageTitle || '办理详情'"
+          :field-rules="fieldRules"
           v-model:layouts="moduleLayoutRows"
           v-model:basic-inner="basicInnerConfig"
           v-model:houses-inner="housesInnerConfig"
@@ -1250,7 +1528,7 @@ const title = computed(() => {
         />
       </ElTabPane>
 
-      <ElTabPane v-if="isScene" label="按钮" name="actions">
+      <ElTabPane v-if="isScene" label="列表操作" name="actions">
         <div class="mb-2 font-medium">工具栏动作</div>
         <p class="mb-3 text-xs text-gray-500">
           只能勾选系统已经做好的动作，不能自己写一个新按钮名称。
@@ -1371,7 +1649,7 @@ const title = computed(() => {
       </ElTabPane>
 
       <!-- 普通列表 / 共用表头 -->
-      <ElTabPane v-if="!isScene" label="列表字段" name="fields">
+      <ElTabPane v-if="!isScene && !isDetail" label="列表字段" name="fields">
         <div class="mb-2 mt-4 flex items-center justify-between">
           <div class="font-medium">表格字段</div>
           <ElButton size="small" type="primary" @click="addColumn">
@@ -1666,7 +1944,11 @@ const title = computed(() => {
         </ElTable>
       </ElTabPane>
 
-      <ElTabPane label="检查" name="check">
+      <ElTabPane label="使用位置" name="usage">
+        <Usage :schema-id="id" @open-page="openReferencedPage" />
+      </ElTabPane>
+
+      <ElTabPane label="检查与历史" name="check">
         <!-- 配置回滚：每次保存会留下上一版快照 -->
         <div
           v-if="id"
@@ -1725,7 +2007,11 @@ const title = computed(() => {
         <ElCollapse v-model="previewCollapse" class="mt-6">
           <ElCollapseItem name="preview" title="按角色验权限（可选）">
             <p class="mb-3 text-xs text-gray-500">
-              用角色权限码对照当前草稿：列表哪些列、哪些按钮、详情哪些模块会显示。不是页面长什么样的预览。
+              {{
+                isDetail
+                  ? '用角色权限码检查当前草稿的模块与字段限制。流程节点权限会在办理时进一步收紧；页面效果请在详情编排中预览。'
+                  : '用角色权限码对照当前草稿：列表哪些列、哪些按钮、详情哪些模块会显示。页面效果请在详情编排中预览。'
+              }}
             </p>
             <div class="mb-3 flex flex-wrap items-end gap-3">
               <div class="min-w-[160px]">
@@ -1776,29 +2062,38 @@ const title = computed(() => {
               class="mb-3"
               type="info"
               :closable="false"
-              :title="`角色「${previewRoleName}」：可见列 ${previewResult.shownColumnCount} / ${previewResult.columns.length}，可见按钮 ${previewResult.shownButtonCount} / ${previewResult.buttons.length || 0}，可见模块 ${previewResult.shownModuleCount} / ${previewResult.modules.length || 0}`"
+              :title="
+                isDetail
+                  ? `角色「${previewRoleName}」：可见模块 ${previewResult.shownModuleCount} / ${previewResult.modules.length}`
+                  : `角色「${previewRoleName}」：可见列 ${previewResult.shownColumnCount} / ${previewResult.columns.length}，可见按钮 ${previewResult.shownButtonCount} / ${previewResult.buttons.length || 0}，可见模块 ${previewResult.shownModuleCount} / ${previewResult.modules.length || 0}`
+              "
             />
 
             <template v-if="previewResult">
-              <div class="mb-2 text-sm font-medium">列表列</div>
-              <ElTable
-                :data="previewResult.columns"
-                border
-                size="small"
-                class="mb-4"
-                max-height="220"
-              >
-                <ElTableColumn prop="title" label="列标题" min-width="100" />
-                <ElTableColumn prop="field" label="字段" min-width="100" />
-                <ElTableColumn label="结果" width="90" align="center">
-                  <template #default="{ row }">
-                    <ElTag :type="row.shown ? 'success' : 'info'" size="small">
-                      {{ row.shown ? '显示' : '隐藏' }}
-                    </ElTag>
-                  </template>
-                </ElTableColumn>
-                <ElTableColumn prop="reason" label="说明" min-width="140" />
-              </ElTable>
+              <template v-if="!isDetail">
+                <div class="mb-2 text-sm font-medium">列表列</div>
+                <ElTable
+                  :data="previewResult.columns"
+                  border
+                  size="small"
+                  class="mb-4"
+                  max-height="220"
+                >
+                  <ElTableColumn prop="title" label="列标题" min-width="100" />
+                  <ElTableColumn prop="field" label="字段" min-width="100" />
+                  <ElTableColumn label="结果" width="90" align="center">
+                    <template #default="{ row }">
+                      <ElTag
+                        :type="row.shown ? 'success' : 'info'"
+                        size="small"
+                      >
+                        {{ row.shown ? '显示' : '隐藏' }}
+                      </ElTag>
+                    </template>
+                  </ElTableColumn>
+                  <ElTableColumn prop="reason" label="说明" min-width="140" />
+                </ElTable>
+              </template>
 
               <template v-if="isScene">
                 <div class="mb-2 text-sm font-medium">工具栏按钮</div>
@@ -1828,7 +2123,9 @@ const title = computed(() => {
                   </ElTableColumn>
                   <ElTableColumn prop="reason" label="说明" min-width="160" />
                 </ElTable>
+              </template>
 
+              <template v-if="hasDetails">
                 <div class="mb-2 text-sm font-medium">详情模块</div>
                 <ElTable
                   :data="previewResult.modules"

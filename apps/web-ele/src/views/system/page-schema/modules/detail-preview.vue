@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { AgreeFieldRule } from '../../../biz/agreement/access/field-access';
 import type { AgreeModuleMount } from '../../../biz/agreement/access/module-access';
 import type { ModuleInnerConfig } from '../../../biz/agreement/config/module-inner-config';
 import type { FcRuleMap } from '../../../biz/agreement/fc/types';
@@ -6,11 +7,15 @@ import type { FcRuleMap } from '../../../biz/agreement/fc/types';
 import { computed, provide, ref } from 'vue';
 
 import { resolveAgreeModulesForPage } from '../../../biz/agreement/access/module-access';
-import { useProvideAgreeDetailEditable } from '../../../biz/agreement/access/use-field-access';
+import {
+  AGREE_FIELD_RULES_KEY,
+  useProvideAgreeDetailEditable,
+} from '../../../biz/agreement/access/use-field-access';
 import DetailLayout from '../../../biz/agreement/components/detail-layout.vue';
 import DetailModule from '../../../biz/agreement/components/detail-module.vue';
 import { buildAgreementDetail } from '../../../biz/agreement/data/mock-data';
 const props = defineProps<{
+  fieldRules?: AgreeFieldRule[];
   inners: Record<string, ModuleInnerConfig>;
   modules: AgreeModuleMount[];
   rules: FcRuleMap;
@@ -18,6 +23,10 @@ const props = defineProps<{
 const detail = buildAgreementDetail('预览-001');
 const modules = computed(() =>
   resolveAgreeModulesForPage(props.modules, ['Agree:*']),
+);
+provide(
+  AGREE_FIELD_RULES_KEY,
+  computed(() => props.fieldRules || []),
 );
 provide(
   'agreeFcRules',
@@ -47,7 +56,7 @@ useProvideAgreeDetailEditable(ref(false));
   </div>
   <DetailLayout :modules="modules">
     <template #default="{ item }">
-<DetailModule :item="item" :detail="detail" :editable="false" />
-</template>
+      <DetailModule :item="item" :detail="detail" :editable="false" />
+    </template>
   </DetailLayout>
 </template>

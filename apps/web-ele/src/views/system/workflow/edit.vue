@@ -26,6 +26,7 @@ import {
 import { Page } from '@vben/common-ui';
 
 import {
+  ElAlert,
   ElButton,
   ElEmpty,
   ElMessage,
@@ -40,6 +41,7 @@ import {
   updateWorkflow,
 } from '#/api/system/workflow';
 
+import { nodeConfigurationIssues } from './configuration';
 import FlowCanvas from './flow-canvas.vue';
 import Inspector from './inspector.vue';
 import {
@@ -47,16 +49,15 @@ import {
   createDocument,
   createNode,
   documentOf,
-  downloadWorkflowJson,
   effectiveWorkflowDetailViewId,
   newId,
   NODE_LABELS,
-  readWorkflowJsonFile,
   sampleGraph,
   validateWorkflow,
   workflowNodeDetailMode,
   workflowNodeSupplementFormId,
 } from './model';
+import { downloadWorkflowJson, readWorkflowJsonFile } from './model-io';
 import PublicationDialog from './publication-dialog.vue';
 
 const route = useRoute();
@@ -75,8 +76,11 @@ async function newVersion() {
 }
 async function openPublication() {
   if (dirty.value) {
-    ElMessage.warning('请先保存草稿，再进行发布检查');
-    return;
+    if (!(await save())) return;
+    if (dirty.value) {
+      ElMessage.warning('保存期间流程又有修改，请再次点击发布');
+      return;
+    }
   }
   await publication.value?.open(loadedId.value);
 }
@@ -87,6 +91,7 @@ const loadedId = ref('');
 const revision = ref(0);
 const savedAt = ref('');
 const savedSnapshot = ref('');
+const saveError = ref('');
 const selectedNode = ref('');
 const selectedEdge = ref('');
 const node = computed(() =>
@@ -99,7 +104,7 @@ const dirty = computed(
   () =>
     !readOnly.value &&
     !!savedSnapshot.value &&
-    JSON.stringify(doc.value) !== savedSnapshot.value,
+    JSON.stringify(documentOf(doc.value)) !== savedSnapshot.value,
 );
 const options = ref<WorkflowOptions>({
   roles: [],
@@ -110,7 +115,40 @@ const options = ref<WorkflowOptions>({
 });
 const optionsError = ref(false);
 const optionsLoaded = ref(false);
+const configurationIssues = computed(() =>
+  !readOnly.value && optionsLoaded.value
+    ? doc.value.nodes.flatMap((candidate) =>
+        nodeConfigurationIssues(doc.value, candidate, options.value),
+      )
+    : [],
+);
+const configurationAffectedNodes = computed(() =>
+  doc.value.nodes.flatMap((candidate) => {
+    const found = configurationIssues.value.filter(
+      (issue) => issue.nodeId === candidate.id,
+    );
+    return found.length > 0
+      ? [
+          {
+            id: candidate.id,
+            name: candidate.name,
+            count: found.length,
+            issue: found[0] || {
+              message: '配置引用已失效',
+              nodeId: candidate.id,
+            },
+          },
+        ]
+      : [];
+  }),
+);
 const issues = ref<WorkflowIssue[]>([]);
+const focusedIssue = ref<{
+  message: string;
+  nodeId: string;
+  sequence: number;
+}>();
+let focusIssueSequence = 0;
 const checked = ref(false);
 const validationStale = ref(false);
 const errorNodes = computed(() =>
@@ -174,7 +212,9 @@ function travel(offset: number) {
   const index = historyIndex.value + offset;
   if (index < 0 || index >= history.value.length) return;
   suppressHistory = true;
-  doc.value = JSON.parse(history.value[index]!);
+  const snapshot = history.value[index];
+  if (!snapshot) return;
+  doc.value = JSON.parse(snapshot);
   historyIndex.value = index;
   suppressHistory = false;
   checked.value = false;
@@ -187,6 +227,7 @@ function select(kind: 'edge' | 'node' | 'none', id: string) {
   selectedEdge.value = kind === 'edge' ? id : '';
 }
 async function loadOptions() {
+  optionsLoaded.value = false;
   try {
     options.value = await getWorkflowOptions();
     optionsError.value = false;
@@ -211,6 +252,7 @@ async function load(id: string) {
     revision.value = record.revision;
     savedAt.value = record.updatedAt;
     savedSnapshot.value = JSON.stringify(doc.value);
+    saveError.value = '';
     history.value = [savedSnapshot.value];
     historyIndex.value = 0;
     pendingHistory.value = false;
@@ -226,6 +268,7 @@ async function load(id: string) {
 function check() {
   const result = validateWorkflow(doc.value);
   if (optionsLoaded.value) {
+    result.push(...configurationIssues.value);
     if (
       doc.value.defaultDetailViewId &&
       !options.value.views.some(
@@ -259,14 +302,18 @@ function check() {
           nodeId: n.id,
           message: `${n.name}：节点表单已失效`,
         });
-      const pool =
-        n.assignee.type === 'role'
-          ? options.value.roles
-          : n.assignee.type === 'user'
-            ? options.value.users
-            : n.assignee.type === 'departmentLeader'
-              ? options.value.departments
-              : undefined;
+      const pool = (() => {
+        if (n.assignee.type === 'role') {
+          return options.value.roles;
+        }
+        if (n.assignee.type === 'user') {
+          return options.value.users;
+        }
+        if (n.assignee.type === 'departmentLeader') {
+          return options.value.departments;
+        }
+        return undefined;
+      })();
       if (pool && n.assignee.ids.some((id) => !pool.some((p) => p.id === id)))
         result.push({ nodeId: n.id, message: `${n.name}：办理人引用已失效` });
     }
@@ -285,13 +332,14 @@ function runCheck() {
   if (result.length === 0)
     ElMessage.success('结构与绑定校验通过，条件表达式语义将在服务端接入后校验');
 }
-async function save() {
-  if (readOnly.value) return;
-  if (saving.value || loading.value || loadError.value) return;
+async function save(): Promise<boolean> {
+  if (readOnly.value || saving.value || loading.value || loadError.value)
+    return false;
   check();
   flushHistory();
   const payload = documentOf(doc.value);
   const id = loadedId.value;
+  saveError.value = '';
   saving.value = true;
   try {
     const record = await updateWorkflow(id, payload, revision.value);
@@ -299,15 +347,24 @@ async function save() {
     savedAt.value = record.updatedAt;
     const normalized = documentOf(record);
     // Edits made while the request is in flight stay in the editor and remain dirty.
-    if (JSON.stringify(doc.value) === JSON.stringify(payload)) {
+    if (JSON.stringify(documentOf(doc.value)) === JSON.stringify(payload)) {
       suppressHistory = true;
       doc.value = normalized;
       suppressHistory = false;
     }
     savedSnapshot.value = JSON.stringify(normalized);
     ElMessage.success('已保存草稿，尚未发布，不影响线上流程');
-  } catch {
-    /* Never clear dirty state or replace user edits when saving fails. */
+    return true;
+  } catch (error) {
+    // Keep unsaved edits visible, including when the server rejects a stale revision.
+    const response = (
+      error as { response?: { data?: { error?: string; message?: string } } }
+    )?.response;
+    saveError.value =
+      response?.data?.error ||
+      response?.data?.message ||
+      (error instanceof Error ? error.message : '保存草稿失败，请重试');
+    return false;
   } finally {
     saving.value = false;
   }
@@ -498,8 +555,14 @@ async function importJsonFile(event: Event) {
   ElMessage.success('流程 JSON 已导入，请保存草稿');
 }
 function locate(issue: WorkflowIssue) {
-  if (issue.nodeId) canvas.value?.focusNode(issue.nodeId);
-  else if (issue.edgeId) canvas.value?.focusEdge(issue.edgeId);
+  if (issue.nodeId) {
+    canvas.value?.focusNode(issue.nodeId);
+    focusedIssue.value = {
+      nodeId: issue.nodeId,
+      message: issue.message,
+      sequence: ++focusIssueSequence,
+    };
+  } else if (issue.edgeId) canvas.value?.focusEdge(issue.edgeId);
   else select('none', '');
 }
 async function mayLeave() {
@@ -595,6 +658,8 @@ onMounted(() => {
 });
 onActivated(() => {
   active = true;
+  // Templates may have changed in another tab; refresh metadata without replacing unsaved edits.
+  if (loadedId.value && !loading.value) void loadOptions();
   if (loadedId.value && !loading.value && route.params.id && !dirty.value) {
     void load(String(route.params.id));
   }
@@ -619,73 +684,102 @@ onBeforeUnmount(() => {
     />
     <div v-loading="loading" class="designer">
       <ElEmpty v-if="loadError" description="流程加载失败，请重试">
-<ElButton type="primary" @click="load(String(route.params.id))">
-重新加载
-</ElButton><ElButton @click="router.push('/system/workflow')">
-返回列表
-</ElButton>
-</ElEmpty>
+        <ElButton type="primary" @click="load(String(route.params.id))">
+          重新加载
+        </ElButton>
+        <ElButton @click="router.push('/system/workflow')"> 返回列表 </ElButton>
+      </ElEmpty>
       <template v-else-if="!loading">
         <header class="designer-header">
           <div class="title-area">
             <ElButton text @click="router.push('/system/workflow')">
-← 返回
-</ElButton>
+              ← 返回
+            </ElButton>
             <div>
               <div class="title-line">
                 <h1>{{ doc.name || '未命名流程' }}</h1>
                 <ElTag type="info" size="small">
-V{{ version }} ·
+                  V{{ version }} ·
                   {{ readOnly ? '已发布快照' : '草稿' }}
-</ElTag>
+                </ElTag>
               </div>
               <p>
                 {{ doc.code }} · {{ doc.base
-                }}<span :class="{ unsaved: dirty }">{{
-                  dirty
-                    ? '● 有未保存修改'
-                    : `已保存 ${new Date(savedAt).toLocaleTimeString('zh-CN', { hour12: false })}`
-                }}</span>
+                }}<span
+                  :class="{ unsaved: dirty || saveError }"
+                  :title="saveError || undefined"
+                  >{{
+                    saveError
+                      ? `● 保存失败：${saveError}`
+                      : dirty
+                        ? '● 有未保存修改'
+                        : `已保存 ${new Date(savedAt).toLocaleTimeString('zh-CN', { hour12: false })}`
+                  }}</span>
               </p>
             </div>
           </div>
           <div class="toolbar">
             <ElButton :disabled="!doc.nodes.length" @click="printChart">
-打印
-</ElButton>
+              打印
+            </ElButton>
             <template v-if="!readOnly">
-<ElButton
+              <ElButton
                 :disabled="historyIndex === 0 && !pendingHistory"
                 title="Ctrl+Z"
                 @click="travel(-1)"
-                >
-撤销
-</ElButton><ElButton
+              >
+                撤销
+              </ElButton>
+              <ElButton
                 :disabled="historyIndex >= history.length - 1"
                 title="Ctrl+Shift+Z"
                 @click="travel(1)"
-                >
-重做
-</ElButton><ElButton @click="select('none', '')">流程属性</ElButton><ElButton @click="runCheck">校验流程</ElButton><ElButton
+              >
+                重做
+              </ElButton>
+              <ElButton @click="select('none', '')">流程属性</ElButton>
+              <ElButton @click="runCheck">校验流程</ElButton>
+              <ElButton
                 type="primary"
                 :loading="saving"
                 title="Ctrl+S"
                 @click="save"
-                >
-保存草稿
-</ElButton>
-</template><ElButton
+              >
+                保存草稿
+              </ElButton>
+            </template>
+            <ElButton
               v-if="!readOnly"
               type="success"
               :disabled="saving"
               @click="openPublication"
-              >
-发布
-</ElButton><ElButton v-else type="primary" @click="newVersion">
-新建版本
-</ElButton>
+            >
+              发布
+            </ElButton>
+            <ElButton v-else type="primary" @click="newVersion">
+              新建版本
+            </ElButton>
           </div>
         </header>
+        <ElAlert
+          v-if="configurationIssues.length"
+          class="configuration-warning"
+          :title="`有 ${configurationIssues.length} 项失效配置，涉及 ${configurationAffectedNodes.length} 个节点`"
+          type="warning"
+          :closable="false"
+          show-icon
+        >
+          <span>原有规则已保留，请检查受影响节点：</span>
+          <ElButton
+            v-for="affected in configurationAffectedNodes"
+            :key="affected.id"
+            link
+            type="primary"
+            @click="locate(affected.issue)"
+          >
+            {{ affected.name }}（{{ affected.count }} 项）
+          </ElButton>
+        </ElAlert>
         <div class="designer-body">
           <aside class="palette">
             <div class="palette-title">节点组件</div>
@@ -716,16 +810,16 @@ V{{ version }} ·
               <b>配置一条流程</b><span>1. 添加节点并连线</span><span>2. 配置办理人和表单</span><span>3. 校验后保存草稿</span>
             </div>
             <ElButton size="small" :disabled="readOnly" @click="useSample">
-载入审核示例
-</ElButton>
+              载入审核示例
+            </ElButton>
             <ElButton size="small" @click="exportJson">导出 JSON</ElButton>
             <ElButton
               size="small"
               :disabled="readOnly"
               @click="jsonFile?.click()"
-              >
-导入 JSON
-</ElButton>
+            >
+              导入 JSON
+            </ElButton>
             <input
               ref="jsonFile"
               type="file"
@@ -761,9 +855,10 @@ V{{ version }} ·
                     : issues.length
                       ? `发现 ${issues.length} 项问题`
                       : '结构与绑定校验通过'
-                }}</b><ElButton link size="small" @click="checked = false">
-收起
-</ElButton>
+                }}</b>
+                <ElButton link size="small" @click="checked = false">
+                  收起
+                </ElButton>
               </div>
               <p v-if="!issues.length">
                 条件表达式的语义和分支互斥性尚待服务端验证；保存仅更新草稿。
@@ -786,7 +881,9 @@ V{{ version }} ·
             :edge="edge"
             :options="options"
             :options-error="optionsError"
+            :options-loaded="optionsLoaded"
             :buttons="[]"
+            :focus-issue="focusedIssue"
             @remove="removeSelection"
             @duplicate="duplicate"
             @retry="loadOptions"
@@ -799,6 +896,12 @@ V{{ version }} ·
 </template>
 
 <style scoped>
+.configuration-warning {
+  flex-shrink: 0;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
 .designer {
   display: flex;
   flex-direction: column;
@@ -864,7 +967,7 @@ V{{ version }} ·
 .designer-body {
   display: grid;
   flex: 1;
-  grid-template-columns: 174px minmax(280px, 1fr) 304px;
+  grid-template-columns: 174px minmax(360px, 1fr) 408px;
   min-height: 0;
 }
 
@@ -1028,7 +1131,7 @@ V{{ version }} ·
   }
 
   .designer-body {
-    grid-template-columns: 150px minmax(240px, 1fr) 280px;
+    grid-template-columns: 150px minmax(320px, 1fr) 368px;
   }
 
   .title-line h1 {
@@ -1043,7 +1146,7 @@ V{{ version }} ·
 
   .designer-header,
   .designer-body {
-    min-width: 850px;
+    min-width: 980px;
   }
 }
 </style>

@@ -1,9 +1,18 @@
+/* oxlint-disable typescript/no-non-null-assertion -- Test fixtures intentionally assert that configured nodes and mounted controls exist. */
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createDocument, createNode } from '../../shared/workflow';
+import {
+  deleteWorkflow,
+  getWorkflow,
+  listWorkflows,
+  newWorkflowVersion,
+  publishWorkflow,
+  saveWorkflow,
+} from './workflow-store';
 
 const { directory, tempRoot } = await vi.hoisted(async () => {
   const { mkdtempSync } = await import('node:fs');
@@ -16,14 +25,6 @@ const { directory, tempRoot } = await vi.hoisted(async () => {
   };
 });
 vi.mock('./mock-persist', () => ({ DATA_DIR: directory }));
-import {
-  deleteWorkflow,
-  getWorkflow,
-  listWorkflows,
-  newWorkflowVersion,
-  publishWorkflow,
-  saveWorkflow,
-} from './workflow-store';
 
 const file = join(directory, 'workflow.json');
 beforeEach(() => {
@@ -84,7 +85,7 @@ describe('workflow persistent draft store', () => {
   });
   it('refuses to overwrite a corrupt existing file', () => {
     writeFileSync(file, '{broken', 'utf8');
-    expect(() => saveWorkflow(draft(), 'tester')).toThrow();
+    expect(() => saveWorkflow(draft(), 'tester')).toThrow(/./);
     expect(readFileSync(file, 'utf8')).toBe('{broken');
   });
   it('copies all configuration through create and deletes only the selected draft', () => {
@@ -94,13 +95,17 @@ describe('workflow persistent draft store', () => {
     deleteWorkflow(copy.id);
     expect(listWorkflows()).toEqual([first]);
   });
-  it('logs who changed buttons, time limits, data actions and field access', () => {
+  it('logs who changed roles, buttons, time limits, data actions and field access', () => {
     const node = createNode('approve', 10, 10, 1);
     node.name = '科长审核';
     const first = saveWorkflow({ ...draft(), nodes: [node] }, 'alice');
     expect(first.changeLog).toBeUndefined();
     const edited = structuredClone(first);
+    edited.startRoleIds = ['R_ENTRY'];
+    edited.startDeniedRoleIds = ['R_VIEWER'];
     const target = edited.nodes[0]!;
+    target.handleRoleIds = ['R_LAWYER'];
+    target.buttonDeniedRoleIds = { pass: ['R_VIEWER'] };
     target.buttons = ['pass'];
     target.sla = { durationHours: 24, warnHours: 4, overtime: 'urge' };
     target.dataActions = [
@@ -113,6 +118,9 @@ describe('workflow persistent draft store', () => {
     expect(second.changeLog?.[0]?.action).toBe('save');
     const text = second.changeLog?.[0]?.lines.join('\n') || '';
     expect(text).toContain('按钮');
+    expect(text).toContain('流程发起角色');
+    expect(text).toContain('办理角色');
+    expect(text).toContain('按钮角色');
     expect(text).toContain('时限');
     expect(text).toContain('数据动作');
     expect(text).toContain('字段权限');

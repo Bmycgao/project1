@@ -1,3 +1,4 @@
+/* oxlint-disable typescript/no-non-null-assertion -- Test fixtures intentionally assert that configured nodes and mounted controls exist. */
 import type { App } from 'vue';
 
 import type { AgreeModuleLayoutItem } from '../access/module-access';
@@ -57,8 +58,8 @@ describe('共用详情布局', () => {
     app.mount(host);
     await nextTick();
     expect(
-      host.querySelector('.detail-content [data-module-key]')?.dataset
-        .moduleKey,
+      host.querySelector<HTMLElement>('.detail-content [data-module-key]')
+        ?.dataset.moduleKey,
     ).toBe('houses');
     expect(
       [...host.querySelectorAll('.detail-tab')].map((el) => el.textContent),

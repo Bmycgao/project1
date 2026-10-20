@@ -207,6 +207,17 @@ function ensureSystemWorkflowMenuSeed() {
       meta: { icon: 'mdi:monitor-dashboard', title: '流程监控' },
       component: '/system/workflow/monitor',
     },
+    {
+      id: 2093,
+      pid: 2,
+      path: 'workflow/buttons',
+      name: 'SystemWorkflowButtons',
+      authCode: WORKFLOW_AUTH.manage,
+      status: 1,
+      type: 'menu',
+      meta: { icon: 'mdi:gesture-tap-button', title: '按钮管理' },
+      component: '/system/workflow-button/list',
+    },
   ];
   let changed = false;
   for (const seed of seeds) {
@@ -495,6 +506,12 @@ export function removeMenuNode(
   list: any[] = MOCK_MENU_LIST,
 ): boolean {
   ensureMenuStoreHydrated();
+  const existing = findMenuNode(id, list);
+  if (existing?.meta?.workflowFamilyId) {
+    existing.status = 0;
+    persistMenuStore();
+    return true;
+  }
   const ok = !!detachMenuNode(id, list);
   if (ok) persistMenuStore();
   return ok;
@@ -633,4 +650,85 @@ export function updateMenuNode(id: number | string, data: Record<string, any>) {
   });
   persistMenuStore();
   return existing;
+}
+
+/** Drag a navigable menu and persist its new parent and sibling order. */
+export function moveMenuNode(
+  id: number | string,
+  targetId: number | string,
+  position: 'after' | 'before' | 'inner',
+) {
+  ensureMenuStoreHydrated();
+  const source = findMenuNode(id);
+  const target = findMenuNode(targetId);
+  if (
+    !source ||
+    !target ||
+    source.type === 'button' ||
+    target.type === 'button'
+  )
+    throw new Error('只能拖动菜单或目录');
+  if (String(id) === String(targetId)) throw new Error('不能将菜单拖到自身');
+  if (position === 'inner' && target.type !== 'catalog')
+    throw new Error('只能放入分组目录');
+  const contains = (node: any, wanted: string): boolean =>
+    (node.children || []).some(
+      (child: any) => String(child.id) === wanted || contains(child, wanted),
+    );
+  if (contains(source, String(targetId)))
+    throw new Error('不能将菜单拖到自己的下级');
+
+  function locate(
+    idToFind: string,
+    list: any[] = MOCK_MENU_LIST,
+    parent?: any,
+    parentPath = '',
+  ):
+    | undefined
+    | { fullPath: string; index: number; list: any[]; parent?: any } {
+    for (let index = 0; index < list.length; index++) {
+      const node = list[index];
+      const path = String(node.path || '');
+      const fullPath = path.startsWith('/')
+        ? path
+        : `${parentPath.replace(/\/$/, '')}/${path}`;
+      if (String(node.id) === idToFind)
+        return { index, list, parent, fullPath };
+      const found = locate(idToFind, node.children || [], node, fullPath);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  const sourceLocation = locate(String(id));
+  if (!sourceLocation) throw new Error('菜单不存在，请刷新后重试');
+  const plannedParent =
+    position === 'inner' ? target : locate(String(targetId))?.parent;
+  if (
+    source.meta?.workflowFamilyId &&
+    plannedParent &&
+    plannedParent.type !== 'catalog'
+  )
+    throw new Error('流程菜单只能放在根目录或分组目录下');
+  const originalPath = sourceLocation.fullPath;
+  sourceLocation.list.splice(sourceLocation.index, 1);
+  const targetLocation = locate(String(targetId));
+  if (!targetLocation) throw new Error('目标菜单不存在，请刷新后重试');
+  const destination =
+    position === 'inner' ? (target.children ||= []) : targetLocation.list;
+  const index =
+    position === 'inner'
+      ? destination.length
+      : targetLocation.index + (position === 'after' ? 1 : 0);
+  destination.splice(index, 0, source);
+  const parent = position === 'inner' ? target : targetLocation.parent;
+  if (parent) source.pid = parent.id;
+  else delete source.pid;
+  // Preserve the route when moving a formerly relative child to a new parent.
+  source.path = originalPath;
+  destination.forEach((node: any, order: number) => {
+    node.meta ||= {};
+    node.meta.order = order * 10;
+  });
+  persistMenuStore();
+  return source;
 }

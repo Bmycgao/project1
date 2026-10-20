@@ -1,5 +1,6 @@
 import { eventHandler, readBody } from 'h3';
 import { assertAgreeAction } from '~/utils/agree-api-auth';
+import { assertAgreementEntryWrite } from '~/utils/agreement-entry-access';
 import { submitAgreementByNos } from '~/utils/mock-agreement-detail';
 import { useResponseError, useResponseSuccess } from '~/utils/response';
 
@@ -9,12 +10,15 @@ export default eventHandler(async (event) => {
   if (!auth.ok) return auth.response;
 
   const body = await readBody(event);
-  const nos = normalizeNos(body?.agreementNos ?? body?.agreementNo);
-  if (!nos.length) {
+  const nos = normalizeNos(
+    body?.agreementIds ?? body?.agreementNos ?? body?.agreementNo,
+  );
+  if (nos.length === 0) {
     return useResponseError('请传入 agreementNos');
   }
 
   try {
+    nos.forEach((value) => assertAgreementEntryWrite(value));
     const saved = submitAgreementByNos(nos);
     return useResponseSuccess({ items: saved, total: saved.length });
   } catch (error: any) {

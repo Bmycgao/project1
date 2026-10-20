@@ -1,15 +1,33 @@
 <script lang="ts" setup>
-import type { OnActionClickParams, VxeTableGridOptions } from '#/adapter/vxe-table';
+import type {
+  OnActionClickParams,
+  VxeTableGridOptions,
+} from '#/adapter/vxe-table';
 import type { SystemMenuApi } from '#/api/system/menu';
 
-import { Page, useVbenDrawer } from '@vben/common-ui';
+import { computed, ref } from 'vue';
+
 import { AccessControl, useAccess } from '@vben/access';
+import { Page, useVbenDrawer } from '@vben/common-ui';
 import { IconifyIcon, Plus } from '@vben/icons';
 
-import { ElButton, ElMessage } from 'element-plus';
+import {
+  ElButton,
+  ElDialog,
+  ElEmpty,
+  ElMessage,
+  ElOption,
+  ElSelect,
+  ElTree,
+} from 'element-plus';
 
 import { useVbenVxeGrid } from '#/adapter/vxe-table';
-import { deleteMenu, getMenuList } from '#/api/system/menu';
+import {
+  deleteMenu,
+  getMenuList,
+  getMenuPreview,
+  moveMenu,
+} from '#/api/system/menu';
 import { $t } from '#/locales';
 import { useAuthStore } from '#/store';
 
@@ -22,6 +40,88 @@ const { hasAccessByCodes } = useAccess();
 const canCreate = hasAccessByCodes(['System:Menu:Create']);
 const canEdit = hasAccessByCodes(['System:Menu:Edit']);
 const canDelete = hasAccessByCodes(['System:Menu:Delete']);
+const previewVisible = ref(false);
+const previewLoading = ref(false);
+const previewKind = ref<'role' | 'user'>('role');
+const previewId = ref('');
+const previewRoles = ref<{ id: string; name: string }[]>([]);
+const previewUsers = ref<{ id: string; name: string; username: string }[]>([]);
+const previewMenus = ref<SystemMenuApi.SystemMenu[]>([]);
+const sortVisible = ref(false);
+const sortMenus = ref<SystemMenuApi.SystemMenu[]>([]);
+const sortTree = computed(() => {
+  const map = (menus: SystemMenuApi.SystemMenu[]): any[] =>
+    menus
+      .filter((menu) => menu.type !== 'button')
+      .map((menu) => ({
+        id: menu.id,
+        type: menu.type,
+        meta: menu.meta,
+        label: $t(menu.meta?.title || menu.name),
+        children: map(menu.children || []),
+      }));
+  return map(sortMenus.value);
+});
+async function openSort() {
+  sortMenus.value = await getMenuList();
+  sortVisible.value = true;
+}
+function allowMenuDrop(
+  _source: any,
+  target: any,
+  type: 'inner' | 'next' | 'prev',
+) {
+  return type !== 'inner' || target.data.type === 'catalog';
+}
+async function onMenuDrop(
+  source: any,
+  target: any,
+  position: 'after' | 'before' | 'inner',
+) {
+  try {
+    await moveMenu(String(source.data.id), String(target.data.id), position);
+    ElMessage.success('菜单顺序已保存，正在刷新侧栏…');
+    authStore.reloadAccess();
+  } catch {
+    sortMenus.value = await getMenuList();
+  }
+}
+const previewTree = computed(() => {
+  const map = (menus: SystemMenuApi.SystemMenu[]): any[] =>
+    menus.map((menu) => ({
+      id: String(menu.name || menu.id),
+      label: $t(menu.meta?.title || menu.name),
+      children: map(menu.children || []),
+    }));
+  return map(previewMenus.value);
+});
+
+async function refreshPreview() {
+  previewLoading.value = true;
+  try {
+    const result = await getMenuPreview(
+      previewId.value
+        ? previewKind.value === 'role'
+          ? { roleId: previewId.value }
+          : { userId: previewId.value }
+        : {},
+    );
+    previewRoles.value = result.roles;
+    previewUsers.value = result.users;
+    previewMenus.value = result.menus;
+  } finally {
+    previewLoading.value = false;
+  }
+}
+async function openPreview() {
+  previewVisible.value = true;
+  await refreshPreview();
+}
+function changePreviewKind(value: 'role' | 'user') {
+  previewKind.value = value;
+  previewId.value = '';
+  previewMenus.value = [];
+}
 
 const [FormDrawer, formDrawerApi] = useVbenDrawer({
   connectedComponent: Form,
@@ -34,9 +134,10 @@ const [FormDrawer, formDrawerApi] = useVbenDrawer({
  */
 function onFormSuccess(payload?: { created?: boolean }) {
   onRefresh();
-  if (!payload?.created) return;
   ElMessage.success(
-    '菜单已创建，并已授权给超管与系统管理员；其它角色请到「角色管理」勾选。正在刷新侧栏…',
+    payload?.created
+      ? '菜单已创建，并已授权给超管与系统管理员；其它角色请到「角色管理」勾选。正在刷新侧栏…'
+      : '菜单已更新，正在刷新侧栏…',
   );
   // 清动态路由缓存并整页刷新，使 /menu/all 重新生效
   authStore.reloadAccess();
@@ -64,8 +165,13 @@ function onActionClick({
 
 async function onDelete(row: SystemMenuApi.SystemMenu) {
   await deleteMenu(row.id);
-  ElMessage.success($t('ui.actionMessage.deleteSuccess', [row.name]));
+  ElMessage.success(
+    row.meta?.workflowFamilyId
+      ? '流程菜单已停用，历史绑定保留'
+      : $t('ui.actionMessage.deleteSuccess', [row.name]),
+  );
   onRefresh();
+  authStore.reloadAccess();
 }
 
 function onRefresh() {
@@ -108,8 +214,68 @@ const [Grid, gridApi] = useVbenVxeGrid({
 <template>
   <Page auto-content-height>
     <FormDrawer @success="onFormSuccess" />
+    <ElDialog v-model="previewVisible" title="菜单授权预览" width="520px">
+      <div class="mb-4 flex gap-2">
+        <ElSelect
+          :model-value="previewKind"
+          style="width: 110px"
+          @change="changePreviewKind"
+        >
+          <ElOption label="按角色" value="role" />
+          <ElOption label="按用户" value="user" />
+        </ElSelect>
+        <ElSelect
+          v-model="previewId"
+          filterable
+          placeholder="选择角色或用户"
+          style="flex: 1"
+          @change="refreshPreview"
+        >
+          <ElOption
+            v-for="role in previewKind === 'role' ? previewRoles : []"
+            :key="role.id"
+            :label="role.name"
+            :value="role.id"
+          />
+          <ElOption
+            v-for="user in previewKind === 'user' ? previewUsers : []"
+            :key="user.id"
+            :label="`${user.name}（${user.username}）`"
+            :value="String(user.id)"
+          />
+        </ElSelect>
+      </div>
+      <div
+        v-loading="previewLoading"
+        style="min-height: 180px; max-height: 460px; overflow: auto"
+      >
+        <ElTree
+          v-if="previewTree.length"
+          :data="previewTree"
+          node-key="id"
+          default-expand-all
+        />
+        <ElEmpty
+          v-else
+          :description="previewId ? '该身份没有可见菜单' : '请选择角色或用户'"
+        />
+      </div>
+    </ElDialog>
+    <ElDialog v-model="sortVisible" title="拖拽菜单排序" width="520px">
+      <p class="mb-3 text-sm">可调整同级顺序，或将菜单拖入分组目录。</p>
+      <ElTree
+        :data="sortTree"
+        node-key="id"
+        default-expand-all
+        draggable
+        :allow-drop="allowMenuDrop"
+        @node-drop="onMenuDrop"
+      />
+    </ElDialog>
     <Grid>
       <template #toolbar-tools>
+        <ElButton @click="openPreview">授权预览</ElButton>
+        <ElButton v-if="canEdit" @click="openSort">拖拽排序</ElButton>
         <AccessControl :codes="['System:Menu:Create']" type="code">
           <ElButton type="primary" @click="onCreate">
             <Plus class="mr-1 size-4" />

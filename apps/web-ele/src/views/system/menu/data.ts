@@ -3,6 +3,7 @@ import type { OnActionClickFn, VxeTableGridColumns } from '#/adapter/vxe-table';
 import type { SystemMenuApi } from '#/api/system/menu';
 
 import { getMenuList, getPageSchemaList } from '#/api/system';
+import { getPublishedWorkflowMenuOptions } from '#/api/system/menu';
 import { $t } from '#/locales';
 
 /** 通用动态列表页组件路径 */
@@ -63,6 +64,15 @@ export async function fetchScenePageSchemas() {
       /** 下拉显示文案 */
       optionLabel: `${item.title}（${item.scene}）`,
     }));
+}
+
+export async function fetchWorkflowMenuOptions() {
+  const list = await getPublishedWorkflowMenuOptions();
+  return list.map((flow) => ({
+    ...flow,
+    familyId: flow.familyId || flow.id,
+    optionLabel: `${flow.name}（${flow.code} · ${flow.base}）`,
+  }));
 }
 
 /**
@@ -152,12 +162,14 @@ export function useFormSchema(): VbenFormSchema[] {
       dependencies: {
         // 按钮权限节点不需要路由地址；其余类型必填，否则刷新会崩
         rules(values) {
-          return values.type === 'button' ? null : 'required';
+          return values.type === 'button' || values.meta?.workflowFamilyId
+            ? null
+            : 'required';
         },
         show(values) {
-          return values.type !== 'button';
+          return values.type !== 'button' && !values.meta?.workflowFamilyId;
         },
-        triggerFields: ['type'],
+        triggerFields: ['type', 'meta.workflowFamilyId'],
       },
       fieldName: 'path',
       label: $t('system.menu.path'),
@@ -172,13 +184,32 @@ export function useFormSchema(): VbenFormSchema[] {
       },
       dependencies: {
         show(values) {
-          return values.type === 'menu';
+          return values.type === 'menu' && !values.meta?.workflowFamilyId;
         },
-        triggerFields: ['type'],
+        triggerFields: ['type', 'meta.workflowFamilyId'],
       },
       fieldName: 'component',
       label: $t('system.menu.component'),
       help: '通用动态列表挂页面配置；协议场景列表挂协议场景（自动带 sceneId）',
+    },
+    {
+      component: 'ApiSelect',
+      componentProps: {
+        api: fetchWorkflowMenuOptions,
+        class: 'w-full',
+        clearable: true,
+        labelField: 'optionLabel',
+        valueField: 'familyId',
+      },
+      dependencies: {
+        show(values) {
+          return values.type === 'menu';
+        },
+        triggerFields: ['type'],
+      },
+      fieldName: 'meta.workflowFamilyId',
+      label: '绑定已发布流程',
+      help: '选择后自动生成稳定的流程入口；新版本发布后菜单继续指向该流程。',
     },
     {
       component: 'ApiSelect',
@@ -232,6 +263,14 @@ export function useFormSchema(): VbenFormSchema[] {
       component: 'IconPicker',
       fieldName: 'meta.icon',
       label: $t('system.menu.icon'),
+    },
+    {
+      component: 'InputNumber',
+      componentProps: { class: 'w-full', min: 0, precision: 0 },
+      defaultValue: 0,
+      fieldName: 'meta.order',
+      label: '同级排序',
+      help: '数字越小越靠前；保存后重新登录或刷新侧栏生效。',
     },
     {
       component: 'RadioGroup',
@@ -298,6 +337,12 @@ export function useColumns(
       field: 'component',
       minWidth: 180,
       title: $t('system.menu.component'),
+    },
+    {
+      align: 'center',
+      field: 'meta.order',
+      title: '排序',
+      width: 75,
     },
     {
       cellRender: { name: 'CellTag' },

@@ -1,13 +1,11 @@
 import { eventHandler, getRouterParam, readBody } from 'h3';
+import { listCustomAgreementModuleResources } from '~/utils/agreement-module-resources';
 import {
   invalidateDynamicData,
   rollbackPageSchema,
 } from '~/utils/mock-page-schema';
-import {
-  assertSystemAccess,
-  SYSTEM_AUTH,
-} from '~/utils/system-api-auth';
 import { useResponseError, useResponseSuccess } from '~/utils/response';
+import { assertSystemAccess, SYSTEM_AUTH } from '~/utils/system-api-auth';
 
 /**
  * POST /api/system/page-schema/:id/rollback
@@ -24,10 +22,12 @@ export default eventHandler(async (event) => {
   if (!versionId) {
     return useResponseError('缺少 versionId');
   }
+  listCustomAgreementModuleResources();
   const node = rollbackPageSchema(id, versionId);
   if (!node) {
     return useResponseError('历史版本不存在或配置已删除');
   }
   invalidateDynamicData(id);
+  listCustomAgreementModuleResources();
   return useResponseSuccess(node);
 });

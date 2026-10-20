@@ -1,5 +1,5 @@
 /**
- * 协议详情内存 Store（按协议编号缓存，支持分模块 / 全部保存）
+ * 协议详情 Store（列表与详情原子落盘，支持分模块 / 全部保存）
  * 类型请从 ./agreement-detail-types 单独导入，避免 Nitro 重复导出警告
  */
 import type {
@@ -8,15 +8,14 @@ import type {
 } from './agreement-detail-types';
 
 import {
-  AGREE_ALL_ROWS,
-  patchAgreeListRow,
+  agreementStore,
+  findAgreeListRow,
+  isDemoAgreementNo,
   removeAgreeListRows,
 } from './mock-agreement-list';
 
-const detailCache = new Map<string, AgreementDetail>();
-
 /**
- * 生成默认详情
+ * 初始化空白草稿；业务事实只使用明确传入或已存在的资料。
  * @param agreementNo 协议编号
  * @param extra 列表带入字段
  */
@@ -24,7 +23,66 @@ export function createDefaultAgreementDetail(
   agreementNo: string,
   extra: Record<string, any> = {},
 ): AgreementDetail {
-  const listRow = AGREE_ALL_ROWS.find((r) => r.agreementNo === agreementNo);
+  const row = findAgreeListRow(agreementNo);
+  const statusValue = String(row?.statusValue || '草稿');
+  return {
+    id: String(extra.id || row?.id || `A-${agreementNo}`),
+    agreementNo,
+    status: 'draft',
+    statusValue,
+    signType: String(row?.signType || ''),
+    isSigned: String(row?.isSigned || '未签约'),
+    basic: {
+      agreementNo,
+      agreementName: '',
+      department: '',
+      acquirer: '',
+      compensatee: String(extra.compensatee ?? row?.compensatee ?? ''),
+      amount: '',
+      signDate: '',
+      statusValue,
+      remark: '',
+    },
+    rightHolders: [],
+    houses: [],
+    basicTables: {},
+    signing: {
+      houseAddress: String(extra.houseAddress ?? row?.houseAddress ?? ''),
+      compensateMethod: '',
+      decorateEval: '',
+      hasMortgage: '',
+      mortgagee: '',
+      debtAmount: '',
+      hasSeal: '',
+      sealCourt: '',
+      signDate: '',
+    },
+    contact: { address: '', contact: '', phone: '', emergency: '' },
+    signMaterials: [],
+    certifyMaterials: [],
+    compensation: { settleType: '', settleAddress: '', amount: '', remark: '' },
+    compensationItems: [],
+    rewardItems: [],
+    population: {
+      headName: '',
+      idNo: '',
+      familySize: '',
+      phone: '',
+      hukouAddress: '',
+      remark: '',
+    },
+    extraForms: {},
+    extraTables: {},
+    flowFields: {},
+  };
+}
+
+/** 仅为内置演示记录生成样例资料，新增协议不得调用。 */
+function createDemoAgreementDetail(
+  agreementNo: string,
+  extra: Record<string, any> = {},
+): AgreementDetail {
+  const listRow = findAgreeListRow(agreementNo);
   const name = String(extra.compensatee || listRow?.compensatee || '陈爱然');
   const address = String(
     extra.houseAddress || listRow?.houseAddress || '翠园街十八巷7号202',
@@ -204,8 +262,10 @@ export function getOrCreateAgreementDetail(
   agreementNo: string,
   extra: Record<string, any> = {},
 ) {
-  const key = String(agreementNo);
-  let node = detailCache.get(key);
+  const row = findAgreeListRow(agreementNo);
+  if (!row) throw new Error('协议不存在或已删除，请刷新列表');
+  const key = row.agreementNo;
+  let node = agreementStore.detail(key);
   if (node) {
     if (!node.basicTables || typeof node.basicTables !== 'object') {
       node.basicTables = {};
@@ -235,9 +295,17 @@ export function getOrCreateAgreementDetail(
       node.flowFields = {};
     }
   } else {
-    node = createDefaultAgreementDetail(key, extra);
-    detailCache.set(key, node);
+    node = isDemoAgreementNo(key)
+      ? createDemoAgreementDetail(key, extra)
+      : createDefaultAgreementDetail(key, extra);
   }
+  node.id = row.id;
+  node.agreementNo = row.agreementNo;
+  node.basic.agreementNo = row.agreementNo;
+  node.agreementNoEditable = agreementStore.numberEditable(row.id);
+  const entryAccess = agreementStore.entryWriteAccess(row.id);
+  node.entryEditable = entryAccess.editable;
+  node.entryReadonlyReason = entryAccess.reason;
   return structuredClone(node);
 }
 
@@ -246,14 +314,51 @@ export function getOrCreateAgreementDetail(
  * @param payload 详情数据
  */
 export function saveAgreementDetailAll(payload: Partial<AgreementDetail>) {
-  const agreementNo = String(payload.agreementNo || '');
-  if (!agreementNo) {
-    throw new Error('缺少协议编号');
+  const listRow = findAgreeListRow(
+    String(payload.id || payload.agreementNo || ''),
+  );
+  if (!listRow) {
+    throw new Error('协议不存在或已删除，请刷新列表');
   }
-  const current = getOrCreateAgreementDetail(agreementNo);
+  if (payload.id && payload.id !== listRow.id) {
+    throw new Error('协议内部标识不一致，请重新打开协议');
+  }
+  const current = getOrCreateAgreementDetail(listRow.id);
+  const rootNo = payload.agreementNo;
+  const basicNo = payload.basic?.agreementNo;
+  const proposedRoot =
+    rootNo &&
+    rootNo !== current.agreementNo &&
+    findAgreeListRow(rootNo)?.id !== listRow.id;
+  if (
+    proposedRoot &&
+    basicNo !== null &&
+    basicNo !== undefined &&
+    basicNo !== current.agreementNo &&
+    basicNo !== rootNo
+  )
+    throw new Error('协议编号不一致，请核对后保存');
+  const agreementNo = String(
+    basicNo !== null && basicNo !== undefined && basicNo !== current.agreementNo
+      ? basicNo
+      : proposedRoot
+        ? rootNo
+        : (basicNo ?? current.agreementNo),
+  ).trim();
+  if (
+    !agreementNo ||
+    agreementNo.length > 64 ||
+    // oxlint-disable-next-line eslint/no-control-regex -- Agreement identifiers must reject ASCII control characters.
+    /[\u0000-\u001F\u007F]/.test(agreementNo)
+  )
+    throw new Error('协议编号必填，最多64个字符，不能包含控制字符');
+  const renamed = agreementNo !== current.agreementNo;
+  if (renamed && !agreementStore.numberEditable(listRow.id))
+    throw new Error('协议已提交或已签约，不能修改编号');
   const next: AgreementDetail = {
     ...current,
     ...payload,
+    id: current.id,
     agreementNo,
     basic: payload.basic ?? current.basic,
     rightHolders: payload.rightHolders ?? current.rightHolders,
@@ -271,16 +376,66 @@ export function saveAgreementDetailAll(payload: Partial<AgreementDetail>) {
     extraTables: payload.extraTables ?? current.extraTables ?? {},
     flowFields: payload.flowFields ?? current.flowFields ?? {},
   };
-  detailCache.set(agreementNo, next);
-  // 详情保存时同步列表展示字段
-  patchAgreeListRow(agreementNo, {
-    statusValue: next.statusValue,
-    compensatee: next.basic?.compensatee || next.rightHolders?.[0]?.name,
-    houseAddress: next.signing?.houseAddress || next.houses?.[0]?.address,
-    signType: next.signType,
-    isSigned: next.isSigned,
+  next.basic = { ...next.basic, agreementNo, statusValue: next.statusValue };
+  next.rightHolders = next.rightHolders.map((holder) => ({
+    ...holder,
+    agreementNo,
+  }));
+  if (next.flowFields && Object.hasOwn(next.flowFields, 'agreementNo'))
+    next.flowFields = { ...next.flowFields, agreementNo };
+  agreementStore.update((draft) => {
+    if (
+      draft.rows.some(
+        (row) =>
+          row.id !== listRow.id &&
+          (row.agreementNo === agreementNo || row.id === agreementNo),
+      ) ||
+      (Object.hasOwn(draft.aliases, agreementNo) &&
+        draft.aliases[agreementNo] !== listRow.id)
+    ) {
+      throw new Error('协议编号已存在或曾被其他协议使用，请换一个编号');
+    }
+    if (renamed) {
+      Object.defineProperty(draft.aliases, current.agreementNo, {
+        value: listRow.id,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+      draft.numberChanges.push({
+        agreementId: listRow.id,
+        from: current.agreementNo,
+        to: agreementNo,
+        at: new Date().toISOString(),
+      });
+    }
+    if (
+      (!current.agreementNoEditable ||
+        next.statusValue !== '草稿' ||
+        next.status !== 'draft' ||
+        next.isSigned === '已签约') &&
+      !draft.lockedIds.includes(listRow.id)
+    )
+      draft.lockedIds.push(listRow.id);
+    next.agreementNoEditable =
+      next.statusValue === '草稿' &&
+      next.isSigned !== '已签约' &&
+      !draft.lockedIds.includes(listRow.id);
+    draft.details[listRow.id] = next;
+    const row = draft.rows.find((item) => item.id === listRow.id);
+    if (!row) throw new Error('协议不存在或已删除，请刷新列表');
+    Object.assign(row, {
+      agreementNo,
+      statusValue: next.statusValue,
+      compensatee:
+        next.basic?.compensatee || next.rightHolders?.[0]?.name || '',
+      houseAddress:
+        next.signing?.houseAddress || next.houses?.[0]?.address || '',
+      signType: next.signType,
+      isSigned: next.isSigned,
+    });
   });
-  return structuredClone(next);
+  return getOrCreateAgreementDetail(listRow.id);
 }
 
 /**
@@ -298,7 +453,6 @@ export function saveAgreementDetailModule(
   if (module === 'basic') {
     if (data.basic) {
       current.basic = data.basic;
-      if (data.basic.agreementNo) current.agreementNo = data.basic.agreementNo;
       if (data.basic.statusValue) current.statusValue = data.basic.statusValue;
     }
     current.basicTables = data.basicTables ?? current.basicTables ?? {};
@@ -324,8 +478,7 @@ export function saveAgreementDetailModule(
   } else {
     throw new Error(`未知模块：${module}`);
   }
-  detailCache.set(agreementNo, current);
-  return structuredClone(current);
+  return saveAgreementDetailAll(current);
 }
 
 /**
@@ -337,15 +490,6 @@ export function submitAgreementDetail(payload: Partial<AgreementDetail>) {
     ...payload,
     status: 'review',
     statusValue: '待复核',
-  });
-  patchAgreeListRow(saved.agreementNo, {
-    statusValue: '待复核',
-    compensatee:
-      saved.basic?.compensatee ||
-      saved.rightHolders?.[0]?.name ||
-      findListCompensatee(saved.agreementNo),
-    houseAddress:
-      saved.signing?.houseAddress || saved.houses?.[0]?.address || undefined,
   });
   return saved;
 }
@@ -381,7 +525,6 @@ export function approveAgreementByNos(agreementNos: string[]) {
       status: 'approved',
       statusValue: '项目经理已审核',
     });
-    patchAgreeListRow(no, { statusValue: '项目经理已审核' });
     results.push(next);
   }
   return results;
@@ -405,7 +548,6 @@ export function rejectAgreementByNos(agreementNos: string[], remark?: string) {
         remark: remark ? `驳回：${remark}` : detail.compensation?.remark || '',
       },
     });
-    patchAgreeListRow(no, { statusValue: '告知单' });
     results.push(next);
   }
   return results;
@@ -416,13 +558,5 @@ export function rejectAgreementByNos(agreementNos: string[], remark?: string) {
  * @param agreementNos 协议编号列表
  */
 export function deleteAgreementByNos(agreementNos: string[]) {
-  for (const no of agreementNos) {
-    detailCache.delete(String(no));
-  }
   return removeAgreeListRows(agreementNos);
-}
-
-/** 从列表池取被补偿人（兜底） */
-function findListCompensatee(agreementNo: string) {
-  return AGREE_ALL_ROWS.find((r) => r.agreementNo === agreementNo)?.compensatee;
 }
