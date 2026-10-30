@@ -2,7 +2,9 @@ import { createApp, h, nextTick } from 'vue';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { requireDefined } from '../../../../../../../shared/require-defined';
 import PrintExprHelp from '../designer/print-expr-help.vue';
+import { createPrintExprScope, validatePrintExpr } from './print-expr';
 import {
   applyPrintExprInsert,
   colorPrintExprFields,
@@ -12,9 +14,13 @@ import {
   PRINT_EXPR_JUDGE_GROUPS,
   PRINT_EXPR_SCENE_META,
   protocolPrintExprFields,
-  splitPrintExprHelpFields,
   splicePrintExprToken,
+  splitPrintExprHelpFields,
 } from './print-expr-catalog';
+import {
+  buildPrintFunctionExpression,
+  PRINT_EXPR_FUNCTIONS,
+} from './print-expr-functions';
 
 const cleanups: Array<() => void> = [];
 afterEach(() => cleanups.splice(0).forEach((fn) => fn()));
@@ -27,6 +33,12 @@ describe('print expr catalog', () => {
     });
     expect(splicePrintExprToken('amount', ' > ', 6, 6).next).toBe('amount > ');
     expect(splicePrintExprToken('', ' ?  : ').cursor).toBe(2);
+    expect(splicePrintExprToken('', 'ROUND(amount, 2)').cursor).toBe(
+      'ROUND(amount, 2)'.length,
+    );
+    expect(splicePrintExprToken('', 'CONCAT("?", ",)")').cursor).toBe(
+      'CONCAT("?", ",)")'.length,
+    );
   });
 
   it('inserts at the current input caret', () => {
@@ -58,6 +70,13 @@ describe('print expr catalog', () => {
       filterPrintExprFields([{ field: 'certNo', title: '产权证号' }])[0],
     ).toMatchObject({ group: '本行列', value: 'certNo' });
     expect(colorPrintExprFields([])[0]).toMatchObject({ value: 'value' });
+    const rowFields = filterPrintExprFields([
+      { field: 'amount', title: '本行金额' },
+    ]);
+    expect(rowFields.filter((item) => item.value === 'amount')).toEqual([
+      { group: '本行列', label: '本行金额', value: 'amount' },
+    ]);
+    expect(rowFields.some((item) => item.value === 'agreementNo')).toBe(true);
     const split = splitPrintExprHelpFields(
       'filter',
       filterPrintExprFields([{ field: 'certNo', title: '产权证号' }]),
@@ -66,6 +85,45 @@ describe('print expr catalog', () => {
       { group: '本行列', label: '产权证号', value: 'certNo' },
     ]);
     expect(split.extra.some((item) => item.group === '协议字段')).toBe(true);
+  });
+
+  it('documents every executable function with a valid example', () => {
+    const names = Object.entries(createPrintExprScope({}))
+      .filter(([, value]) => typeof value === 'function')
+      .map(([name]) => name)
+      .toSorted();
+    expect(PRINT_EXPR_FUNCTIONS.map((item) => item.name).toSorted()).toEqual(
+      names,
+    );
+    for (const item of PRINT_EXPR_FUNCTIONS) {
+      expect(
+        validatePrintExpr(item.example, {
+          rewardItems: [{ amount: 12 }, { amount: 20 }],
+        }),
+      ).toMatchObject({ ok: true });
+    }
+    const ifs = requireDefined(
+      PRINT_EXPR_FUNCTIONS.find((item) => item.name === 'IFS'),
+    );
+    expect(
+      buildPrintFunctionExpression(ifs, ['true', '10', 'false', '20', '']),
+    ).toBe('IFS(true, 10, false, 20)');
+    expect(buildPrintFunctionExpression(ifs, ['true', '', '0'])).toBe('');
+  });
+
+  it('preserves the host selection while function parameters have focus', () => {
+    const input = document.createElement('textarea');
+    const parameter = document.createElement('input');
+    document.body.append(input, parameter);
+    input.value = 'amount + amount';
+    input.focus();
+    input.setSelectionRange(0, 6);
+    parameter.focus();
+    expect(applyPrintExprInsert(input.value, 'ROUND(amount, 2)', input)).toBe(
+      'ROUND(amount, 2) + amount',
+    );
+    input.remove();
+    parameter.remove();
   });
 });
 
@@ -91,7 +149,7 @@ describe('print expr help', () => {
       host.remove();
     });
     expect(host.textContent).toContain('可用：本行列字段');
-    expect(host.textContent).not.toContain('IF(条件, 真, 假)');
+    expect(host.textContent).not.toContain('IF · 条件取值');
     const open = [...host.querySelectorAll('button')].find(
       (btn) => btn.textContent?.trim() === '全部函数与字段',
     );
@@ -99,19 +157,20 @@ describe('print expr help', () => {
     open?.click();
     await nextTick();
     expect(host.textContent).toContain('金额');
-    expect(host.textContent).toContain('更多值（协议 / 合计 / 整表）');
-    expect(host.textContent).not.toContain('被征收人');
-    expect(host.textContent).not.toContain('IF(条件, 真, 假)');
+    expect(host.textContent).toContain('被征收人');
+    expect(host.textContent).not.toContain('IF · 条件取值');
     const amount = [...host.querySelectorAll('button')].find(
-      (btn) => btn.textContent?.trim() === '金额',
+      (btn) => btn.title === 'amount',
     );
     amount?.click();
     expect(inserted).toEqual(['amount']);
     const judge = [...host.querySelectorAll('[role="tab"]')].find(
-      (el) => el.textContent?.trim() === '判断',
+      (el) => el.textContent?.trim() === '函数',
     );
     (judge as HTMLElement | undefined)?.click();
     await nextTick();
-    expect(host.textContent).toContain('IF(条件, 真, 假)');
+    expect(
+      host.querySelector('.print-expr-help__function')?.textContent,
+    ).toContain('IF');
   });
 });

@@ -1,7 +1,10 @@
 import type { FormGrid } from './print-form-grid';
 
+import { runInNewContext } from 'node:vm';
+
 import { describe, expect, it } from 'vitest';
 
+import { requireDefined } from '../../../../../../../shared/require-defined';
 import {
   resolveTablePreview,
   tablePreviewRowLimit,
@@ -41,23 +44,25 @@ const blankGrid = (): FormGrid => ({
 describe('form grid bindings and repeated rows', () => {
   it('mixes fixed bindings, multiple arrays, row formulas and a final total', () => {
     const grid = createFormGrid();
-    grid.rows.push({
-      source: 'rewards',
-      cells: [
-        { mode: 'field', value: 'row.name' },
-        { mode: 'field', value: 'row.amount', format: 'money' },
-        { mode: 'field', value: 'root.agreementNo' },
-        emptyFormCell(),
-      ],
-    });
-    grid.rows.push({
-      cells: [
-        { mode: 'text', value: '总面积' },
-        { mode: 'formula', value: 'SUM(houses, "area")' },
-        emptyFormCell(),
-        emptyFormCell(),
-      ],
-    });
+    grid.rows.push(
+      {
+        source: 'rewards',
+        cells: [
+          { mode: 'field', value: 'row.name' },
+          { mode: 'field', value: 'row.amount', format: 'money' },
+          { mode: 'field', value: 'root.agreementNo' },
+          emptyFormCell(),
+        ],
+      },
+      {
+        cells: [
+          { mode: 'text', value: '总面积' },
+          { mode: 'formula', value: 'SUM(houses, "area")' },
+          emptyFormCell(),
+          emptyFormCell(),
+        ],
+      },
+    );
     const { rows } = compileFormGrid(grid, sample);
     expect(rows).toHaveLength(8);
     expect(rows[0]).toMatchObject({
@@ -95,7 +100,7 @@ describe('form grid bindings and repeated rows', () => {
       __form_c0: '',
       __form_c1: '',
     });
-    grid.rows[3]!.empty = 'omit';
+    requireDefined(grid.rows[3]).empty = 'omit';
     expect(compileFormGrid(grid, {}).rows).toHaveLength(4);
   });
 
@@ -125,7 +130,7 @@ describe('form grid bindings and repeated rows', () => {
 describe('form grid structure', () => {
   it('merges a fixed rectangle and restores covered values on split', () => {
     const grid = blankGrid();
-    grid.rows[1]!.cells[1]!.value = '保留内容';
+    requireDefined(requireDefined(grid.rows[1]).cells[1]).value = '保留内容';
     const merged = mergeFormCells(grid, 0, 0, 1, 1);
     expect(formGridSpans(merged)[0]).toEqual([
       [2, 2],
@@ -137,14 +142,17 @@ describe('form grid structure', () => {
       [0, 0],
       [1, 1],
     ]);
-    Object.assign(merged.rows[0]!.cells[0]!, { colspan: 1, rowspan: 1 });
+    Object.assign(requireDefined(requireDefined(merged.rows[0]).cells[0]), {
+      colspan: 1,
+      rowspan: 1,
+    });
     expect(compileFormGrid(merged, {}).rows[1]?.__form_c1).toBe('保留内容');
   });
 
   it('rejects partial overlaps and merges crossing a repeated row', () => {
     const merged = mergeFormCells(blankGrid(), 0, 0, 1, 1);
     expect(() => mergeFormCells(merged, 1, 1, 2, 2)).toThrow('先拆分');
-    merged.rows[2]!.source = 'houses';
+    requireDefined(merged.rows[2]).source = 'houses';
     expect(() => mergeFormCells(merged, 2, 0, 3, 1)).toThrow('动态明细行');
     expect(formGridSpans(mergeFormCells(merged, 2, 0, 2, 2))[2]).toEqual([
       [1, 3],
@@ -157,7 +165,7 @@ describe('form grid structure', () => {
     'preserves merges and contents when inserting and removing a %s',
     (axis) => {
       const grid = mergeFormCells(blankGrid(), 0, 0, 1, 1);
-      grid.rows[0]!.cells[0]!.value = '主格';
+      requireDefined(requireDefined(grid.rows[0]).cells[0]).value = '主格';
       const inserted = resizeFormGrid(grid, axis, 1);
       expect(formGridSpans(inserted)[0]?.[0]).toEqual(
         axis === 'row' ? [3, 2] : [2, 3],
@@ -172,7 +180,9 @@ describe('form grid structure', () => {
 
 describe('form grid canvas and print parity', () => {
   it('survives template serialization and compiles to native printable table rows with exact cell spans', () => {
-    const element = buildToolboxPrintElement('formGrid', 20, 100)!;
+    const element = requireDefined(
+      buildToolboxPrintElement('formGrid', 20, 100),
+    );
     const source = JSON.parse(
       JSON.stringify({
         panels: [
@@ -212,8 +222,8 @@ describe('form grid canvas and print parity', () => {
     const merge = evalNamedMergeFn(first.options.rowsColumnsMerge);
     const rows = (result.printData as any)[first.options.field];
     expect(typeof merge).toBe('function');
-    if (typeof merge === 'function')
-      expect(merge(rows[5], {}, 1, 5, rows, {})).toEqual([1, 3]);
+    if (typeof merge !== 'function') throw new Error('未生成合并函数');
+    expect(merge(rows[5], {}, 1, 5, rows, {})).toEqual([1, 3]);
     expect(JSON.stringify(source)).toBe(before);
     expect(source.panels[0].printElements[0].options).not.toHaveProperty(
       'field',
@@ -234,15 +244,17 @@ describe('form grid canvas and print parity', () => {
     const data = (result.printData as any)[options.field];
     // 仅执行本模块生成的固定函数源码，与打印引擎的加载方式一致。
 
-    const formatter = eval(`(${options.columns[0][1].formatter2})`);
+    const formatter = runInNewContext(`(${options.columns[0][1].formatter2})`);
 
-    const styler = eval(`(${options.columns[0][0].styler2})`);
+    const styler = runInNewContext(`(${options.columns[0][0].styler2})`);
     expect(formatter(data[0].__form_c1)).toBe('&lt;img src=x&gt;<br/>&amp;');
     expect(styler('', data[1])).toMatchObject({
-      height: '22pt',
       fontWeight: '700',
       textAlign: 'left',
     });
+    expect(styler('', data[1])).not.toHaveProperty('height');
+    const rowStyler = runInNewContext(`(${options.rowStyler})`);
+    expect(rowStyler(data[1])).toEqual({ height: '22pt' });
   });
 
   it('does not truncate long repeated lists in the canvas model', () => {
@@ -273,7 +285,9 @@ describe('form grid canvas and print parity', () => {
   });
 
   it('removes an entirely empty form table and lets following body content fill the space', () => {
-    const element = buildToolboxPrintElement('formGrid', 20, 100)!;
+    const element = requireDefined(
+      buildToolboxPrintElement('formGrid', 20, 100),
+    );
     Object.assign(element.options, {
       agreeFormGrid: {
         version: 1,

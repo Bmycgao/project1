@@ -27,7 +27,8 @@ function mount() {
     app.unmount();
     host.remove();
   });
-  const button = host.querySelector('button')!;
+  const button = host.querySelector('button');
+  if (!button) throw new Error('测试挂载失败：没有找到按钮');
   const payload = {
     kind: AGREE_PRINT_TOOLBOX_DND,
     tid: 'staticTitle',
@@ -83,8 +84,10 @@ describe('palette pointer drag', () => {
       expect(m.drag.preview.value).toBeNull();
     },
   );
-  it('keeps tracking when a child stops bubbling and allows the next gesture after cancellation', () => {
+  it('keeps tracking when a child stops bubbling and allows the next gesture after cancellation', async () => {
     const m = mount();
+    // Vue 忽略与监听器安装处于同一毫秒的合成点击；让测试事件发生在挂载后。
+    await new Promise((resolve) => setTimeout(resolve, 1));
     m.button.addEventListener('pointermove', (event) =>
       event.stopPropagation(),
     );

@@ -1,14 +1,12 @@
 <script lang="ts" setup>
 import type { AgreePrintFieldItem } from '../data/fields';
+import type { PrintExprInputHost } from '../runtime/print-expr-catalog';
 import type { PrintTextSection } from '../runtime/print-long-text';
 import type {
   AgreeFooterCell,
   AgreeFooterRow,
 } from '../runtime/print-table-footer';
 import type { PrintElementRef } from '../template/print-element-meta';
-/**
- * 打印检视器：数据绑定 + 规则（显隐 / 表格筛行）
- */
 import type { AgreePrintData } from '../types';
 import type {
   PrintFieldPickMode,
@@ -20,6 +18,7 @@ import { computed, nextTick, ref, watch } from 'vue';
 import {
   ElAlert,
   ElButton,
+  ElCheckbox,
   ElCollapse,
   ElCollapseItem,
   ElColorPicker,
@@ -46,11 +45,11 @@ import { cloneJson } from '../../clone';
 import {
   AGREE_PRINT_ALL_FIELDS,
   buildPresetTableColumns,
-  PRINT_EXPR_HELP,
   TABLE_COLUMN_PRESETS,
 } from '../data/fields';
 import { AGREE_PRINT_FORMAT_GROUPS } from '../data/format-print-value';
 import { isDocumentTemplate } from '../runtime/document-layout';
+import { patchPrintElementSize } from '../runtime/print-element-size';
 import {
   evalPrintExpr,
   normalizeAgreeRowSort,
@@ -75,9 +74,15 @@ import {
   splitTableHeader,
 } from '../runtime/print-header-merge';
 import {
+  normalizePrintTextSectionGap,
+  resolvePrintTextBlocks,
   resolvePrintTextSections,
   validatePrintTextTemplate,
 } from '../runtime/print-long-text';
+import {
+  normalizePrintMaskRules,
+  preparePrintMasking,
+} from '../runtime/print-masking';
 import {
   collectLeafColumns,
   describeFilterExpr,
@@ -94,6 +99,10 @@ import {
   normalizeAgreeFooters,
   splitFooterCell,
 } from '../runtime/print-table-footer';
+import {
+  insertPrintTextExpression,
+  locatePrintTextExpression,
+} from '../runtime/print-text-insert';
 import { resolvePrintTextValue } from '../runtime/print-text-value';
 import {
   buildTableHeaderColumns,
@@ -113,7 +122,10 @@ import {
   toTableColumnRows,
 } from '../template/print-element-meta';
 import DocumentLayoutPanel from './document-layout-panel.vue';
+import PrintCodeSettings from './print-code-settings.vue';
+import PrintEditScope from './print-edit-scope.vue';
 import PrintExprHelp from './print-expr-help.vue';
+import PrintExpressionDialog from './print-expression-dialog.vue';
 import PrintFieldPicker from './print-field-picker.vue';
 import { describePrintField } from './print-field-tree';
 import PrintFilterDialog from './print-filter-dialog.vue';
@@ -122,6 +134,10 @@ import PrintFormGridEditor from './print-form-grid-editor.vue';
 import PrintStylePanel from './print-style-panel.vue';
 import PrintTableSample from './print-table-sample.vue';
 import { resolveTablePreview } from './template-model';
+
+/**
+ * 打印检视器：数据绑定 + 规则（显隐 / 表格筛行）
+ */
 
 const props = defineProps<{
   /** 画布高亮的列下标 */
@@ -134,6 +150,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   /** 写回模板；筛行可静默，改列/绑定需重绘画布 */
   canvasPatch: [Record<string, any>, { remount?: boolean }?];
+  editMasking: [field: string];
   /** 检视器内点列时通知画布高亮 */
   highlightCol: [number];
   'update:selectedKey': [string];
@@ -147,96 +164,6 @@ const ALIGN_OPTIONS = [
   { label: '左', value: 'left' },
   { label: '中', value: 'center' },
   { label: '右', value: 'right' },
-] as const;
-
-/** 长文本整块显隐：只给口径可见的结构条件，数值门槛请手填 */
-const TEXT_BLOCK_CONDITION_PRESETS = [
-  { label: '奖励表有数据', value: 'COUNT(rewardItems) > 0' },
-  { label: '被征收人不为空', value: '!EMPTY(compensatee)' },
-] as const;
-
-const TEXT_EXPR_INSERT_GROUPS = [
-  {
-    label: '条件',
-    options: [
-      {
-        label: 'IF(条件, 真值, 假值)',
-        value: '{{IF(rewardTotal > 0, rewardTotal, 0)}}',
-      },
-      {
-        label: '条件 ? 真值 : 假值',
-        value: '{{rewardTotal > 0 ? rewardTotal : 0}}',
-      },
-      {
-        label: 'IFS(条件, 结果, 默认值)',
-        value: '{{IFS(amount > 0, amount, 0)}}',
-      },
-    ],
-  },
-  {
-    label: '格式与文本',
-    options: [
-      {
-        label: '金额千分位',
-        value: '{{FORMAT_MONEY(rewardTotal)}}',
-      },
-      { label: '中文日期', value: '{{FORMAT_DATE(signDate, "dateCn")}}' },
-      { label: '空值兜底', value: '{{COALESCE(remark, "无备注")}}' },
-      {
-        label: '拼接文字',
-        value: '{{CONCAT(agreementNo, " / ", compensatee)}}',
-      },
-    ],
-  },
-  {
-    label: '表格汇总',
-    options: [
-      { label: '奖励行数', value: '{{COUNT(rewardItems)}}' },
-      {
-        label: '奖励金额合计',
-        value: '{{SUM(rewardItems, "amount")}}',
-      },
-      {
-        label: '奖励平均金额',
-        value: '{{AVG(rewardItems, "amount")}}',
-      },
-    ],
-  },
-] as const;
-
-const TEXT_EXPR_HELP_GROUPS = [
-  {
-    title: '比较与逻辑',
-    lines: [
-      '>、>=、<、<=、==、!=',
-      '&&（并且）、||（或者）、!（取反）',
-      'rewardTotal > 0、COUNT(rewardItems) > 0、!EMPTY(compensatee)',
-    ],
-  },
-  {
-    title: '条件',
-    lines: [
-      'IF(条件, 真值, 假值)',
-      '条件 ? 真值 : 假值',
-      'IFS(条件1, 结果1, 条件2, 结果2, 默认值)',
-      'AND(...)、OR(...)、NOT(...)、IN(...)、NOT_IN(...)',
-    ],
-  },
-  {
-    title: '文本与格式',
-    lines: [
-      'CONCAT(...)、COALESCE(...)、EMPTY(...)、CONTAINS(...)',
-      'LEN(...)、UPPER(...)、LOWER(...)',
-      'FORMAT_MONEY(金额, 小数位)、FORMAT_DATE(日期, 格式)',
-    ],
-  },
-  {
-    title: '数字与表格',
-    lines: [
-      'ROUND、ABS、CEIL、FLOOR、MIN、MAX、POW、SQRT、MOD、CLAMP',
-      'COUNT(表格)、SUM/AVG/MAX_COL/MIN_COL(表格, "字段")',
-    ],
-  },
 ] as const;
 
 const activeTab = ref('data');
@@ -313,6 +240,7 @@ function applyTableDraft() {
   });
   tableEditorOpen.value = false;
   emit('canvasPatch', result, { remount: false });
+  ElMessage.success('表格修改已应用到画布，请保存模板');
 }
 /** 列点选时对应 columns 下标；非列模式为 -1 */
 const columnPickIndex = ref(-1);
@@ -352,10 +280,32 @@ const bindField = ref('');
 const bindTitle = ref('');
 const textSectionsOpen = ref(false);
 const textSections = ref<PrintTextSection[]>([]);
+const textSectionGap = ref<null | number>();
+const resolvedTextSectionGap = computed(() =>
+  normalizePrintTextSectionGap(textSectionGap.value),
+);
+const textSectionBlocks = computed(() =>
+  resolvePrintTextBlocks(textSections.value, sampleCtx.value),
+);
+const textSectionPreviewStyle = computed(() => {
+  const options = selected.value?.options || {};
+  const size = Number(options.fontSize) || 10;
+  return {
+    fontFamily: String(options.fontFamily || 'SimSun, serif'),
+    fontSize: `${size}pt`,
+    lineHeight: `${Math.max(size * 1.25, Number(options.lineHeight) || 0)}pt`,
+    whiteSpace: 'pre-wrap' as const,
+    overflowWrap: 'anywhere' as const,
+    margin: '8px 0 0',
+  };
+});
 const textSectionsPreview = computed(() =>
   resolvePrintTextSections(textSections.value, sampleCtx.value),
 );
 function openTextSections() {
+  textSectionGap.value = normalizePrintTextSectionGap(
+    selected.value?.options.agreeTextSectionGap,
+  );
   const stored = selected.value?.options.agreeTextSections;
   textSections.value = Array.isArray(stored)
     ? stored.map((section: PrintTextSection) => ({ ...section }))
@@ -390,28 +340,83 @@ function applyTextSections() {
   publishPatch(
     patchElementOptions(editingTemplate.value, el, {
       agreeTextSections: textSections.value.map((section) => ({ ...section })),
+      agreeTextSectionGap: normalizePrintTextSectionGap(textSectionGap.value),
     }),
   );
   textSectionsOpen.value = false;
+  ElMessage.success('正文修改已应用到画布，请保存模板');
+}
+const textInputRefs = new Map<number, PrintExprInputHost>();
+const textExpressionOpen = ref(false);
+const textExpressionDraft = ref('');
+const textExpressionTarget = ref({
+  index: 0,
+  condition: false,
+  start: 0,
+  end: 0,
+});
+function openTextExpression(index: number, condition = false) {
+  const section = textSections.value[index];
+  if (!section) return;
+  const input = printExprInputEl(textInputRefs.get(index) || null);
+  const range = locatePrintTextExpression(
+    section.content,
+    input?.selectionStart ?? section.content.length,
+    input?.selectionEnd ?? section.content.length,
+  );
+  textExpressionTarget.value = {
+    index,
+    condition,
+    start: range.start,
+    end: range.end,
+  };
+  textExpressionDraft.value = condition ? section.when : range.expression;
+  textExpressionOpen.value = true;
+}
+function writeTextExpression(expression: string) {
+  const target = textExpressionTarget.value;
+  const section = textSections.value[target.index];
+  if (!section) return;
+  if (target.condition) {
+    section.when = expression;
+    return;
+  }
+  const result = insertPrintTextExpression(
+    section.content,
+    expression,
+    target.start,
+    target.end,
+  );
+  section.content = result.content;
+  nextTick(() => {
+    const input = printExprInputEl(textInputRefs.get(target.index) || null);
+    input?.focus();
+    input?.setSelectionRange(result.cursor, result.cursor);
+  });
 }
 function appendTextSectionField(index: number, rawField: unknown) {
   const section = textSections.value[index];
   const field = String(rawField || '');
   if (!section || !field) return;
-  section.content += `{{${field}}}`;
+  const input = printExprInputEl(textInputRefs.get(index) || null);
+  const result = insertPrintTextExpression(
+    section.content,
+    field,
+    input?.selectionStart ?? section.content.length,
+    input?.selectionEnd ?? section.content.length,
+  );
+  section.content = result.content;
+  nextTick(() => {
+    input?.focus();
+    input?.setSelectionRange(result.cursor, result.cursor);
+  });
 }
-function appendTextSectionExpression(index: number, rawExpression: unknown) {
-  const section = textSections.value[index];
-  const expression = String(rawExpression || '');
-  if (!section || !expression) return;
-  section.content += expression;
-}
-function setTextSectionCondition(index: number, rawCondition: unknown) {
-  const section = textSections.value[index];
-  const condition = String(rawCondition || '');
-  if (!section || !condition) return;
-  section.when = condition;
-}
+watch(textSectionsOpen, (open) => {
+  if (!open) {
+    textExpressionOpen.value = false;
+    textInputRefs.clear();
+  }
+});
 const columns = ref<ColDraft[]>([]);
 const editingColIndex = ref(0);
 const columnTab = ref('basic');
@@ -667,7 +672,6 @@ function headerIsSelected(start: number | undefined, end: number) {
     end <= headerRange.value.end
   );
 }
-
 function selectHeaderRange(start: number, end: number, event: MouseEvent) {
   selectedGroupPosition.value = null;
   if (
@@ -891,10 +895,7 @@ const footerFocusRow = ref(0);
 const footerFocusCell = ref(0);
 const rowFilter = ref('');
 const agreeVisibleWhen = ref('');
-/** 高级表达式输入框，用于在光标处插入字段 */
-const visibleExprInputRef = ref<null | {
-  textarea?: HTMLTextAreaElement;
-}>(null);
+const visibleConditionOpen = ref(false);
 const agreeFlowGroup = ref('');
 const agreeFlowMode = ref<'auto' | 'fixed'>('auto');
 const agreeFlowFloat = ref<'left' | 'none' | 'right'>('left');
@@ -914,41 +915,8 @@ const pageFlowGroups = computed(() => {
   return [...groups].map(([name, count]) => ({ name, count }));
 });
 const agreeFormat = ref('');
-type VisibleEditorMode = 'advanced' | 'simple';
-type VisibleOperator =
-  | 'contains'
-  | 'eq'
-  | 'falsy'
-  | 'gt'
-  | 'gte'
-  | 'lt'
-  | 'lte'
-  | 'neq'
-  | 'notEmpty'
-  | 'truthy';
 type VisibleDisplayMode = 'always' | 'never' | 'when';
-const visibleEditorMode = ref<VisibleEditorMode>('simple');
-/** 打不打印：与「常用 / 高级」写法分开 */
 const visibleDisplayMode = ref<VisibleDisplayMode>('always');
-const visibleField = ref('');
-const visibleOperator = ref<VisibleOperator>('truthy');
-const visibleValue = ref('');
-const VISIBLE_OPERATORS: Array<{
-  label: string;
-  needsValue?: boolean;
-  value: VisibleOperator;
-}> = [
-  { label: '为真 / 有值', value: 'truthy' },
-  { label: '为假 / 无值', value: 'falsy' },
-  { label: '不为空', value: 'notEmpty' },
-  { label: '等于', needsValue: true, value: 'eq' },
-  { label: '不等于', needsValue: true, value: 'neq' },
-  { label: '大于', needsValue: true, value: 'gt' },
-  { label: '大于等于', needsValue: true, value: 'gte' },
-  { label: '小于', needsValue: true, value: 'lt' },
-  { label: '小于等于', needsValue: true, value: 'lte' },
-  { label: '包含文字', needsValue: true, value: 'contains' },
-];
 /** 回填列草稿时忽略 InputNumber change，避免写回循环 */
 let syncingCols = false;
 
@@ -982,9 +950,58 @@ const isTextLike = computed(
   () => selected.value?.type === 'text' || selected.value?.type === 'longText',
 );
 const currentBindLabel = computed(() => describePrintField(bindField.value));
-const sampleCtx = computed(
-  () => props.sampleData as unknown as Record<string, unknown>,
+const editTarget = computed(
+  () =>
+    String(selected.value?.options.title || '') ||
+    describePrintField(selected.value?.field || '') ||
+    selected.value?.label ||
+    '当前元素',
 );
+const elementScope = computed(() => {
+  let dataScopeDescription;
+  if (isTable.value) {
+    dataScopeDescription = '当前明细表；列与筛选在结构编辑窗口中设置';
+  } else {
+    dataScopeDescription = isFormGrid.value
+      ? '当前固定表单；各格内容在格子编辑窗口中设置'
+      : '当前元素的内容与字段绑定';
+  }
+  return (
+    {
+      data: dataScopeDescription,
+      style: '当前元素的整体外观',
+      layout: '当前元素的位置、宽度与上方间距',
+      rules: '当前元素整体是否显示',
+    }[activeTab.value] || '当前元素'
+  );
+});
+const tableEditTarget = computed(() => {
+  const table = describePrintField(currentTableField.value) || editTarget.value;
+  if (tableScope.value === 'columns') {
+    const col = columns.value[editingColIndex.value];
+    return `${table} · ${col?.title || col?.field || '未选择列'}`;
+  }
+  return `${table} · ${tableScope.value === 'footer' ? '合计与备注' : '数据来源'}`;
+});
+const tableEditScope = computed(() => {
+  if (tableScope.value === 'columns') {
+    const range = headerSelectionActive.value
+      ? `第 ${headerRange.value.start + 1}${headerRange.value.end === headerRange.value.start ? '' : `–${headerRange.value.end + 1}`} 列`
+      : '未选择';
+    return `列内容、格式和逐行公式作用于该列的所有明细行；表头选区：${range}`;
+  }
+  return tableScope.value === 'footer'
+    ? '当前表格的汇总设置及自定义表尾，不改变明细字段的原值'
+    : '当前表格的全部明细行；筛选决定打印哪些记录';
+});
+const sampleCtx = computed(() => {
+  const data = cloneJson(props.sampleData) as unknown as Record<
+    string,
+    unknown
+  >;
+  preparePrintMasking(editingTemplate.value || {}, data);
+  return data;
+});
 const visibleFields = AGREE_PRINT_ALL_FIELDS.filter(
   (item) => item.group !== 'table',
 );
@@ -1000,11 +1017,6 @@ const colorExprInputRef = ref<null | {
   input?: HTMLInputElement;
   textarea?: HTMLTextAreaElement;
 }>(null);
-const visibleOperatorNeedsValue = computed(
-  () =>
-    VISIBLE_OPERATORS.find((item) => item.value === visibleOperator.value)
-      ?.needsValue === true,
-);
 const textFormatPreview = computed(() => {
   if (!isTextLike.value || !agreeFormat.value) return '';
   return resolvePrintTextValue(
@@ -1098,7 +1110,11 @@ const visibleRowField = computed(() => {
   return (
     columns.value.find((column) => {
       const field = String(column.field || '').trim();
-      return field && new RegExp(`\\b${field}\\b`).test(code);
+      return (
+        field &&
+        !visibleHelpFields.some((item) => item.value === field) &&
+        new RegExp(`\\b${field}\\b`).test(code)
+      );
     })?.field || ''
   );
 });
@@ -1107,7 +1123,7 @@ const visibleRowField = computed(() => {
 const visibleCheck = computed(() => {
   if (visibleRowField.value) {
     return {
-      message: `${visibleRowField.value} 是表体行字段；整表显隐不能直接使用它，请到“数据 → 编辑明细表”设置单元格公式。`,
+      message: `${visibleRowField.value} 是表体行字段；整表显隐不能直接使用它，请到“内容与数据 → 编辑明细表结构”设置单元格公式。`,
       ok: false,
     };
   }
@@ -1118,7 +1134,7 @@ const visibleCheck = computed(() => {
 function applyStylePatch(patch: Record<string, unknown>) {
   if (!selected.value || !editingTemplate.value) return;
   publishPatch(
-    patchElementOptions(editingTemplate.value, selected.value, patch),
+    patchPrintElementSize(editingTemplate.value, selected.value, patch),
     { remount: false },
   );
 }
@@ -1127,141 +1143,33 @@ function applyStylePatch(patch: Record<string, unknown>) {
  * 把样例求值说成「将打印 / 将隐藏」
  * @param preview 表达式结果
  */
-function visibleSampleLabel(preview: string | undefined) {
-  if (preview === 'true') return '当前样例下：将打印';
-  if (preview === 'false') return '当前样例下：将隐藏';
-  return `当前样例求值 → ${preview}`;
-}
-
-/** 条件构建器把用户值安全转成表达式字面量。 */
-function visibleLiteral(value: string) {
-  const input = value.trim();
-  if (/^(?:false|null|true)$/i.test(input)) return input.toLowerCase();
-  if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?$|^-?\.\d+$/.test(input)) return input;
-  return JSON.stringify(input);
-}
-
-/** 从简单表达式回填条件构建器；复杂旧规则继续使用高级模式。 */
-function parseSimpleVisibleExpr(expr: string) {
-  const source = expr.trim();
-  const allowed = new Set(visibleFields.map((item) => item.field));
-  if (!source) {
-    visibleField.value = '';
-    visibleOperator.value = 'truthy';
-    visibleValue.value = '';
-    return true;
-  }
-  let match = /^!([A-Za-z_$][\w$]*)$/.exec(source);
-  if (match?.[1] && allowed.has(match[1])) {
-    visibleField.value = match[1];
-    visibleOperator.value = 'falsy';
-    visibleValue.value = '';
-    return true;
-  }
-  match = /^!EMPTY\(([A-Za-z_$][\w$]*)\)$/.exec(source);
-  if (match?.[1] && allowed.has(match[1])) {
-    visibleField.value = match[1];
-    visibleOperator.value = 'notEmpty';
-    visibleValue.value = '';
-    return true;
-  }
-  match = /^([A-Za-z_$][\w$]*)$/.exec(source);
-  if (match?.[1] && allowed.has(match[1])) {
-    visibleField.value = match[1];
-    visibleOperator.value = 'truthy';
-    visibleValue.value = '';
-    return true;
-  }
-  match = /^CONTAINS\(([A-Za-z_$][\w$]*),\s*(.+)\)$/.exec(source);
-  if (match?.[1] && match[2] && allowed.has(match[1])) {
-    visibleField.value = match[1];
-    visibleOperator.value = 'contains';
-    visibleValue.value = decodeVisibleLiteral(match[2]);
-    return true;
-  }
-  match = /^([A-Za-z_$][\w$]*)\s*(==|!=|>=|<=|>|<)\s*(.+)$/.exec(source);
-  if (match?.[1] && match[2] && match[3] && allowed.has(match[1])) {
-    const operators: Record<string, VisibleOperator> = {
-      '!=': 'neq',
-      '<': 'lt',
-      '<=': 'lte',
-      '==': 'eq',
-      '>': 'gt',
-      '>=': 'gte',
-    };
-    visibleField.value = match[1];
-    visibleOperator.value = operators[match[2]] || 'eq';
-    visibleValue.value = decodeVisibleLiteral(match[3]);
-    return true;
-  }
-  return false;
-}
-
-/** 展示表达式字面量时去掉 JSON 引号。 */
-function decodeVisibleLiteral(source: string) {
-  const input = source.trim();
-  try {
-    const parsed = JSON.parse(input);
-    return String(parsed ?? '');
-  } catch {
-    if (
-      (input.startsWith("'") && input.endsWith("'")) ||
-      (input.startsWith('"') && input.endsWith('"'))
-    ) {
-      return input.slice(1, -1);
-    }
-    return input;
-  }
-}
-
-/** 应用可视化条件并立即同步画布。 */
-function applySimpleVisibleRule() {
-  if (!visibleField.value) {
-    ElMessage.warning('请先选择判断字段');
-    return;
-  }
-  if (visibleOperatorNeedsValue.value && !visibleValue.value.trim()) {
-    ElMessage.warning('请输入比较值');
-    return;
-  }
-  const field = visibleField.value;
-  const value = visibleLiteral(visibleValue.value);
-  const operators: Partial<Record<VisibleOperator, string>> = {
-    eq: '==',
-    gt: '>',
-    gte: '>=',
-    lt: '<',
-    lte: '<=',
-    neq: '!=',
-  };
-  if (visibleOperator.value === 'truthy') agreeVisibleWhen.value = field;
-  else if (visibleOperator.value === 'falsy')
-    agreeVisibleWhen.value = `!${field}`;
-  else if (visibleOperator.value === 'notEmpty')
-    agreeVisibleWhen.value = `!EMPTY(${field})`;
-  else if (visibleOperator.value === 'contains')
-    agreeVisibleWhen.value = `CONTAINS(${field}, ${value})`;
-  else
-    agreeVisibleWhen.value = `${field} ${operators[visibleOperator.value]} ${value}`;
-  persistRules({ silent: true });
-  visibleDisplayMode.value = 'when';
+function visibleSampleLabel() {
+  return evalPrintExpr(agreeVisibleWhen.value, sampleCtx.value)
+    ? '当前样例下：将显示'
+    : '当前样例下：将隐藏';
 }
 
 /** 清除条件意味着该元素始终显示。 */
 function clearVisibleRule() {
   agreeVisibleWhen.value = '';
-  parseSimpleVisibleExpr('');
-  visibleEditorMode.value = 'simple';
   visibleDisplayMode.value = 'always';
   persistRules({ silent: true });
 }
 
+function applyVisibleCondition(expression: string) {
+  agreeVisibleWhen.value = expression;
+  persistRules({ silent: true });
+  syncVisibleDisplayFromExpr();
+}
+watch(visibleConditionOpen, (open) => {
+  if (!open) syncVisibleDisplayFromExpr();
+});
+
 /** 按表达式回填显示状态（选中元素或写回后） */
 function syncVisibleDisplayFromExpr() {
   const expr = agreeVisibleWhen.value.trim();
-  if (!expr) visibleDisplayMode.value = 'always';
-  else if (expr === 'false') visibleDisplayMode.value = 'never';
-  else visibleDisplayMode.value = 'when';
+  if (expr) visibleDisplayMode.value = expr === 'false' ? 'never' : 'when';
+  else visibleDisplayMode.value = 'always';
 }
 
 /**
@@ -1280,22 +1188,7 @@ function setVisibleDisplayMode(mode: VisibleDisplayMode) {
     return;
   }
   visibleDisplayMode.value = 'when';
-  if (agreeVisibleWhen.value.trim() === 'false') {
-    agreeVisibleWhen.value = '';
-    parseSimpleVisibleExpr('');
-    visibleEditorMode.value = 'simple';
-    persistRules({ silent: true });
-  }
-}
-
-function setVisibleEditorMode(mode: VisibleEditorMode) {
-  visibleEditorMode.value = mode;
-  if (mode === 'simple' && !parseSimpleVisibleExpr(agreeVisibleWhen.value)) {
-    visibleField.value = '';
-    visibleOperator.value = 'truthy';
-    visibleValue.value = '';
-    ElMessage.info('原高级表达式仍保留；应用新的常用条件后才会替换');
-  }
+  visibleConditionOpen.value = true;
 }
 
 const visibleAlertType = computed(() => {
@@ -1304,7 +1197,7 @@ const visibleAlertType = computed(() => {
   return 'success' as const;
 });
 
-function columnExprCheck(colIndex: number) {
+function columnExprContext(colIndex: number): Record<string, unknown> {
   const source = (props.sampleData as unknown as Record<string, unknown>)[
     currentTableField.value
   ];
@@ -1321,14 +1214,23 @@ function columnExprCheck(colIndex: number) {
       { silent: true },
     );
   }
-  const expr = columns.value[colIndex]?.agreeColExpr || '';
-  return validatePrintExpr(expr, {
+  return {
     ...root,
     ...first,
     i: 0,
     index: 0,
     row: first,
-  });
+  };
+}
+function columnExprCheck(colIndex: number) {
+  return validatePrintExpr(
+    columns.value[colIndex]?.agreeColExpr || '',
+    columnExprContext(colIndex),
+  );
+}
+function colorExprContext(colIndex: number) {
+  const context = columnExprContext(colIndex + 1);
+  return { ...context, value: context[columns.value[colIndex]?.field || ''] };
 }
 
 /** 选中元素变化时回填表单（不因画布刷新把 Tab 打回数据） */
@@ -1348,10 +1250,8 @@ watch(
       rowFilter.value = String(el.options.agreeRowFilter || '');
       agreeVisibleWhen.value = String(el.options.agreeVisibleWhen || '');
     }
-    visibleEditorMode.value = parseSimpleVisibleExpr(agreeVisibleWhen.value)
-      ? 'simple'
-      : 'advanced';
     const selectedChanged = previous?.[0] !== current[0];
+    if (selectedChanged) visibleConditionOpen.value = false;
     const composingWhen =
       visibleDisplayMode.value === 'when' &&
       !String(el.options.agreeVisibleWhen || '').trim();
@@ -1461,7 +1361,7 @@ function applyDictionaryPick(item: AgreePrintFieldItem) {
   }
   if (!selected.value) {
     ElMessage.warning(
-      '单击字段可自动添加，拖到画布可精准定位；选中文本后再点字段可改绑',
+      '点击字段添加新元素；替换当前文本的字段请使用「绑定」或「选择字段」',
     );
     return;
   }
@@ -1641,7 +1541,7 @@ function applyColumnField(index: number, prevField: string) {
 }
 
 /** 应用文本/码图绑定 */
-function applyTextBind() {
+function applyTextBind(silent = false) {
   const el = selected.value;
   if (!el || !editingTemplate.value) return;
   const dict = AGREE_PRINT_ALL_FIELDS.find((f) => f.field === bindField.value);
@@ -1660,12 +1560,12 @@ function applyTextBind() {
       ? {
           hideTitle: true,
           barcodeMode: el.options.barcodeMode || 'CODE128',
-          barAutoWidth: true,
+          barAutoWidth: false,
         }
       : {}),
   });
   publishPatch(next);
-  ElMessage.success('已绑定数据');
+  if (!silent) ElMessage.success('绑定已更新到画布，请保存模板');
 }
 
 /**
@@ -1701,13 +1601,16 @@ async function applyTableSource(usePreset: boolean) {
     next = patchTableColumns(next, el, buildPresetTableColumns(field));
   }
   publishPatch(next);
-  ElMessage.success(
-    tableEditorOpen.value
-      ? '已更新数据源预览，请点击「应用到画布」完成修改'
-      : populateColumns && TABLE_COLUMN_PRESETS[field]
+  let sourceUpdatedMessage;
+  if (tableEditorOpen.value) {
+    sourceUpdatedMessage = '已更新数据源预览，请点击「应用到画布」完成修改';
+  } else {
+    sourceUpdatedMessage =
+      populateColumns && TABLE_COLUMN_PRESETS[field]
         ? '已绑定数据源并套用推荐列'
-        : '已绑定表格数据源',
-  );
+        : '已绑定表格数据源';
+  }
+  ElMessage.success(sourceUpdatedMessage);
 }
 
 /** 保存列映射：按格子补丁，不拍扁多行表头 */
@@ -1950,7 +1853,7 @@ function persistRules(opts?: { silent?: boolean }) {
   });
   publishPatch(next, { remount: false });
   if (!opts?.silent) {
-    ElMessage.success('规则已应用到画布和打印预览');
+    ElMessage.success('规则已应用到画布，请保存模板');
   }
 }
 
@@ -2022,20 +1925,6 @@ function persistFlowFloat() {
 }
 
 /**
- * 在高级表达式光标处插入字段或运算符片段
- * @param token 插入文本，如 rewardTotal、 &&
- */
-function insertVisibleExprToken(token: string) {
-  agreeVisibleWhen.value = applyPrintExprInsert(
-    agreeVisibleWhen.value || '',
-    token,
-    printExprInputEl(visibleExprInputRef.value),
-  );
-  persistRulesSilent();
-  syncVisibleDisplayFromExpr();
-}
-
-/**
  * 把帮助芯片插入当前列逐行公式
  * @param token 字段名或函数骨架
  */
@@ -2061,12 +1950,6 @@ function insertColorExprToken(token: string) {
     token,
     printExprInputEl(colorExprInputRef.value),
   );
-}
-
-/** 高级表达式失焦：空公式视为始终显示 */
-function onVisibleExprBlur() {
-  persistRulesSilent();
-  syncVisibleDisplayFromExpr();
 }
 
 /**
@@ -2097,13 +1980,15 @@ function applyFilterExpr(expr: string) {
   });
   publishPatch(next, { remount: false });
   if (flushingTableFilter) return;
-  ElMessage.success(
-    expr.trim()
-      ? tableEditorOpen.value
-        ? '已更新筛选预览'
-        : '已筛选打印行，画布已同步显示筛选后的样例'
-      : '已清除筛选，将打印全部行',
-  );
+  let filterUpdatedMessage;
+  if (expr.trim()) {
+    filterUpdatedMessage = tableEditorOpen.value
+      ? '已更新筛选预览'
+      : '已筛选打印行，画布已同步显示筛选后的样例';
+  } else {
+    filterUpdatedMessage = '已清除筛选，将打印全部行';
+  }
+  ElMessage.success(filterUpdatedMessage);
 }
 
 /** 关掉一颗芯片：去掉该列条件，高级表达式则整段清空 */
@@ -2317,28 +2202,16 @@ function elementTypeLabel(el: PrintElementRef) {
 
 <template>
   <div class="print-inspector">
-    <div class="print-inspector__title">元素属性</div>
-    <ElSelect
-      :model-value="selectedKey"
-      filterable
-      class="mb-2 w-full"
-      placeholder="选择要编辑的画布元素"
-      @update:model-value="onSelectElement"
-    >
-      <ElOption
-        v-for="el in elements"
-        :key="el.key"
-        :label="elementTypeLabel(el)"
-        :value="el.key"
-      />
-    </ElSelect>
+    <div class="print-inspector__title">
+      {{ selected ? elementTypeLabel(selected) : '元素属性' }}
+    </div>
 
     <div v-if="selected" class="mb-2 flex flex-wrap gap-1">
       <ElTag size="small">
         {{
           selected.type === 'table'
             ? isFormGrid
-              ? '自由表单'
+              ? '固定表单'
               : '明细表'
             : selected.type
         }}
@@ -2351,6 +2224,40 @@ function elementTypeLabel(el: PrintElementRef) {
       </ElTag>
       <ElTag v-else size="small" type="warning">未绑定</ElTag>
     </div>
+    <PrintEditScope
+      v-if="selected"
+      :target="editTarget"
+      :scope="elementScope"
+    />
+    <div v-if="isTable" class="print-inspector__quick-summary">
+      <span>数据源：{{ currentTableField || '未绑定' }}</span>
+      <button type="button" @click="activeTab = 'style'">
+        跨页表头：{{
+          selected?.options.tableHeaderRepeat === 'none'
+            ? '只在第一页'
+            : '每页重复'
+        }}
+        · 修改
+      </button>
+    </div>
+    <ElCollapse v-if="elements.length" class="print-inspector__locator">
+      <ElCollapseItem title="定位其他元素" name="locator">
+        <ElSelect
+          :model-value="selectedKey"
+          filterable
+          class="w-full"
+          placeholder="查找画布元素"
+          @update:model-value="onSelectElement"
+        >
+          <ElOption
+            v-for="el in elements"
+            :key="el.key"
+            :label="elementTypeLabel(el)"
+            :value="el.key"
+          />
+        </ElSelect>
+      </ElCollapseItem>
+    </ElCollapse>
     <ElAlert
       v-else
       type="info"
@@ -2360,7 +2267,15 @@ function elementTypeLabel(el: PrintElementRef) {
     />
 
     <ElTabs v-if="selected" v-model="activeTab" class="print-inspector__tabs">
-      <ElTabPane label="数据" name="data">
+      <ElTabPane label="内容与数据" name="data">
+        <ElButton
+          v-if="isFormGrid || isTable"
+          size="small"
+          class="mb-3"
+          @click="emit('editMasking', '')"
+        >
+          设置打印脱敏
+        </ElButton>
         <PrintFormGridEditor
           v-if="isFormGrid"
           :key="selected.key"
@@ -2383,6 +2298,7 @@ function elementTypeLabel(el: PrintElementRef) {
             <ElInput
               v-model="bindTitle"
               placeholder="画布上的标签，如 征收人"
+              @change="applyTextBind(true)"
             />
           </ElFormItem>
           <ElFormItem label="绑定字段">
@@ -2391,6 +2307,7 @@ function elementTypeLabel(el: PrintElementRef) {
                 v-model="bindField"
                 clearable
                 placeholder="field，或点「选择字段」"
+                @change="applyTextBind(true)"
               />
               <ElButton size="small" @click="openFieldPicker('text')">
                 选择字段
@@ -2400,8 +2317,29 @@ function elementTypeLabel(el: PrintElementRef) {
               {{ currentBindLabel }}
             </p>
           </ElFormItem>
-          <ElButton type="primary" size="small" @click="applyTextBind">
-            应用到画布
+          <p class="print-inspector__hint">
+            输入完成并离开输入框后，画布会自动更新。
+          </p>
+          <PrintCodeSettings
+            v-if="
+              ['barcode', 'qrcode'].includes(String(selected.options.textType))
+            "
+            :options="selected.options"
+            :sample-data="sampleCtx"
+            @patch="applyStylePatch"
+          />
+          <ElButton
+            v-if="bindField"
+            size="small"
+            @click="emit('editMasking', bindField)"
+          >
+            {{
+              normalizePrintMaskRules(templateJson?.agreePrintMaskRules).some(
+                (rule) => rule.field === bindField,
+              )
+                ? '打印脱敏（已开启）'
+                : '设置打印脱敏'
+            }}
           </ElButton>
           <div v-if="selected.type === 'longText'" class="mt-3">
             <ElButton @click="openTextSections">
@@ -2417,9 +2355,14 @@ function elementTypeLabel(el: PrintElementRef) {
             width="760px"
             append-to-body
           >
+            <PrintEditScope
+              :target="editTarget"
+              scope="当前长文本的正文、内容块显示条件和块间距"
+              draft
+            />
             <ElAlert type="info" :closable="false" class="mb-3">
               <template #title>
-                同一个内容块可以是一句话或多行正文，并插入多个参数。多个内容块之间按空行拼接。
+                同一个内容块可以是一句话或多行正文，并插入多个参数。内容块间距可在下方统一调整。
               </template>
               <div>
                 直接参数：<code v-pre>{{ compensatee }}</code>；行内条件：<code v-pre>{{
@@ -2427,29 +2370,36 @@ function elementTypeLabel(el: PrintElementRef) {
                 }}</code>。内容块的“显示条件”用于控制整块是否出现。
               </div>
             </ElAlert>
-            <ElCollapse class="mb-3">
-              <ElCollapseItem
-                title="支持哪些表达式？点击查看完整操作范围"
-                name="text-expression-help"
-              >
-                <div class="print-inspector__text-expr-help">
-                  <div
-                    v-for="group in TEXT_EXPR_HELP_GROUPS"
-                    :key="group.title"
-                  >
-                    <strong>{{ group.title }}</strong>
-                    <code v-for="line in group.lines" :key="line">{{
-                      line
-                    }}</code>
-                  </div>
-                </div>
-                <p class="print-inspector__hint mt-2">
-                  有无奖励、是否高额请用 rewardTotal &gt; 阈值 或
-                  COUNT(rewardItems) &gt;
-                  0，不要写死派生布尔。只支持安全计算，不支持赋值、脚本、属性链和数组下标。
-                </p>
-              </ElCollapseItem>
-            </ElCollapse>
+            <p class="print-inspector__hint mb-3">
+              每个内容块独立判断显示条件；多个条件成立时会同时显示。IF / IFS
+              用于正文中的条件取值。
+            </p>
+            <div class="mb-3">
+              <div class="flex flex-wrap items-center gap-2">
+                <label for="text-section-gap">内容块间距（pt）</label>
+                <ElInputNumber
+                  id="text-section-gap"
+                  v-model="textSectionGap"
+                  aria-label="内容块间距（pt）"
+                  :min="0"
+                  :precision="2"
+                  :step="1"
+                  controls-position="right"
+                  placeholder="默认：空一行"
+                />
+                <ElButton
+                  size="small"
+                  :disabled="resolvedTextSectionGap === undefined"
+                  @click="textSectionGap = undefined"
+                >
+                  恢复默认间距
+                </ElButton>
+              </div>
+              <p class="print-inspector__hint">
+                留空默认空一行；0
+                表示分段但不额外留白。仅影响当前长文本中可见的内容块，正文里手动输入的空行仍保留。
+              </p>
+            </div>
             <div
               v-for="(section, index) in textSections"
               :key="index"
@@ -2469,18 +2419,12 @@ function elementTypeLabel(el: PrintElementRef) {
                   v-model="section.when"
                   placeholder="整块显示条件（可选），例如 COUNT(rewardItems) > 0 或 rewardTotal > 0"
                 />
-                <ElSelect
-                  model-value=""
-                  placeholder="插入结构条件"
-                  @change="setTextSectionCondition(index, $event)"
+                <ElButton
+                  @mousedown.prevent
+                  @click="openTextExpression(index, true)"
                 >
-                  <ElOption
-                    v-for="preset in TEXT_BLOCK_CONDITION_PRESETS"
-                    :key="preset.value"
-                    :label="preset.label"
-                    :value="preset.value"
-                  />
-                </ElSelect>
+                  设置显示条件
+                </ElButton>
               </div>
               <ElAlert
                 v-if="
@@ -2505,28 +2449,17 @@ function elementTypeLabel(el: PrintElementRef) {
                     :value="field.field"
                   />
                 </ElSelect>
-                <ElSelect
-                  model-value=""
-                  placeholder="插入表达式模板"
-                  style="width: 250px"
-                  @change="appendTextSectionExpression(index, $event)"
-                >
-                  <ElOptionGroup
-                    v-for="group in TEXT_EXPR_INSERT_GROUPS"
-                    :key="group.label"
-                    :label="group.label"
-                  >
-                    <ElOption
-                      v-for="preset in group.options"
-                      :key="preset.value"
-                      :label="preset.label"
-                      :value="preset.value"
-                    />
-                  </ElOptionGroup>
-                </ElSelect>
+                <ElButton @mousedown.prevent @click="openTextExpression(index)">
+                  插入 / 编辑表达式
+                </ElButton>
+                <span class="print-inspector__hint">在光标处插入；光标在已有表达式内时可编辑。</span>
               </div>
               <ElInput
+                :ref="
+                  (host) => textInputRefs.set(index, host as PrintExprInputHost)
+                "
                 v-model="section.content"
+                :aria-label="`内容块 ${index + 1} 正文`"
                 class="mt-2"
                 type="textarea"
                 :rows="5"
@@ -2547,9 +2480,27 @@ function elementTypeLabel(el: PrintElementRef) {
             </ElButton>
             <div class="mt-3">
               <strong>当前样例预览</strong>
-              <pre style="overflow-wrap: anywhere; white-space: pre-wrap">{{
-                textSectionsPreview || '当前没有可显示的正文'
-              }}</pre>
+              <pre
+                v-if="resolvedTextSectionGap === undefined"
+                :style="textSectionPreviewStyle"
+                aria-label="正文样例预览"
+                >{{ textSectionsPreview || '当前没有可显示的正文' }}</pre>
+              <div
+                v-else
+                :style="textSectionPreviewStyle"
+                aria-label="正文样例预览"
+              >
+                <div
+                  v-for="(block, index) in textSectionBlocks"
+                  :key="index"
+                  :style="{
+                    paddingTop: `${index === 0 ? 0 : resolvedTextSectionGap}pt`,
+                  }"
+                >
+                  {{ block }}
+                </div>
+                <span v-if="!textSectionBlocks.length">当前没有可显示的正文</span>
+              </div>
             </div>
             <template #footer>
               <ElButton @click="textSectionsOpen = false">取消</ElButton><ElButton type="primary" @click="applyTextSections">
@@ -2557,6 +2508,19 @@ function elementTypeLabel(el: PrintElementRef) {
               </ElButton>
             </template>
           </ElDialog>
+          <PrintExpressionDialog
+            v-model="textExpressionOpen"
+            :expression="textExpressionDraft"
+            :scene="textExpressionTarget.condition ? 'visible' : 'text'"
+            :title="
+              textExpressionTarget.condition
+                ? '内容块 · 显示条件'
+                : '正文 · 插入或编辑表达式'
+            "
+            :fields="visibleHelpFields"
+            :context="sampleCtx"
+            @apply="writeTextExpression"
+          />
         </ElForm>
 
         <ElForm v-else-if="isTable" label-position="top" size="small">
@@ -2570,24 +2534,31 @@ function elementTypeLabel(el: PrintElementRef) {
               <span> · {{ footerRows.length }} 行表尾</span>
             </div>
             <p>编辑数据来源、列内容、合计与备注。</p>
-            <ElButton type="primary" plain @click="tableEditorOpen = true">
-              编辑明细表
+            <ElButton type="primary" plain @click="openTableEditor()">
+              编辑明细表结构
             </ElButton>
           </div>
 
           <ElDialog
             v-model="tableEditorOpen"
             body-class="print-inspector__table-dialog-body"
-            title="编辑表格 · 明细表"
+            title="编辑明细表结构"
             width="min(1180px, 94vw)"
             top="5vh"
             append-to-body
             destroy-on-close
           >
+            <div class="print-inspector__draft-scope">
+              <PrintEditScope
+                :target="tableEditTarget"
+                :scope="tableEditScope"
+                draft
+              />
+            </div>
             <ElAlert
               type="info"
               :closable="false"
-              title="先选择数据来源，再设置列内容。整表外观在右侧「样式」修改，显示条件在「规则」修改。"
+              title="先选择数据来源，再设置列内容。整表外观在右侧「外观」修改，显示条件在「规则」修改。"
               class="mb-3"
             />
 
@@ -3255,6 +3226,7 @@ function elementTypeLabel(el: PrintElementRef) {
                             <PrintExprHelp
                               v-if="useAdvancedColor(col, i)"
                               scene="color"
+                              :context="colorExprContext(editingColIndex)"
                               :fields="colorHelpFields"
                               @insert="insertColorExprToken"
                             />
@@ -3348,6 +3320,7 @@ function elementTypeLabel(el: PrintElementRef) {
                               />
                               <PrintExprHelp
                                 scene="column"
+                                :context="columnExprContext(editingColIndex)"
                                 :fields="columnHelpFields"
                                 @insert="insertColumnExprToken"
                               />
@@ -3634,7 +3607,7 @@ function elementTypeLabel(el: PrintElementRef) {
               </ElTabPane>
             </ElTabs>
             <template #footer>
-              <span class="print-inspector__hint">应用后一次性更新画布（含筛选），可一步撤销；完成后请保存模板。</span>
+              <span class="print-inspector__hint">取消放弃本窗口的修改；应用后可一步撤销，再点顶部「保存」。</span>
               <ElButton @click="tableEditorOpen = false">取消</ElButton>
               <ElButton type="primary" @click="applyTableDraft">
                 应用到画布
@@ -3648,26 +3621,19 @@ function elementTypeLabel(el: PrintElementRef) {
         </div>
       </ElTabPane>
 
-      <ElTabPane label="样式" name="style">
+      <ElTabPane label="外观" name="style">
         <PrintStylePanel :selected="selected" @patch="applyStylePatch" />
       </ElTabPane>
 
-      <ElTabPane label="规则" name="rules">
-        <ElCollapse class="mb-2">
-          <ElCollapseItem title="表达式怎么写" name="help">
-            <div
-              v-for="block in PRINT_EXPR_HELP"
-              :key="block.title"
-              class="print-inspector__help-block"
-            >
-              <div class="print-inspector__help-title">{{ block.title }}</div>
-              <ul>
-                <li v-for="(line, i) in block.lines" :key="i">{{ line }}</li>
-              </ul>
-            </div>
-          </ElCollapseItem>
-        </ElCollapse>
+      <ElTabPane v-if="isDocument" label="排版" name="layout">
+        <DocumentLayoutPanel
+          :template="editingTemplate!"
+          :selected="selected"
+          @change="(next) => publishPatch(next, { remount: false })"
+        />
+      </ElTabPane>
 
+      <ElTabPane label="规则" name="rules">
         <div class="print-inspector__hint mb-2 flex items-center gap-1">
           <span>
             {{
@@ -3687,7 +3653,9 @@ function elementTypeLabel(el: PrintElementRef) {
               </ElButton>
             </template>
             <p>支持主表字段、派生字段和整表统计结果。</p>
-            <p class="mt-2">单元格计算请前往「数据 → 编辑明细表」设置。</p>
+            <p class="mt-2">
+              单元格计算请前往「内容与数据 → 编辑明细表结构」设置。
+            </p>
             <ElButton
               class="mt-2"
               size="small"
@@ -3700,123 +3668,70 @@ function elementTypeLabel(el: PrintElementRef) {
           </ElPopover>
         </div>
         <ElForm label-position="top" size="small">
-          <ElFormItem label="条件显隐">
-            <ElRadioGroup
-              class="print-inspector__visible-display"
-              :model-value="visibleDisplayMode"
-              size="small"
-            >
-              <ElRadioButton
-                value="always"
-                @click="setVisibleDisplayMode('always')"
-              >
-                始终显示
-              </ElRadioButton>
-              <ElRadioButton
-                value="when"
-                @click="setVisibleDisplayMode('when')"
-              >
-                按条件
-              </ElRadioButton>
-              <ElRadioButton
-                value="never"
-                @click="setVisibleDisplayMode('never')"
-              >
-                始终隐藏
-              </ElRadioButton>
-            </ElRadioGroup>
-            <template v-if="visibleDisplayMode === 'when'">
+          <ElFormItem label="显示方式" class="print-inspector__visibility">
+            <div class="print-inspector__visibility-content">
               <ElRadioGroup
-                class="print-inspector__visible-mode"
-                :model-value="visibleEditorMode"
+                class="print-inspector__visible-display"
+                :model-value="visibleDisplayMode"
                 size="small"
               >
                 <ElRadioButton
-                  value="simple"
-                  @click="setVisibleEditorMode('simple')"
+                  value="always"
+                  @click="setVisibleDisplayMode('always')"
                 >
-                  常用条件
+                  始终显示
                 </ElRadioButton>
                 <ElRadioButton
-                  value="advanced"
-                  @click="setVisibleEditorMode('advanced')"
+                  value="when"
+                  @click="setVisibleDisplayMode('when')"
                 >
-                  高级表达式
+                  按条件显示
+                </ElRadioButton>
+                <ElRadioButton
+                  value="never"
+                  @click="setVisibleDisplayMode('never')"
+                >
+                  始终隐藏
                 </ElRadioButton>
               </ElRadioGroup>
-              <template v-if="visibleEditorMode === 'simple'">
-                <div class="print-inspector__visible-builder">
-                  <ElSelect
-                    v-model="visibleField"
-                    filterable
-                    placeholder="选择字段"
-                  >
-                    <ElOption
-                      v-for="item in visibleFields"
-                      :key="item.field"
-                      :label="`${item.text} (${item.field})`"
-                      :value="item.field"
-                    />
-                  </ElSelect>
-                  <ElSelect v-model="visibleOperator" placeholder="判断方式">
-                    <ElOption
-                      v-for="item in VISIBLE_OPERATORS"
-                      :key="item.value"
-                      :label="item.label"
-                      :value="item.value"
-                    />
-                  </ElSelect>
-                  <ElInput
-                    v-if="visibleOperatorNeedsValue"
-                    v-model="visibleValue"
-                    placeholder="本项目比较值，如 0 或 已签约"
-                    @keyup.enter="applySimpleVisibleRule"
-                  />
-                  <ElButton type="primary" @click="applySimpleVisibleRule">
-                    应用条件
-                  </ElButton>
-                </div>
+              <template v-if="visibleDisplayMode === 'when'">
+                <p class="print-inspector__advanced-caption">
+                  条件成立时显示，不成立时隐藏整个元素。
+                </p>
+                <ElButton @click="visibleConditionOpen = true">
+                  {{
+                    agreeVisibleWhen && agreeVisibleWhen !== 'false'
+                      ? '编辑显示条件'
+                      : '设置显示条件'
+                  }}
+                </ElButton>
+                <details
+                  v-if="agreeVisibleWhen && agreeVisibleWhen !== 'false'"
+                  class="print-inspector__condition-summary"
+                >
+                  <summary>查看已应用的公式</summary>
+                  <code>{{ agreeVisibleWhen }}</code>
+                </details>
               </template>
-              <template v-else>
-                <ElInput
-                  ref="visibleExprInputRef"
-                  v-model="agreeVisibleWhen"
-                  type="textarea"
-                  :rows="3"
-                  placeholder="例如 COUNT(rewardItems) > 0"
-                  @blur="onVisibleExprBlur"
-                />
-                <PrintExprHelp
-                  scene="visible"
-                  :fields="visibleHelpFields"
-                  @insert="insertVisibleExprToken"
-                />
-              </template>
-            </template>
-            <ElAlert
-              class="mt-2"
-              :type="agreeVisibleWhen ? visibleAlertType : 'info'"
-              :closable="false"
-              :title="
-                visibleDisplayMode === 'never'
-                  ? '当前元素始终隐藏'
-                  : visibleDisplayMode === 'when' && !agreeVisibleWhen
-                    ? '请填写并应用条件，否则始终显示'
-                    : !agreeVisibleWhen
-                      ? '未设置条件：当前元素始终显示'
-                      : visibleCheck.ok
-                        ? visibleSampleLabel(visibleCheck.preview)
-                        : visibleCheck.message
-              "
-            />
+              <ElAlert
+                class="mt-2"
+                :type="agreeVisibleWhen ? visibleAlertType : 'info'"
+                :closable="false"
+                :title="
+                  visibleDisplayMode === 'never'
+                    ? '当前元素始终隐藏'
+                    : visibleDisplayMode === 'when' && !agreeVisibleWhen
+                      ? '请填写并应用条件，否则始终显示'
+                      : !agreeVisibleWhen
+                        ? '未设置条件：当前元素始终显示'
+                        : visibleCheck.ok
+                          ? visibleSampleLabel()
+                          : visibleCheck.message
+                "
+              />
+            </div>
           </ElFormItem>
-          <DocumentLayoutPanel
-            v-if="isDocument"
-            :template="editingTemplate!"
-            :selected="selected"
-            @change="(next) => publishPatch(next, { remount: false })"
-          />
-          <ElFormItem v-else label="排版方式">
+          <ElFormItem v-if="!isDocument" label="排版方式">
             <ElSelect
               v-model="agreeFlowMode"
               class="w-full"
@@ -4005,6 +3920,16 @@ function elementTypeLabel(el: PrintElementRef) {
       </ElTabPane>
     </ElTabs>
 
+    <PrintExpressionDialog
+      :key="selectedKey"
+      v-model="visibleConditionOpen"
+      :title="`设置元素显示条件 · ${editTarget}`"
+      scene="visible"
+      :expression="agreeVisibleWhen === 'false' ? '' : agreeVisibleWhen"
+      :fields="visibleHelpFields"
+      :context="sampleCtx"
+      @apply="applyVisibleCondition"
+    />
     <PrintFilterDialog
       v-model="filterDialogOpen"
       :table-field="currentTableField"
@@ -4023,6 +3948,14 @@ function elementTypeLabel(el: PrintElementRef) {
 </template>
 
 <style scoped>
+.print-inspector__draft-scope {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding-bottom: 1px;
+  background: var(--el-bg-color);
+}
+
 .print-inspector {
   min-width: 0;
   margin-bottom: 12px;
@@ -4035,6 +3968,32 @@ function elementTypeLabel(el: PrintElementRef) {
   font-size: 13px;
   font-weight: 600;
   color: var(--el-text-color-primary);
+}
+
+.print-inspector__quick-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px;
+  margin-bottom: 10px;
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  background: var(--el-fill-color-light);
+  border-radius: 6px;
+}
+
+.print-inspector__quick-summary button {
+  align-self: flex-start;
+  padding: 0;
+  color: var(--el-color-primary);
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+}
+
+.print-inspector__locator {
+  margin-bottom: 10px;
 }
 
 .print-inspector__tabs :deep(.el-tabs__header) {
@@ -4135,30 +4094,8 @@ function elementTypeLabel(el: PrintElementRef) {
   gap: 8px;
 }
 
-.print-inspector__text-expr-help {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.print-inspector__text-expr-help > div {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 8px;
-  background: var(--el-fill-color-light);
-  border-radius: 5px;
-}
-
-.print-inspector__text-expr-help code {
-  color: var(--el-text-color-regular);
-  overflow-wrap: anywhere;
-  white-space: normal;
-}
-
 @media (max-width: 700px) {
-  .print-inspector__text-condition-row,
-  .print-inspector__text-expr-help {
+  .print-inspector__text-condition-row {
     grid-template-columns: 1fr;
   }
 }
@@ -4571,39 +4508,19 @@ function elementTypeLabel(el: PrintElementRef) {
   border-top: 1px solid var(--el-border-color);
 }
 
-.print-inspector__visible-display,
-.print-inspector__visible-mode {
+.print-inspector__visible-display {
   display: flex;
   width: 100%;
   margin-bottom: 8px;
 }
 
-.print-inspector__visible-display :deep(.el-radio-button),
-.print-inspector__visible-mode :deep(.el-radio-button) {
+.print-inspector__visible-display :deep(.el-radio-button) {
   flex: 1;
 }
 
-.print-inspector__visible-display :deep(.el-radio-button__inner),
-.print-inspector__visible-mode :deep(.el-radio-button__inner) {
+.print-inspector__visible-display :deep(.el-radio-button__inner) {
   width: 100%;
   padding: 5px 8px;
-}
-
-.print-inspector__visible-builder {
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(96px, 0.8fr);
-  gap: 6px;
-  width: 100%;
-  padding: 8px;
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--el-border-color);
-  border-radius: 6px;
-}
-
-.print-inspector__visible-builder > :deep(.el-input),
-.print-inspector__visible-builder > :deep(.el-select),
-.print-inspector__visible-builder > :deep(.el-button) {
-  width: 100%;
 }
 
 .print-inspector__visible-toolbar {
@@ -4695,5 +4612,34 @@ function elementTypeLabel(el: PrintElementRef) {
   outline: 2px solid var(--el-color-primary-light-3);
   outline-offset: -2px;
   background: var(--el-color-primary-light-9);
+}
+</style>
+
+<style scoped>
+.print-inspector__visibility-content {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+}
+
+.print-inspector__visibility-content > .el-button {
+  justify-self: start;
+  margin-left: 0;
+}
+
+.print-inspector__condition-summary {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.print-inspector__condition-summary summary {
+  cursor: pointer;
+}
+
+.print-inspector__condition-summary code {
+  display: block;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
 }
 </style>

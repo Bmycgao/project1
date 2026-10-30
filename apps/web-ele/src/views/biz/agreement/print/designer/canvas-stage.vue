@@ -412,13 +412,14 @@ function displayHeight(el: DesignElement) {
 
 /** 文本元素内联样式 */
 function textStyle(o: Record<string, any>) {
+  let branchValue1;
+  if (o.textContentVerticalAlign === 'bottom') {
+    branchValue1 = 'end';
+  } else {
+    branchValue1 = o.textContentVerticalAlign === 'middle' ? 'center' : 'start';
+  }
   const style: Record<string, string> = {
-    alignItems:
-      o.textContentVerticalAlign === 'bottom'
-        ? 'end'
-        : o.textContentVerticalAlign === 'middle'
-          ? 'center'
-          : 'start',
+    alignItems: branchValue1,
     backgroundColor: o.backgroundColor || 'transparent',
     display: 'grid',
     fontFamily: o.fontFamily || 'SimSun',
@@ -677,11 +678,14 @@ function isHeaderCellSelected(
   const from = Number.isInteger(cell.editorLeafIndex)
     ? Number(cell.editorLeafIndex)
     : Number(cell.editorGroupFrom);
-  const to = Number.isInteger(cell.editorLeafEnd)
-    ? Number(cell.editorLeafEnd)
-    : Number.isInteger(cell.editorGroupTo)
+  let to;
+  if (Number.isInteger(cell.editorLeafEnd)) {
+    to = Number(cell.editorLeafEnd);
+  } else {
+    to = Number.isInteger(cell.editorGroupTo)
       ? Number(cell.editorGroupTo)
       : from;
+  }
   if (!Number.isInteger(from)) return false;
   return from === selection.fromLeaf && to === selection.toLeaf;
 }
@@ -719,11 +723,14 @@ function onTableHeaderCellPointer(
   const fromLeaf = Number.isInteger(cell.editorLeafIndex)
     ? Number(cell.editorLeafIndex)
     : Number(cell.editorGroupFrom);
-  const toLeaf = Number.isInteger(cell.editorLeafEnd)
-    ? Number(cell.editorLeafEnd)
-    : Number.isInteger(cell.editorGroupTo)
+  let toLeaf;
+  if (Number.isInteger(cell.editorLeafEnd)) {
+    toLeaf = Number(cell.editorLeafEnd);
+  } else {
+    toLeaf = Number.isInteger(cell.editorGroupTo)
       ? Number(cell.editorGroupTo)
       : fromLeaf;
+  }
   if (!Number.isInteger(fromLeaf)) return;
   selectElement(el);
   emit('tableHeaderCellSelect', {
@@ -736,21 +743,6 @@ function onTableHeaderCellPointer(
     clientX: e.clientX,
     clientY: e.clientY,
   });
-}
-
-function onTableHeaderCellMouseDown(
-  e: MouseEvent,
-  el: DesignElement,
-  cell: {
-    editorGroupFrom?: number;
-    editorGroupTo?: number;
-    editorLeafEnd?: number;
-    editorLeafIndex?: number;
-    field?: string;
-    headerMergeId?: string;
-  },
-) {
-  onTableHeaderCellPointer(e, el, cell);
 }
 
 function onHeaderFilterClick(
@@ -784,8 +776,6 @@ function onHeaderFilterClick(
     },
   });
 }
-
-function clearHeaderSelecting() {}
 
 /** 越界红框 */
 function isOverflow(el: DesignElement, page: DesignPage) {
@@ -1158,14 +1148,12 @@ function onWindowMouseUp() {
 onMounted(() => {
   window.addEventListener('dragend', clearDropGuide);
   window.addEventListener('mouseup', clearBodySelecting);
-  window.addEventListener('mouseup', clearHeaderSelecting);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener('blur', onWindowMouseUp);
   window.removeEventListener('dragend', clearDropGuide);
   window.removeEventListener('mouseup', clearBodySelecting);
-  window.removeEventListener('mouseup', clearHeaderSelecting);
   window.removeEventListener('mousemove', onWindowMouseMove);
   window.removeEventListener('mouseup', onWindowMouseUp);
   document.body.style.userSelect = '';
@@ -1342,7 +1330,7 @@ defineExpose({
                   }"
                   :style="headerCellStyle(el.options, cell)"
                   @mousedown.stop.prevent="
-                    onTableHeaderCellMouseDown($event, el, cell)
+                    onTableHeaderCellPointer($event, el, cell)
                   "
                 >
                   {{ cell.title }}
@@ -1360,6 +1348,8 @@ defineExpose({
                       'is-sorted': isHeaderCellSorted(el, cell),
                     }"
                     aria-label="筛选本列"
+                    aria-haspopup="dialog"
+                    title="筛选本列"
                     @mousedown.stop.prevent
                     @click.stop="onHeaderFilterClick($event, el, cell)"
                   >
@@ -1769,7 +1759,7 @@ defineExpose({
 
 .agree-canvas__table thead td {
   position: relative;
-  padding-right: 16px;
+  overflow: visible;
   font-weight: 400;
   cursor: pointer;
   background: transparent;
@@ -1795,36 +1785,43 @@ defineExpose({
 }
 
 .agree-canvas__header-filter {
+  /* 与文档流画布保持一致，角标不挤占表头文字空间。 */
   position: absolute;
-  top: 50%;
-  right: 1px;
-  z-index: 1;
-  width: 14px;
-  height: 16px;
+  right: -3px;
+  bottom: -7px;
+  z-index: 2;
+  width: 12px;
+  height: 12px;
   padding: 0;
-  font-size: 10px;
-  line-height: 16px;
+  font-size: 9px;
+  line-height: 10px;
   color: var(--el-text-color-secondary);
+  pointer-events: none;
   cursor: pointer;
-  background: transparent;
-  border: 0;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 3px;
   opacity: 0;
-  transform: translateY(-50%);
 }
 
 .agree-canvas__table thead td:hover .agree-canvas__header-filter,
+.agree-canvas__header-filter:focus-visible,
 .agree-canvas__header-filter.is-on,
 .agree-canvas__header-filter.is-sorted {
+  pointer-events: auto;
   opacity: 1;
 }
 
 .agree-canvas__header-filter:hover,
+.agree-canvas__header-filter:focus-visible,
 .agree-canvas__header-filter.is-on {
   color: #15803d;
+  border-color: currentcolor;
 }
 
 .agree-canvas__header-filter.is-sorted {
   color: var(--el-color-primary);
+  border-color: currentcolor;
 }
 
 .agree-canvas__cell-toolbar.is-header {

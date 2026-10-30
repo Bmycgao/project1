@@ -92,6 +92,7 @@ export function buildAgreePrintData(detail: AgreementDetail): AgreePrintData {
   const basic = detail.basic || ({} as AgreementDetail['basic']);
   const householdName = text(basic.compensatee, '—');
   const houses = (detail.houses || []).map((h, i) => ({
+    ...(h.id ? { id: h.id } : {}),
     householdName,
     index: i + 1,
     address: text(h.address),
@@ -105,6 +106,7 @@ export function buildAgreePrintData(detail: AgreementDetail): AgreePrintData {
   const compensationItems: AgreePrintMoneyRow[] = (
     detail.compensationItems || []
   ).map((row, i) => ({
+    ...(row.id ? { id: row.id } : {}),
     index: i + 1,
     name: text(row.name),
     calcType: text(row.calcType),
@@ -116,6 +118,7 @@ export function buildAgreePrintData(detail: AgreementDetail): AgreePrintData {
 
   const rewardItems: AgreePrintMoneyRow[] = (detail.rewardItems || []).map(
     (row, i) => ({
+      ...(row.id ? { id: row.id } : {}),
       index: i + 1,
       name: text(row.name),
       amount: row.amount ?? 0,

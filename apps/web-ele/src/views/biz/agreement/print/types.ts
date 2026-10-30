@@ -2,6 +2,8 @@
  * 协议打印：运行时灌入 hiprint 的业务数据结构
  */
 export interface AgreePrintHouseRow {
+  /** 业务记录标识，用于单行配置；不作为打印列展示。 */
+  id?: string;
   /** 户名（列上可开相同值合并） */
   householdName: string;
   /** 本行叶子列 colspan，有则覆盖列上「空并左」 */
@@ -18,6 +20,7 @@ export interface AgreePrintHouseRow {
 
 /** 补偿/奖励明细行 */
 export interface AgreePrintMoneyRow {
+  id?: string;
   index: number;
   name: string;
   calcType?: string;

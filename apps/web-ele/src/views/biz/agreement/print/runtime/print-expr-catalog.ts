@@ -6,6 +6,10 @@ import {
   AGREE_PRINT_TABLE_FIELDS,
   AGREE_PRINT_TEXT_FIELDS,
 } from '../data/fields';
+import {
+  PRINT_EXPR_FUNCTIONS,
+  printExprFunctionTemplate,
+} from './print-expr-functions';
 
 /** 设计器里需要手写表达式的入口 */
 export type PrintExprHelpScene =
@@ -13,6 +17,7 @@ export type PrintExprHelpScene =
   | 'color'
   | 'column'
   | 'filter'
+  | 'text'
   | 'visible';
 
 /** 可点插入的字段芯片 */
@@ -29,13 +34,12 @@ export interface PrintExprHelpChip {
 }
 
 /** 输入框宿主（Element Plus Input 实例或原生框） */
-export type PrintExprInputHost = {
+export type PrintExprInputHost = null | {
   input?: HTMLInputElement;
   textarea?: HTMLTextAreaElement;
-} | null;
+};
 
 const SKIP_PROTOCOL_FIELDS = new Set([
-  'amountCn',
   'barcodeContent',
   'printMeta',
   'qrcodeContent',
@@ -46,6 +50,11 @@ export const PRINT_EXPR_SCENE_META: Record<
   PrintExprHelpScene,
   { note: string; result: string; summary: string }
 > = {
+  text: {
+    note: '表达式返回文字或数字，插入正文时自动包上 {{…}}。内容块的显示条件单独设置。',
+    result: '结果是插入正文的值',
+    summary: '可用：协议字段 · 条件取值 · 格式与统计',
+  },
   cell: {
     note: '只改当前这一格，会盖掉该列逐行公式。直接写字段名，不要写 row.字段。',
     result: '结果是这一格要显示的值',
@@ -75,6 +84,11 @@ export const PRINT_EXPR_SCENE_META: Record<
 
 /** 比较与逻辑（各入口完整列出，点插入） */
 export const PRINT_EXPR_OPERATOR_CHIPS: PrintExprHelpChip[] = [
+  { insert: ' + ', label: '加 +' },
+  { insert: ' - ', label: '减 −' },
+  { insert: ' * ', label: '乘 ×' },
+  { insert: ' / ', label: '除 ÷' },
+  { insert: ' % ', label: '取余 %' },
   { insert: ' > ', label: '>' },
   { insert: ' >= ', label: '>=' },
   { insert: ' < ', label: '<' },
@@ -84,88 +98,28 @@ export const PRINT_EXPR_OPERATOR_CHIPS: PrintExprHelpChip[] = [
   { insert: ' && ', label: '且 &&' },
   { insert: ' || ', label: '或 ||' },
   { insert: '!', label: '非 !' },
+  { insert: '()', label: '括号 ( )' },
+  { insert: ' ?  : ', label: '条件 ? 真值 : 假值' },
 ];
 
-/** 完整函数分组，标签给人看，insert 写进输入框 */
-const PRINT_EXPR_CONDITION_GROUPS: {
-  items: PrintExprHelpChip[];
-  title: string;
-}[] = [
-  {
-    title: '条件',
-    items: [
-      { insert: 'IF(, , )', label: 'IF(条件, 真, 假)' },
-      { insert: ' ?  : ', label: '三元 条件 ? 真 : 假' },
-      { insert: 'IFS(, , )', label: 'IFS(条件, 结果, …)' },
-      { insert: 'AND()', label: 'AND(...)' },
-      { insert: 'OR()', label: 'OR(...)' },
-      { insert: 'NOT()', label: 'NOT(...)' },
-      { insert: 'IN(, )', label: 'IN(值, a, b)' },
-      { insert: 'NOT_IN(, )', label: 'NOT_IN(...)' },
-    ],
-  },
-  {
-    title: '空值与包含',
-    items: [
-      { insert: 'EMPTY()', label: 'EMPTY(字段)' },
-      { insert: 'CONTAINS(, )', label: 'CONTAINS(文本, 片段)' },
-      { insert: 'COALESCE()', label: 'COALESCE(...)' },
-    ],
-  },
-];
-
-/** 判断 Tab：比较符 + 条件函数 */
-export const PRINT_EXPR_JUDGE_GROUPS = PRINT_EXPR_CONDITION_GROUPS;
-
-/** 函数 Tab：数字 / 文本 / 表统计 */
-export const PRINT_EXPR_CALC_GROUPS: {
-  items: PrintExprHelpChip[];
-  title: string;
-}[] = [
-  {
-    title: '数字',
-    items: [
-      { insert: 'ROUND(, 2)', label: 'ROUND(值, 小数位)' },
-      { insert: 'ABS()', label: 'ABS(...)' },
-      { insert: 'CEIL()', label: 'CEIL(...)' },
-      { insert: 'FLOOR()', label: 'FLOOR(...)' },
-      { insert: 'MIN()', label: 'MIN(...)' },
-      { insert: 'MAX()', label: 'MAX(...)' },
-      { insert: 'POW(, )', label: 'POW(底, 指数)' },
-      { insert: 'SQRT()', label: 'SQRT(...)' },
-      { insert: 'MOD(, )', label: 'MOD(值, 除数)' },
-      { insert: 'CLAMP(, , )', label: 'CLAMP(值, 最小, 最大)' },
-      { insert: 'NUMBER(, 0)', label: 'NUMBER(值, 兜底)' },
-    ],
-  },
-  {
-    title: '文本与格式',
-    items: [
-      { insert: 'CONCAT()', label: 'CONCAT(...)' },
-      { insert: 'LEN()', label: 'LEN(...)' },
-      { insert: 'UPPER()', label: 'UPPER(...)' },
-      { insert: 'LOWER()', label: 'LOWER(...)' },
-      { insert: 'FORMAT_MONEY(, 2)', label: 'FORMAT_MONEY(金额, 小数位)' },
-      { insert: 'FORMAT_DATE(, "date")', label: 'FORMAT_DATE(日期, 格式)' },
-    ],
-  },
-  {
-    title: '表统计',
-    items: [
-      { insert: 'COUNT()', label: 'COUNT(表)' },
-      { insert: 'SUM(, "")', label: 'SUM(表, "字段")' },
-      { insert: 'AVG(, "")', label: 'AVG(表, "字段")' },
-      { insert: 'MAX_COL(, "")', label: 'MAX_COL(表, "字段")' },
-      { insert: 'MIN_COL(, "")', label: 'MIN_COL(表, "字段")' },
-    ],
-  },
-];
-
-/** 完整清单（测试 / 其它入口复用） */
+/** 兼容旧入口的分组也由同一份函数目录生成。 */
 export const PRINT_EXPR_FUNCTION_GROUPS = [
-  ...PRINT_EXPR_JUDGE_GROUPS,
-  ...PRINT_EXPR_CALC_GROUPS,
-];
+  '条件',
+  '空值与包含',
+  '数字',
+  '文本与格式',
+  '表统计',
+].map((title) => ({
+  title,
+  items: PRINT_EXPR_FUNCTIONS.filter((item) => item.group === title).map(
+    (item) => ({
+      label: `${item.name}(${item.parameters.map((p) => p.label).join(', ')})`,
+      insert: printExprFunctionTemplate(item),
+    }),
+  ),
+}));
+export const PRINT_EXPR_JUDGE_GROUPS = PRINT_EXPR_FUNCTION_GROUPS.slice(0, 2);
+export const PRINT_EXPR_CALC_GROUPS = PRINT_EXPR_FUNCTION_GROUPS.slice(2);
 
 /** 各场景默认展示的字段分组，其余进「更多值」 */
 const PRIMARY_FIELD_GROUPS: Record<PrintExprHelpScene, string[]> = {
@@ -173,6 +127,7 @@ const PRIMARY_FIELD_GROUPS: Record<PrintExprHelpScene, string[]> = {
   color: ['本列', '本行列'],
   column: ['本行列'],
   filter: ['本行列'],
+  text: ['协议字段'],
   visible: ['协议字段'],
 };
 
@@ -216,9 +171,15 @@ export function groupPrintExprHelpFields(fields: PrintExprHelpField[]) {
 export function printExprInsertCursor(token: string) {
   const q = token.indexOf('?');
   const colon = token.lastIndexOf(':');
-  if (q >= 0 && colon > q) return q + 1;
+  if (q !== -1 && colon > q && !token.slice(q + 1, colon).trim()) return q + 1;
   const open = token.lastIndexOf('(');
-  if (open < 0 || !token.endsWith(')')) return token.length;
+  const bare = token.replaceAll(/(['"])(?:\\.|(?!\1).)*\1/g, '""');
+  if (
+    open === -1 ||
+    !token.endsWith(')') ||
+    !/(?:\(\s*[,)]|,\s*[,)]|\(\s*$)/.test(bare)
+  )
+    return token.length;
   return open + 1;
 }
 
@@ -262,11 +223,9 @@ export function applyPrintExprInsert(
   token: string,
   el?: HTMLInputElement | HTMLTextAreaElement | null,
 ) {
-  const focused = !!el && document.activeElement === el;
-  const start = focused
-    ? (el.selectionStart ?? current.length)
-    : current.length;
-  const end = focused ? (el.selectionEnd ?? start) : current.length;
+  // 原生输入框失焦后仍保留选区；填写函数参数期间也要回到原插入位置。
+  const start = el?.selectionStart ?? current.length;
+  const end = el?.selectionEnd ?? start;
   const spliced = splicePrintExprToken(current, token, start, end);
   if (el) {
     queueMicrotask(() => {
@@ -318,7 +277,9 @@ export function rowPrintExprFields(
     }));
   return [
     ...rowFields,
-    ...protocolPrintExprFields().filter((item) => item.group !== '协议字段'),
+    ...protocolPrintExprFields().filter(
+      (item) => !rowFields.some((row) => row.value === item.value),
+    ),
     { group: '行位置', label: '行号 i', value: 'i' },
     { group: '行位置', label: '行号 index', value: 'index' },
   ];
@@ -344,14 +305,5 @@ export function colorPrintExprFields(
 export function filterPrintExprFields(
   columns: Array<{ field?: string; title?: string }>,
 ): PrintExprHelpField[] {
-  const row = rowPrintExprFields(columns);
-  const protocol = protocolPrintExprFields().filter(
-    (item) => item.group === '协议字段',
-  );
-  const rest = row.filter((item) => item.group !== '本行列');
-  return [
-    ...row.filter((item) => item.group === '本行列'),
-    ...protocol,
-    ...rest,
-  ];
+  return rowPrintExprFields(columns);
 }

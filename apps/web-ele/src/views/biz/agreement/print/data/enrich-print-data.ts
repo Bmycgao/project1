@@ -6,6 +6,7 @@ import {
   filterPrintRows,
   sortPrintRows,
 } from '../runtime/print-expr';
+import { identifyPrintRows } from '../runtime/print-row-height';
 import { applyTableColorMeta } from '../runtime/print-table-color';
 import {
   applyAgreeBodyCellExprsToRows,
@@ -47,7 +48,7 @@ export function enrichPrintDataForTemplate(
         if (Array.isArray(rows)) {
           const leaves = listLeafTableCells(opts.columns);
           const computedCols = leaves.filter((c) => c.agreeColExpr && c.field);
-          let nextRows = rows as Record<string, unknown>[];
+          let nextRows = identifyPrintRows(rows as Record<string, unknown>[]);
           if (computedCols.length > 0) {
             nextRows = nextRows.map((row, index) => {
               const patched = { ...row };

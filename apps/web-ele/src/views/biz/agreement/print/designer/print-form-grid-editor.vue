@@ -6,7 +6,7 @@ import type {
   PrintFieldTreeNode,
 } from './print-field-tree';
 
-import { computed, ref } from 'vue';
+import { computed, onBeforeUnmount, ref } from 'vue';
 
 import {
   ElButton,
@@ -23,6 +23,7 @@ import {
   ElTabs,
 } from 'element-plus';
 
+import { requireDefined } from '../../../../../../../shared/require-defined';
 import { cloneJson } from '../../clone';
 import { AGREE_PRINT_FORMAT_GROUPS } from '../data/format-print-value';
 import { validatePrintExpr } from '../runtime/print-expr';
@@ -33,6 +34,7 @@ import {
   normalizeFormGrid,
   resizeFormGrid,
 } from '../runtime/print-form-grid';
+import PrintEditScope from './print-edit-scope.vue';
 import PrintFieldPicker from './print-field-picker.vue';
 import PrintTableSample from './print-table-sample.vue';
 
@@ -51,9 +53,105 @@ const draftOptions = ref<Record<string, any>>({});
 const draft = ref(normalizeFormGrid(props.modelValue));
 const start = ref([0, 0]);
 const end = ref([0, 0]);
-const selectedRow = computed(() => draft.value.rows[start.value[0]!]!);
-const selectedCell = computed(() => selectedRow.value.cells[start.value[1]!]!);
+const selectedRow = computed(() =>
+  requireDefined(draft.value.rows[requireDefined(start.value[0])]),
+);
+const selectedCell = computed(() =>
+  requireDefined(selectedRow.value.cells[requireDefined(start.value[1])]),
+);
 const spans = computed(() => formGridSpans(draft.value));
+const resizingRow = ref<null | number>(null);
+const rowHeightHelp = computed(() =>
+  selectedRow.value.source
+    ? `这是第 ${requireDefined(start.value[0]) + 1} 行模板的默认高度；已单独调整的记录保留自己的高度。长内容自动撑高。`
+    : `作用于第 ${requireDefined(start.value[0]) + 1} 行的所有单元格；长内容自动撑高。`,
+);
+let rowDrag: null | {
+  height: number;
+  row: number;
+  startHeight: number;
+  y: number;
+} = null;
+
+function selectRow(row: number) {
+  const column = spans.value[row]?.findIndex((span) => span[0] > 0) ?? 0;
+  start.value = [row, Math.max(0, column)];
+  end.value = [...start.value];
+  settingScope.value = 'row';
+}
+
+function moveRowResize(event: PointerEvent) {
+  if (!rowDrag) return;
+  requireDefined(draft.value.rows[rowDrag.row]).height = Math.max(
+    18,
+    Math.min(
+      600,
+      Math.round(
+        (rowDrag.startHeight + (event.clientY - rowDrag.y) * 0.75) * 100,
+      ) / 100,
+    ),
+  );
+}
+
+function finishRowResize() {
+  rowDrag = null;
+  resizingRow.value = null;
+  window.removeEventListener('pointermove', moveRowResize);
+  window.removeEventListener('pointerup', finishRowResize);
+  window.removeEventListener('pointercancel', cancelRowResize);
+  window.removeEventListener('keydown', escapeRowResize, true);
+}
+
+function cancelRowResize() {
+  if (rowDrag)
+    requireDefined(draft.value.rows[rowDrag.row]).height = rowDrag.height;
+  finishRowResize();
+}
+
+function escapeRowResize(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    event.stopPropagation();
+    cancelRowResize();
+  }
+}
+
+function startRowResize(event: PointerEvent, row: number) {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  selectRow(row);
+  const height = requireDefined(draft.value.rows[row]).height || 22;
+  const tr = (event.currentTarget as HTMLElement).closest('tr');
+  rowDrag = {
+    row,
+    height,
+    y: event.clientY,
+    startHeight: Math.max(
+      height,
+      (tr?.getBoundingClientRect().height || 0) * 0.75,
+    ),
+  };
+  resizingRow.value = row;
+  window.addEventListener('pointermove', moveRowResize);
+  window.addEventListener('pointerup', finishRowResize);
+  window.addEventListener('pointercancel', cancelRowResize);
+  window.addEventListener('keydown', escapeRowResize, true);
+}
+
+function keyboardRowResize(event: KeyboardEvent, row: number) {
+  if (!['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+  event.preventDefault();
+  selectRow(row);
+  requireDefined(draft.value.rows[row]).height = Math.max(
+    18,
+    Math.min(
+      600,
+      (requireDefined(draft.value.rows[row]).height || 22) +
+        (event.key === 'ArrowDown' ? 1 : -1) * (event.shiftKey ? 10 : 1),
+    ),
+  );
+}
+onBeforeUnmount(cancelRowResize);
 const formats = AGREE_PRINT_FORMAT_GROUPS.flatMap((group) => group.options);
 const pickerOpen = ref(false);
 const pickerMode = ref<PrintFieldPickMode>('text');
@@ -83,24 +181,27 @@ function choose(event: MouseEvent, r: number, c: number) {
 }
 function inSelection(r: number, c: number) {
   return (
-    r >= Math.min(start.value[0]!, end.value[0]!) &&
-    r <= Math.max(start.value[0]!, end.value[0]!) &&
-    c >= Math.min(start.value[1]!, end.value[1]!) &&
-    c <= Math.max(start.value[1]!, end.value[1]!)
+    r >=
+      Math.min(requireDefined(start.value[0]), requireDefined(end.value[0])) &&
+    r <=
+      Math.max(requireDefined(start.value[0]), requireDefined(end.value[0])) &&
+    c >=
+      Math.min(requireDefined(start.value[1]), requireDefined(end.value[1])) &&
+    c <= Math.max(requireDefined(start.value[1]), requireDefined(end.value[1]))
   );
 }
 function merge() {
   try {
     draft.value = mergeFormCells(
       draft.value,
-      start.value[0]!,
-      start.value[1]!,
-      end.value[0]!,
-      end.value[1]!,
+      requireDefined(start.value[0]),
+      requireDefined(start.value[1]),
+      requireDefined(end.value[0]),
+      requireDefined(end.value[1]),
     );
     start.value = [
-      Math.min(start.value[0]!, end.value[0]!),
-      Math.min(start.value[1]!, end.value[1]!),
+      Math.min(requireDefined(start.value[0]), requireDefined(end.value[0])),
+      Math.min(requireDefined(start.value[1]), requireDefined(end.value[1])),
     ];
     end.value = [...start.value];
   } catch (error) {
@@ -112,20 +213,23 @@ function split() {
   selectedCell.value.colspan = 1;
 }
 function resize(axis: 'column' | 'row', remove = false) {
-  const index = start.value[axis === 'row' ? 0 : 1]! + (remove ? 0 : 1);
+  const index =
+    requireDefined(start.value[axis === 'row' ? 0 : 1]) + (remove ? 0 : 1);
   draft.value = resizeFormGrid(draft.value, axis, index, remove);
   start.value = [
-    Math.min(start.value[0]!, draft.value.rows.length - 1),
-    Math.min(start.value[1]!, draft.value.columns.length - 1),
+    Math.min(requireDefined(start.value[0]), draft.value.rows.length - 1),
+    Math.min(requireDefined(start.value[1]), draft.value.columns.length - 1),
   ];
   end.value = [...start.value];
 }
 function openPicker(source = false) {
-  pickerMode.value = source
-    ? 'table'
-    : pickerScope.value === 'row'
-      ? 'column'
-      : 'text';
+  let nextPickerMode: PrintFieldPickMode;
+  if (source) {
+    nextPickerMode = 'table';
+  } else {
+    nextPickerMode = pickerScope.value === 'row' ? 'column' : 'text';
+  }
+  pickerMode.value = nextPickerMode;
   pickerOpen.value = true;
 }
 function pick(node: PrintFieldTreeNode) {
@@ -134,7 +238,9 @@ function pick(node: PrintFieldTreeNode) {
     selectedCell.value.value = `${pickerScope.value === 'row' ? 'row.' : ''}${node.field || ''}`;
 }
 function setSource(value: string) {
-  const r = start.value[0]!;
+  if (value.trim() !== selectedRow.value.source)
+    delete selectedRow.value.recordHeights;
+  const r = requireDefined(start.value[0]);
   // 动态行不能被前面的跨行单元格覆盖，也不能向下跨行。
   if (value) {
     draft.value.rows.forEach((row, index) =>
@@ -172,23 +278,36 @@ function save() {
   emit('update:modelValue', grid);
   emit('apply', { grid, options: cloneJson(draftOptions.value) });
   open.value = false;
+  ElMessage.success('表单修改已应用到画布，请保存模板');
 }
 </script>
 
 <template>
   <div class="form-grid-entry">
-    <p>按格设置内容；整表外观在「样式」修改，显示条件在「规则」修改。</p>
-    <ElButton type="primary" @click="edit">编辑自由表单</ElButton>
+    <p>按格设置内容；整表外观在「外观」修改，显示条件在「规则」修改。</p>
+    <ElButton type="primary" @click="edit">编辑固定表单格子</ElButton>
   </div>
   <ElDialog
     v-model="open"
-    title="编辑表格 · 自由表单"
+    title="编辑固定表单格子"
     width="1120px"
     top="4vh"
     :style="{ maxWidth: 'calc(100vw - 32px)' }"
+    @close="cancelRowResize"
     append-to-body
     destroy-on-close
   >
+    <PrintEditScope
+      :target="`${element?.options.title || '固定表单'} · ${settingScope === 'column' ? `第 ${start[1]! + 1} 列` : `第 ${start[0]! + 1} 行${settingScope === 'cell' ? `，第 ${start[1]! + 1} 列` : ''}`}`"
+      :scope="
+        settingScope === 'cell'
+          ? '选中的单元格；动态行中作用于每条记录对应的格子'
+          : settingScope === 'column'
+            ? '选中的整列宽度；包含固定行和重复明细行'
+            : '选中的整行；动态行设置作用于该行模板生成的记录'
+      "
+      draft
+    />
     <PrintTableSample
       :options="{ ...draftOptions, agreeFormGrid: draft }"
       :sample-data="sampleData"
@@ -221,6 +340,7 @@ function save() {
       <div class="form-grid-scroll">
         <table class="form-grid-table" aria-label="表单单元格编辑区">
           <colgroup>
+            <col style="width: 36px" />
             <col
               v-for="(width, c) in draft.columns"
               :key="c"
@@ -228,7 +348,37 @@ function save() {
             />
           </colgroup>
           <tbody>
-            <tr v-for="(row, r) in draft.rows" :key="r">
+            <tr
+              v-for="(row, r) in draft.rows"
+              :key="r"
+              :style="{ height: `${row.height || 22}pt` }"
+              :class="{
+                'row-highlight': r === start[0],
+                'row-resizing': resizingRow === r,
+              }"
+            >
+              <th scope="row" class="form-grid-row-number">
+                <button
+                  type="button"
+                  :aria-label="`选择第 ${r + 1} 行`"
+                  @click="selectRow(r)"
+                >
+                  {{ r + 1 }}
+                </button>
+                <span
+                  role="separator"
+                  tabindex="0"
+                  aria-orientation="horizontal"
+                  :aria-label="`调整第 ${r + 1} 行最小高度`"
+                  :aria-valuenow="row.height || 22"
+                  aria-valuemin="18"
+                  aria-valuemax="600"
+                  title="拖动调整整行最小高度；方向键微调，Esc 取消拖动"
+                  class="form-grid-row-resizer"
+                  @pointerdown.stop="startRowResize($event, r)"
+                  @keydown.stop="keyboardRowResize($event, r)"
+                ></span>
+              </th>
               <template v-for="(cell, c) in row.cells" :key="c">
                 <td
                   v-if="spans[r]?.[c]?.[0]"
@@ -239,7 +389,6 @@ function save() {
                     repeated: !!row.source,
                   }"
                   :style="{
-                    height: `${row.height || 22}pt`,
                     textAlign: cell.align,
                     fontWeight: cell.bold ? '700' : '400',
                   }"
@@ -259,7 +408,24 @@ function save() {
         </table>
       </div>
       <ElForm class="form-grid-settings" label-position="top" size="small">
-        <ElTabs v-model="settingScope" aria-label="自由表单设置范围">
+        <ElFormItem :label="`第 ${start[0]! + 1} 行最小高度（pt）`">
+          <ElInputNumber
+            v-model="selectedRow.height"
+            aria-label="所在行最小高度"
+            :min="18"
+            :max="600"
+            :precision="2"
+            :step="1"
+            controls-position="right"
+          />
+        </ElFormItem>
+        <p class="form-grid-height-help" role="status">{{ rowHeightHelp }}</p>
+        <p v-if="(selectedCell.rowspan || 1) > 1" class="form-grid-height-help">
+          当前格跨
+          {{ selectedCell.rowspan }}
+          行，高度由所跨各行共同决定；点击左侧行号可逐行调整。
+        </p>
+        <ElTabs v-model="settingScope" aria-label="固定表单设置范围">
           <ElTabPane label="单元格" name="cell">
             <strong>当前单元格 · 第 {{ start[0]! + 1 }} 行，第
               {{ start[1]! + 1 }} 列</strong>
@@ -375,13 +541,6 @@ function save() {
             <p v-if="selectedRow.source" class="form-grid-hint">
               本行按记录数重复，后续行自动顺延。动态行支持横向合并，不能跨其他行纵向合并。
             </p>
-            <ElFormItem label="本行最小高度（pt）">
-              <ElInputNumber
-                v-model="selectedRow.height"
-                :min="18"
-                :max="600"
-              />
-            </ElFormItem>
           </ElTabPane>
           <ElTabPane label="当前列" name="column">
             <strong>当前列 · 第 {{ start[1]! + 1 }} 列</strong>
@@ -460,6 +619,57 @@ function save() {
 
 .form-grid-table td.repeated {
   background: var(--el-color-primary-light-9);
+}
+
+.form-grid-row-number {
+  position: relative;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 400;
+  background: var(--el-fill-color-light);
+  border: 1px solid #94a3b8;
+}
+
+.form-grid-row-number button {
+  width: 100%;
+  color: var(--el-text-color-secondary);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+}
+
+.form-grid-row-resizer {
+  position: absolute;
+  right: 0;
+  bottom: -4px;
+  left: 0;
+  z-index: 1;
+  height: 8px;
+  touch-action: none;
+  cursor: row-resize;
+}
+
+.form-grid-row-resizer:hover,
+.form-grid-row-resizer:focus-visible {
+  outline: 1px solid var(--el-color-primary);
+  background: var(--el-color-primary-light-5);
+}
+
+.form-grid-table .row-highlight > td {
+  box-shadow:
+    inset 0 2px var(--el-color-primary-light-5),
+    inset 0 -2px var(--el-color-primary-light-5);
+}
+
+.form-grid-table .row-resizing > td {
+  background: var(--el-color-primary-light-9);
+}
+
+.form-grid-height-help {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--el-text-color-secondary);
 }
 
 .form-grid-table td.selected {

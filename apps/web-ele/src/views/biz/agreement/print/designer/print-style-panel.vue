@@ -15,6 +15,11 @@ import {
   ElSelect,
 } from 'element-plus';
 
+import { projectTableHeaders } from '../runtime/print-header-merge';
+import { headerRowHeight } from '../runtime/print-row-height';
+import { listLeafTableCells } from '../template/print-element-meta';
+import PrintTableBorderPanel from './print-table-border-panel.vue';
+
 /** 编辑选中元素的样式。只提交选项补丁，由父组件写回模板和画布。 */
 const props = defineProps<{
   draft?: boolean;
@@ -39,12 +44,6 @@ const FONT_WEIGHT_OPTIONS = [
   { label: '特粗', value: '900' },
 ] as const;
 
-const BORDER_VISIBILITY_OPTIONS = [
-  { label: '默认', value: '' },
-  { label: '有边框', value: 'border' },
-  { label: '无边框', value: 'noBorder' },
-] as const;
-
 /** hiprint 原生样式字段；新检视器只负责编辑，不改变预览/打印协议。 */
 const styleFontFamily = ref('');
 const styleFontSize = ref<number>();
@@ -58,19 +57,48 @@ const styleColor = ref('');
 const styleBackgroundColor = ref('');
 const styleBorderWidth = ref<number>();
 const styleBorderStyle = ref('');
-const styleTableBorder = ref('');
+const elementWidthMm = ref(0);
+const elementHeightMm = ref(0);
+const isVerticalLine = computed(() => selected.value?.type === 'vline');
+const supportsDimensions = computed(() => isCode.value || isLineOrShape.value);
+
+function persistDimensions(
+  dimension: 'height' | 'width',
+  value: number | undefined,
+) {
+  if (!value || !selected.value) return;
+  emit('patch', { [dimension]: (value * 72) / 25.4 });
+}
 const styleTableHeaderBackground = ref('');
 const styleTableHeaderFontSize = ref<number>();
 const styleTableHeaderFontWeight = ref('');
 const styleTableHeaderRowHeight = ref<number>();
-const styleTableHeaderCellBorder = ref('');
-const styleTableHeaderBorder = ref('');
+const tableHeaderRepeat = ref<'none' | 'page'>('page');
 const styleTableBodyRowHeight = ref<number>();
-const styleTableBodyCellBorder = ref('');
-const styleTableFooterCellBorder = ref('');
-const styleTableFooterBorder = ref('');
 const isFormGrid = computed(() => !!selected.value?.options.agreeFormGrid);
 const isTable = computed(() => selected.value?.type === 'table');
+const headerRows = computed(() =>
+  projectTableHeaders(selected.value?.options.columns),
+);
+const hasFooter = computed(
+  () =>
+    listLeafTableCells(selected.value?.options.columns).some(
+      (col) => col.tableSummary,
+    ) ||
+    (Array.isArray(selected.value?.options.agreeFooters) &&
+      selected.value.options.agreeFooters.length > 0),
+);
+const defaultFontSize = computed(
+  () => readStyleNumber(selected.value?.options.fontSize) || 10,
+);
+const minimumLineHeight = computed(() => defaultFontSize.value * 1.25);
+
+function setHeaderRowHeight(row: number, height: number | undefined) {
+  const current = selected.value?.options.agreeHeaderRowHeights;
+  const heights = Array.isArray(current) ? [...current] : [];
+  heights[row] = height ?? null;
+  emit('patch', { agreeHeaderRowHeights: heights });
+}
 const isTextLike = computed(
   () => selected.value?.type === 'text' || selected.value?.type === 'longText',
 );
@@ -124,14 +152,8 @@ function persistElementStyle() {
   }
   if (isTable.value) {
     Object.assign(patch, {
-      tableBodyCellBorder: styleTableBodyCellBorder.value,
       tableBodyRowHeight: styleTableBodyRowHeight.value,
-      tableBorder: styleTableBorder.value,
-      tableFooterCellBorder: styleTableFooterCellBorder.value,
-      tableFooterBorder: styleTableFooterBorder.value,
       tableHeaderBackground: styleTableHeaderBackground.value,
-      tableHeaderBorder: styleTableHeaderBorder.value,
-      tableHeaderCellBorder: styleTableHeaderCellBorder.value,
       tableHeaderFontSize: styleTableHeaderFontSize.value,
       tableHeaderFontWeight: styleTableHeaderFontWeight.value,
       tableHeaderRowHeight: styleTableHeaderRowHeight.value,
@@ -145,6 +167,9 @@ function resetElementStyle() {
   const el = selected.value;
   if (!el) return;
   const keys = [
+    'agreeBodyRowHeights',
+    'agreeHeaderRowHeights',
+    'agreeTableBorders',
     'backgroundColor',
     'borderStyle',
     'borderWidth',
@@ -177,6 +202,20 @@ watch(
   selected,
   (el) => {
     if (!el) return;
+    elementWidthMm.value =
+      Math.round(
+        (((Number(el.options.width) || (isCode.value ? 50 : 120)) * 25.4) /
+          72) *
+          100,
+      ) / 100;
+    elementHeightMm.value =
+      Math.round(
+        (((Number(el.options.height) ||
+          (el.options.textType === 'barcode' ? 40 : 50)) *
+          25.4) /
+          72) *
+          100,
+      ) / 100;
     styleFontFamily.value = String(el.options.fontFamily || '');
     styleFontSize.value = readStyleNumber(el.options.fontSize);
     styleFontWeight.value = String(el.options.fontWeight || '');
@@ -191,7 +230,6 @@ watch(
     styleBackgroundColor.value = String(el.options.backgroundColor || '');
     styleBorderWidth.value = readStyleNumber(el.options.borderWidth);
     styleBorderStyle.value = String(el.options.borderStyle || '');
-    styleTableBorder.value = String(el.options.tableBorder || '');
     styleTableHeaderBackground.value = String(
       el.options.tableHeaderBackground || '',
     );
@@ -204,20 +242,11 @@ watch(
     styleTableHeaderRowHeight.value = readStyleNumber(
       el.options.tableHeaderRowHeight,
     );
-    styleTableHeaderCellBorder.value = String(
-      el.options.tableHeaderCellBorder || '',
-    );
-    styleTableHeaderBorder.value = String(el.options.tableHeaderBorder || '');
+    tableHeaderRepeat.value =
+      el.options.tableHeaderRepeat === 'none' ? 'none' : 'page';
     styleTableBodyRowHeight.value = readStyleNumber(
       el.options.tableBodyRowHeight,
     );
-    styleTableBodyCellBorder.value = String(
-      el.options.tableBodyCellBorder || '',
-    );
-    styleTableFooterCellBorder.value = String(
-      el.options.tableFooterCellBorder || '',
-    );
-    styleTableFooterBorder.value = String(el.options.tableFooterBorder || '');
   },
   { immediate: true },
 );
@@ -266,7 +295,7 @@ watch(
             :precision="2"
             :step="0.75"
             controls-position="right"
-            placeholder="默认 9"
+            placeholder="默认 10"
             @change="persistElementStyle"
           />
         </ElFormItem>
@@ -285,7 +314,7 @@ watch(
             />
           </ElSelect>
         </ElFormItem>
-        <ElFormItem label="行高（pt）">
+        <ElFormItem label="文字最小行高（pt）">
           <ElInputNumber
             v-model="styleLineHeight"
             :min="4"
@@ -293,11 +322,14 @@ watch(
             :precision="2"
             :step="0.75"
             controls-position="right"
-            placeholder="默认 9.75"
+            :placeholder="`自动（至少 ${minimumLineHeight}）`"
             @change="persistElementStyle"
           />
         </ElFormItem>
       </ElForm>
+      <p class="print-style-panel__hint">
+        文字行高不会小于字号的 1.25 倍，避免上下行重叠。
+      </p>
       <div class="print-style-panel__color-row">
         <span>{{ isTable ? '整表默认文字颜色' : '文字颜色' }}</span>
         <ElColorPicker
@@ -406,6 +438,15 @@ watch(
           size="small"
           class="print-style-panel__style-grid"
         >
+          <ElFormItem label="跨页表头">
+            <ElSelect
+              v-model="tableHeaderRepeat"
+              @change="emit('patch', { tableHeaderRepeat })"
+            >
+              <ElOption label="每页重复表头" value="page" />
+              <ElOption label="只在第一页显示表头" value="none" />
+            </ElSelect>
+          </ElFormItem>
           <ElFormItem label="表头字号（pt）">
             <ElInputNumber
               v-model="styleTableHeaderFontSize"
@@ -414,7 +455,7 @@ watch(
               :precision="2"
               :step="0.75"
               controls-position="right"
-              placeholder="默认 9"
+              :placeholder="`跟随整表（${defaultFontSize}）`"
               @change="persistElementStyle"
             />
           </ElFormItem>
@@ -433,43 +474,39 @@ watch(
               />
             </ElSelect>
           </ElFormItem>
-          <ElFormItem label="表头行高（pt）">
+          <ElFormItem v-if="headerRows.length <= 1" label="表头最小行高（pt）">
             <ElInputNumber
-              v-model="styleTableHeaderRowHeight"
+              :model-value="headerRowHeight(selected?.options || {}, 0)"
               :min="6"
-              :max="100"
+              :max="600"
               :precision="2"
               :step="0.75"
               controls-position="right"
               placeholder="默认 18"
-              @change="persistElementStyle"
+              @change="
+                (value) =>
+                  emit('patch', {
+                    tableHeaderRowHeight: value,
+                    agreeHeaderRowHeights: null,
+                  })
+              "
             />
           </ElFormItem>
-          <ElFormItem label="表头单元格边框">
-            <ElSelect
-              v-model="styleTableHeaderCellBorder"
-              @change="persistElementStyle"
-            >
-              <ElOption
-                v-for="item in BORDER_VISIBILITY_OPTIONS"
-                :key="item.value"
-                :label="item.label"
-                :value="item.value"
-              />
-            </ElSelect>
-          </ElFormItem>
-          <ElFormItem label="表头外边框">
-            <ElSelect
-              v-model="styleTableHeaderBorder"
-              @change="persistElementStyle"
-            >
-              <ElOption
-                v-for="item in BORDER_VISIBILITY_OPTIONS"
-                :key="item.value"
-                :label="item.label"
-                :value="item.value"
-              />
-            </ElSelect>
+          <ElFormItem
+            v-for="(_, rowIndex) in headerRows.length > 1 ? headerRows : []"
+            :key="rowIndex"
+            :label="`第 ${rowIndex + 1} 行表头最小高度（pt）`"
+          >
+            <ElInputNumber
+              :model-value="headerRowHeight(selected?.options || {}, rowIndex)"
+              :min="6"
+              :max="600"
+              :precision="2"
+              :step="0.75"
+              controls-position="right"
+              :aria-label="`第 ${rowIndex + 1} 行表头最小高度`"
+              @change="(value) => setHeaderRowHeight(rowIndex, value)"
+            />
           </ElFormItem>
         </ElForm>
         <div class="print-style-panel__color-row">
@@ -492,19 +529,27 @@ watch(
           </ElButton>
         </div>
       </template>
-      <div class="print-style-panel__style-section mt-3">
-        {{ isFormGrid ? '表格边框' : '表体与表尾' }}
+      <p class="text-xs text-gray-500 mb-2">
+        {{
+          isFormGrid
+            ? '各行高度请在「编辑固定表单格子」中设置，也可点画布单元格调整所在行。'
+            : '这里设置整表默认行高。点画布单元格可单独调整所在行；已单独设置的记录保留自己的高度。长内容自动撑高。'
+        }}
+      </p>
+      <div v-if="!isFormGrid" class="print-style-panel__style-section mt-3">
+        明细行高
       </div>
       <ElForm
+        v-if="!isFormGrid"
         label-position="top"
         size="small"
         class="print-style-panel__style-grid"
       >
-        <ElFormItem v-if="!isFormGrid" label="表体行高（pt）">
+        <ElFormItem v-if="!isFormGrid" label="默认明细行最小高度（pt）">
           <ElInputNumber
             v-model="styleTableBodyRowHeight"
             :min="6"
-            :max="100"
+            :max="600"
             :precision="2"
             :step="0.75"
             controls-position="right"
@@ -512,65 +557,66 @@ watch(
             @change="persistElementStyle"
           />
         </ElFormItem>
-        <ElFormItem label="表格外边框">
-          <ElSelect v-model="styleTableBorder" @change="persistElementStyle">
-            <ElOption
-              v-for="item in BORDER_VISIBILITY_OPTIONS"
-              :key="item.value"
-              :label="item.label"
-              :value="item.value"
-            />
-          </ElSelect>
-        </ElFormItem>
-        <ElFormItem label="表体单元格边框">
-          <ElSelect
-            v-model="styleTableBodyCellBorder"
-            @change="persistElementStyle"
-          >
-            <ElOption
-              v-for="item in BORDER_VISIBILITY_OPTIONS"
-              :key="item.value"
-              :label="item.label"
-              :value="item.value"
-            />
-          </ElSelect>
-        </ElFormItem>
-        <ElFormItem v-if="!isFormGrid" label="表尾单元格边框">
-          <ElSelect
-            v-model="styleTableFooterCellBorder"
-            @change="persistElementStyle"
-          >
-            <ElOption
-              v-for="item in BORDER_VISIBILITY_OPTIONS"
-              :key="item.value"
-              :label="item.label"
-              :value="item.value"
-            />
-          </ElSelect>
-        </ElFormItem>
-        <ElFormItem v-if="!isFormGrid" label="表尾外边框">
-          <ElSelect
-            v-model="styleTableFooterBorder"
-            @change="persistElementStyle"
-          >
-            <ElOption
-              v-for="item in BORDER_VISIBILITY_OPTIONS"
-              :key="item.value"
-              :label="item.label"
-              :value="item.value"
-            />
-          </ElSelect>
-        </ElFormItem>
       </ElForm>
+      <div class="print-style-panel__style-section mt-3">边框</div>
+      <PrintTableBorderPanel
+        :options="selected?.options || {}"
+        :is-form-grid="isFormGrid"
+        :has-footer="hasFooter"
+        @patch="(patch) => emit('patch', patch)"
+      />
       <p class="print-style-panel__hint">
         {{
           isFormGrid
-            ? '单元格对齐、加粗和格式在“编辑自由表单 → 单元格”设置。'
+            ? '单元格对齐、加粗和格式在“编辑固定表单格子 → 单元格”设置。'
             : '每列的对齐与格式在“编辑明细表 → 当前列与表头”设置。'
         }}
       </p>
     </template>
 
+    <template v-if="supportsDimensions">
+      <div class="print-style-panel__style-section">尺寸</div>
+      <ElForm
+        label-position="top"
+        size="small"
+        class="print-style-panel__style-grid"
+      >
+        <ElFormItem
+          v-if="!isVerticalLine"
+          :label="
+            selected?.type === 'hline' ? '线条长度（mm）' : '打印宽度（mm）'
+          "
+        >
+          <ElInputNumber
+            v-model="elementWidthMm"
+            :min="1"
+            :max="300"
+            :precision="2"
+            controls-position="right"
+            @change="persistDimensions('width', $event)"
+          />
+        </ElFormItem>
+        <ElFormItem
+          v-if="selected?.type !== 'hline'"
+          :label="
+            isVerticalLine
+              ? '线条长度（mm）'
+              : selected?.options.textType === 'barcode'
+                ? '条高（mm）'
+                : '打印高度（mm）'
+          "
+        >
+          <ElInputNumber
+            v-model="elementHeightMm"
+            :min="1"
+            :max="250"
+            :precision="2"
+            controls-position="right"
+            @change="persistDimensions('height', $event)"
+          />
+        </ElFormItem>
+      </ElForm>
+    </template>
     <template v-if="isLineOrShape">
       <div class="print-style-panel__style-section">线条</div>
       <ElForm
@@ -615,7 +661,7 @@ watch(
     </template>
 
     <div v-if="isCode" class="text-xs text-gray-500">
-      二维码和条形码的尺寸请直接拖动元素控制点；码制与绑定字段在“数据”中设置。
+      在上方设置打印尺寸；绑定字段与码制在「内容与数据」中设置。更换字段保持尺寸不变。
     </div>
     <div
       v-else-if="!supportsTypography && !isLineOrShape"

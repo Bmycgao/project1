@@ -8,6 +8,7 @@
   "scripts": {
     "build": "nitro build",
     "start": "nitro dev",
+    "start:miniapp": "node scripts/miniapp-dev.mjs",
     "typecheck": "tsc --noEmit --skipLibCheck"
   },
   "dependencies": {

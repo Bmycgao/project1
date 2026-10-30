@@ -125,3 +125,15 @@ describe('upsertFieldFilter', () => {
     ]);
   });
 });
+
+it('does not turn field-to-field comparisons into literal column filters', () => {
+  const expr = 'amount > quantity';
+  expect(parseFilterExpr(expr).advanced).toBe(true);
+  expect(
+    upsertFieldFilter(expr, 'amount', {
+      field: 'amount',
+      op: 'gt',
+      value: '0',
+    }),
+  ).toEqual({ blocked: true, expr });
+});

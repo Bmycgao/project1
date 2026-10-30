@@ -14,6 +14,18 @@ const routes: RouteRecordRaw[] = [
     path: '/system',
     children: [
       {
+        path: 'miniapp-users',
+        name: 'SystemMiniappUsers',
+        meta: { icon: 'mdi:account-group', title: '小程序用户' },
+        component: () => import('#/views/system/miniapp-users/index.vue'),
+      },
+      {
+        path: 'miniapp-navigation',
+        name: 'SystemMiniappNavigation',
+        meta: { icon: 'mdi:cellphone-cog', title: '小程序导航' },
+        component: () => import('#/views/system/miniapp-navigation/index.vue'),
+      },
+      {
         path: 'workflow',
         name: 'SystemWorkflow',
         meta: {

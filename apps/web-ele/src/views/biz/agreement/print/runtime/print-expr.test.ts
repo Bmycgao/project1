@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  evalPrintBool,
   evalPrintExpr,
   filterPrintRows,
   sortPrintRows,
@@ -14,6 +15,23 @@ describe('print expression DSL', () => {
     quantity: 12,
     unitPrice: 10,
   };
+
+  it('returns field values in formulas and preserves boolean condition compatibility', () => {
+    expect(evalPrintExpr('amount', scope)).toBe(120);
+    expect(validatePrintExpr('amount', scope)).toMatchObject({
+      ok: true,
+      preview: '120',
+    });
+    expect(evalPrintExpr('compensatee', { compensatee: '张三' })).toBe('张三');
+    expect(evalPrintBool('amount', scope)).toBe(true);
+    expect(evalPrintBool('!amount', scope)).toBe(false);
+    expect(evalPrintBool('oldMissingFlag', scope)).toBe(false);
+    expect(evalPrintBool('!oldMissingFlag', scope)).toBe(true);
+    expect(evalPrintExpr('true', {})).toBe(true);
+    expect(evalPrintExpr('false', {})).toBe(false);
+    expect(evalPrintExpr('!true', {})).toBe(false);
+    expect(evalPrintExpr('!false', {})).toBe(true);
+  });
 
   it('supports conditions, ternary expressions and scientific functions', () => {
     expect(

@@ -1,3 +1,8 @@
+/**
+ * 普通工具模块：调用者显式 import 后，才能使用这里导出的打印/颜色函数。
+ * 当前调用者是 flow-canvas.vue 和 views/workflow/trace.vue，不是同目录所有 .vue 自动调用。
+ * print-chart.test.ts 单独验证颜色替换函数；编辑器把相关文件折叠显示不代表运行依赖。
+ */
 const PRINT_COLORS: Record<string, string> = {
   '--el-bg-color': '#ffffff',
   '--el-text-color-primary': '#1f2937',
@@ -7,16 +12,22 @@ const PRINT_COLORS: Record<string, string> = {
 
 /** 打印页没有主题变量，把 var(--el-*) 换成固定颜色 */
 export function replacePrintColors(value: string) {
-  return value.replace(
+  return value.replaceAll(
     /var\((--[\w-]+)\)/g,
     (_all, name: string) => PRINT_COLORS[name] || '#64748b',
   );
 }
 
 function escapeHtml(value: string) {
-  return value.replace(/[&<>]/g, (char) =>
-    char === '&' ? '&amp;' : char === '<' ? '&lt;' : '&gt;',
-  );
+  return value.replaceAll(/[&<>]/g, (char) => {
+    let escapedCharacter;
+    if (char === '&') {
+      escapedCharacter = '&amp;';
+    } else {
+      escapedCharacter = char === '<' ? '&lt;' : '&gt;';
+    }
+    return escapedCharacter;
+  });
 }
 
 /**
@@ -27,9 +38,9 @@ function escapeHtml(value: string) {
 export function printWorkflowChart(
   source: SVGSVGElement,
   meta: {
-    title: string;
-    subtitle?: string;
     legend?: string;
+    subtitle?: string;
+    title: string;
     viewBox?: string;
   },
 ) {
@@ -50,9 +61,9 @@ export function printWorkflowChart(
   paint(clone);
   const viewBox =
     meta.viewBox || clone.getAttribute('viewBox') || '0 0 800 400';
-  const [, , vbWidth = 800, vbHeight = 400] = viewBox
-    .split(/[\s,]+/)
-    .map(Number);
+  const dimensions = viewBox.split(/[\s,]+/).map(Number);
+  const vbWidth = dimensions[2] ?? 800;
+  const vbHeight = dimensions[3] ?? 400;
   const pageWidth = 1000;
   const pageHeight = Math.max(
     180,
@@ -70,7 +81,7 @@ export function printWorkflowChart(
     'style',
     'position:fixed;left:-1300px;top:0;width:1120px;height:794px;border:0',
   );
-  document.body.appendChild(frame);
+  document.body.append(frame);
   const doc = frame.contentDocument;
   const win = frame.contentWindow;
   if (!doc || !win) {

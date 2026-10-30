@@ -16,6 +16,7 @@ import {
 } from './print-flow';
 import { prepareFormGrids } from './print-form-grid';
 import { prepareLongTextSections } from './print-long-text';
+import { preparePrintMasking } from './print-masking';
 import {
   applyAgreeBodyHMergesToPrintData,
   applyTablePrintRuntime,
@@ -56,6 +57,7 @@ function isolateRepeatedTableSources(
       const safeField = field.replaceAll(/[^\w]/g, '_');
       const alias = `__agree_table_${panelIndex}_${elementIndex}_${safeField}`;
       bag[alias] = bag[field];
+      el.options.__agreeMaskSource = field;
       el.options.field = alias;
     }
   }
@@ -201,6 +203,7 @@ export function preparePrintTemplate(
     ? toDocumentTemplate(template)
     : cloneTemplate(template);
   const isolatedData = isolateRepeatedTableSources(next, printData);
+  preparePrintMasking(next, isolatedData as unknown as Record<string, unknown>);
   prepareLongTextSections(
     next,
     isolatedData as unknown as Record<string, unknown>,

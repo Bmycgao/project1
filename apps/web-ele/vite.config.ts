@@ -27,8 +27,8 @@ export default defineConfig(async () => {
           '/api': {
             changeOrigin: true,
             rewrite: (path) => path.replace(/^\/api/, ''),
-            // mock代理目标地址
-            target: 'http://localhost:5320/api',
+            // 与 Mock 插件的端口检测、监听地址保持一致。
+            target: 'http://127.0.0.1:5320/api',
             ws: true,
           },
         },

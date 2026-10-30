@@ -5,6 +5,7 @@ import { computed, ref, watchEffect } from 'vue';
 
 import { renderDocumentTable } from '../runtime/document-renderer';
 import { preparePrintTemplate } from '../runtime/prepare-template';
+import { printMaskRulesForData } from '../runtime/print-masking';
 
 const props = defineProps<{
   options: Record<string, any>;
@@ -15,6 +16,7 @@ const prepared = computed(() =>
   preparePrintTemplate(
     {
       agreeLayout: 'document-flow',
+      agreePrintMaskRules: printMaskRulesForData(props.sampleData),
       panels: [
         {
           width: 210,

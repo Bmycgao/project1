@@ -77,11 +77,89 @@ export function ensureMenuStoreHydrated() {
 
   // 落盘菜单可能早于新增种子：补齐打印模板菜单
   ensureSystemPrintTemplateMenuSeed();
+  ensureMiniappNavigationMenuSeed();
+  ensureMiniappUsersMenuSeed();
   ensureSystemWorkflowMenuSeed();
   ensureWorkflowRuntimeMenuSeed();
   ensureAgreePreviewButtonSeed();
   hideLegacyPrintDesignMenu();
   fixPrintDesignMenuComponent();
+}
+
+/** 兼容已有落盘菜单，保留已存在入口的人工配置。 */
+function ensureMiniappNavigationMenuSeed() {
+  const system = MOCK_MENU_LIST.find((menu) => String(menu.id) === '2');
+  if (!system?.children) return;
+  let page = system.children.find(
+    (menu: any) => menu.name === 'SystemMiniappNavigation',
+  );
+  let changed = false;
+  if (!page) {
+    page = {
+      id: 210,
+      pid: system.id,
+      path: 'miniapp-navigation',
+      name: 'SystemMiniappNavigation',
+      authCode: 'System:MiniappNavigation:List',
+      status: 1,
+      type: 'menu',
+      meta: { icon: 'mdi:cellphone-cog', title: '小程序导航' },
+      component: '/system/miniapp-navigation/index',
+      children: [],
+    };
+    system.children.push(page);
+    changed = true;
+  }
+  if (
+    ensureMenuButtons(page, [
+      {
+        id: 21_001,
+        name: 'SystemMiniappNavigationEdit',
+        authCode: 'System:MiniappNavigation:Edit',
+        title: '发布导航',
+      },
+    ])
+  )
+    changed = true;
+  if (changed) persistMenuStore();
+}
+
+// 新页面和按钮进入现有菜单权限体系；不会把小程序角色当作 PC 管理权限。
+function ensureMiniappUsersMenuSeed() {
+  const system = MOCK_MENU_LIST.find((menu) => String(menu.id) === '2');
+  if (!system?.children) return;
+  let page = system.children.find(
+    (menu: any) => menu.name === 'SystemMiniappUsers',
+  );
+  let changed = false;
+  if (!page) {
+    page = {
+      id: 211,
+      pid: system.id,
+      path: 'miniapp-users',
+      name: 'SystemMiniappUsers',
+      authCode: 'System:MiniappUser:List',
+      status: 1,
+      type: 'menu',
+      meta: { icon: 'mdi:account-group', title: '小程序用户' },
+      component: '/system/miniapp-users/index',
+      children: [],
+    };
+    system.children.push(page);
+    changed = true;
+  }
+  if (
+    ensureMenuButtons(page, [
+      {
+        id: 21_101,
+        name: 'SystemMiniappUserEditRole',
+        authCode: 'System:MiniappUser:EditRole',
+        title: '分配小程序角色',
+      },
+    ])
+  )
+    changed = true;
+  if (changed) persistMenuStore();
 }
 
 function ensureWorkflowRuntimeMenuSeed() {

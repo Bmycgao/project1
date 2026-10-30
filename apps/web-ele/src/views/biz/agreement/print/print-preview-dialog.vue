@@ -1,7 +1,4 @@
 <script lang="ts" setup>
-/**
- * 协议打印预览：按 templateCode 拉模板，可用协议详情或粘贴的数据源 JSON
- */
 import type { AgreeFieldRule } from '../access/field-access';
 import type { AgreementDetail } from '../types';
 import type { AgreePrintData } from './types';
@@ -35,6 +32,10 @@ import {
 } from './runtime/print-paper';
 import { loadPrintTemplateByCode } from './template/template-store';
 
+/**
+ * 协议打印预览：按 templateCode 拉模板，可用协议详情或粘贴的数据源 JSON
+ */
+
 const props = withDefaults(
   defineProps<{
     /** 当前协议详情 */
@@ -63,6 +64,7 @@ const accessStore = useAccessStore();
 
 const loading = ref(false);
 const pdfExporting = ref(false);
+const pdfStage = ref('');
 const previewRef = ref<HTMLElement | null>(null);
 const printData = ref<AgreePrintData | null>(null);
 /** 粘贴的数据源，优先于当前协议详情 */
@@ -78,11 +80,21 @@ let lastPrepared: null | Record<string, any> = null;
 
 /** 弹窗里编辑器用的底稿：覆盖 > 已渲染 > 当前协议 > 样例 */
 const dataJsonInitial = computed(() => {
-  if (dataOverride.value) return dataOverride.value;
+  if (dataOverride.value) return authorizePrintData(dataOverride.value);
   if (printData.value) return printData.value;
-  if (props.detail) return buildAgreePrintData(props.detail);
-  return buildDesignerSamplePrintData();
+  if (props.detail)
+    return authorizePrintData(buildAgreePrintData(props.detail));
+  return authorizePrintData(buildDesignerSamplePrintData());
 });
+
+/** 业务数据入口执行已有字段访问限制，模板只负责输出脱敏。 */
+function authorizePrintData(data: AgreePrintData) {
+  return maskAgreePrintData(
+    data,
+    mergePrintFieldRules(props.fieldRules),
+    accessStore.accessCodes,
+  );
+}
 
 /** 关闭弹窗 */
 function close() {
@@ -93,22 +105,18 @@ function close() {
  * 本次预览/打印实际用的数据
  */
 function resolvePrintData(): AgreePrintData | null {
-  if (dataOverride.value) return dataOverride.value;
-  if (props.detail) return buildAgreePrintData(props.detail);
+  if (dataOverride.value) return authorizePrintData(dataOverride.value);
+  if (props.detail)
+    return authorizePrintData(buildAgreePrintData(props.detail));
   return null;
 }
 
-/** 创建带条件/合并能力的模板实例；正式打印先按字段权限打码 */
+/** 将业务入口允许使用的数据按模板规则排版、计算并输出。 */
 async function createTemplate(data: AgreePrintData) {
   const raw = await loadPrintTemplateByCode(props.templateCode);
-  const masked = maskAgreePrintData(
-    data,
-    mergePrintFieldRules(props.fieldRules),
-    accessStore.accessCodes,
-  );
   const { template: prepared, printData: enriched } = preparePrintTemplate(
     toDocumentTemplate(raw),
-    masked,
+    data,
   );
   // hiprint 初始化时会原地整理表格结构。先保留一份未编译的模板，
   // PDF 导出再基于它创建实例，避免多层表头被二次处理后 rowspan 错位。
@@ -260,13 +268,26 @@ function safePdfFilename(data: AgreePrintData, template: Record<string, any>) {
 
 /** 导出与当前预览完全相同的数据和模板，并强制按实际毫米宽高创建 PDF。 */
 async function onExportPdf() {
+  if (pdfExporting.value) return;
   const data = dataOverride.value || printData.value || resolvePrintData();
   if (!data) {
     ElMessage.warning('暂无协议数据，可点「使用数据 JSON」粘贴');
     return;
   }
   pdfExporting.value = true;
+  const started = performance.now();
+  let stageStarted = started;
+  function finishStage(name: string) {
+    const now = performance.now();
+    if (import.meta.env.DEV)
+      performance.measure(`[打印 PDF] ${name}`, {
+        start: stageStarted,
+        end: now,
+      });
+    stageStarted = now;
+  }
   try {
+    pdfStage.value = '正在准备打印版式…';
     if (!templateInst || !lastPrepared) {
       templateInst = await createTemplate(data);
     }
@@ -282,9 +303,14 @@ async function onExportPdf() {
       exactPaperTemplate,
       renderData,
     );
+    finishStage('版式准备');
     const filename = safePdfFilename(data, exactPaperTemplate);
+    pdfStage.value = '正在生成 PDF，请稍候…';
     const blob = await createPdfBlob(pdfTemplate, renderData, filename);
+    finishStage('PDF 生成');
+    pdfStage.value = '正在下载 PDF…';
     downloadPdfBlob(blob, filename);
+    finishStage('发起下载');
     ElMessage.success(
       `已导出 ${describePrintPaper(readTemplatePaperSpec(exactPaperTemplate))} PDF`,
     );
@@ -292,7 +318,13 @@ async function onExportPdf() {
     console.error(error);
     ElMessage.error(error?.message || 'PDF 导出失败');
   } finally {
+    if (import.meta.env.DEV)
+      performance.measure('[打印 PDF] 总耗时', {
+        start: started,
+        end: performance.now(),
+      });
     pdfExporting.value = false;
+    pdfStage.value = '';
   }
 }
 
@@ -349,7 +381,12 @@ watch(
       <div ref="previewRef" class="agree-print-preview__body"></div>
     </div>
     <template #footer>
-      <ElButton @click="dataJsonOpen = true">使用数据 JSON</ElButton>
+      <span v-if="pdfExporting" role="status" class="agree-print-pdf-status">{{
+        pdfStage
+      }}</span>
+      <ElButton :disabled="pdfExporting" @click="dataJsonOpen = true">
+        使用数据 JSON
+      </ElButton>
       <ElButton @click="close">关闭</ElButton>
       <ElButton
         :loading="pdfExporting"
@@ -358,7 +395,12 @@ watch(
       >
         导出 PDF
       </ElButton>
-      <ElButton type="primary" :loading="loading" @click="onPrint">
+      <ElButton
+        type="primary"
+        :loading="loading"
+        :disabled="pdfExporting"
+        @click="onPrint"
+      >
         打印
       </ElButton>
     </template>
@@ -371,6 +413,13 @@ watch(
 </template>
 
 <style scoped>
+.agree-print-pdf-status {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
 .agree-print-preview {
   min-height: 360px;
   max-height: 72vh;

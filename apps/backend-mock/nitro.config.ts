@@ -1,6 +1,14 @@
+import { existsSync } from 'node:fs';
+import { loadEnvFile } from 'node:process';
+import { fileURLToPath } from 'node:url';
+
 import { defineNitroConfig } from 'nitropack/config';
 
 import errorHandler from './error';
+
+// 同时支持 Vben 自动启动和独立后端启动；仅在服务端读取本地密钥。
+const localEnvFile = fileURLToPath(new URL('.env.local', import.meta.url));
+if (existsSync(localEnvFile)) loadEnvFile(localEnvFile);
 
 process.env.COMPATIBILITY_DATE = new Date().toISOString();
 export default defineNitroConfig({

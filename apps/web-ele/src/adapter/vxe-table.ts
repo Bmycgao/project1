@@ -1,3 +1,8 @@
+/**
+ * Element Plus 应用的表格适配层：设置所有表格的默认值，并注册 CellTag/CellOperation 等单元格显示方式。
+ * 页面先看自己的 gridOptions；只有要调整“所有表格的公共行为”时，再看本文件。
+ * Vben 更底层实现：packages/effects/plugins/src/vxe-table/use-vxe-grid.ts。
+ */
 import type { FormValues } from '@vben/common-ui';
 import type { VxeTableGridOptions } from '@vben/plugins/vxe-table';
 import type { Recordable } from '@vben/types';
@@ -32,8 +37,10 @@ setupVbenVxeTable({
           enabled: false,
         },
         proxyConfig: {
+          // 页面未覆盖时默认自动查数；数据回调由页面的 proxyConfig.ajax.query 提供。
           autoLoad: true,
           response: {
+            // 告诉表格从返回对象的哪个字段取列表/总数；因此部门页返回 { items: list }。
             result: 'items',
             total: 'total',
             list: 'items',
@@ -196,6 +203,8 @@ setupVbenVxeTable({
   useVbenForm,
 });
 
+// 将项目的表单组件类型传给 Vben；实际仍返回 [Grid组件, gridApi控制对象]。
+// 这些泛型主要服务于编辑器提示，页面开发时不必先掌握它们的全部实现。
 export const useVbenVxeGrid = <
   T extends Record<string, any>,
   TFormValues extends FormValues = FormValues,

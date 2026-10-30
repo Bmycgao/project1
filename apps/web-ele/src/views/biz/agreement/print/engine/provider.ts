@@ -123,7 +123,7 @@ export function createAgreePrintProvider(hiprint: any) {
         textType: 'barcode',
         barcodeMode: 'CODE128',
         hideTitle: true,
-        barAutoWidth: true,
+        barAutoWidth: false,
         width: 160,
         height: 40,
         testData: 'XY-2026-001',

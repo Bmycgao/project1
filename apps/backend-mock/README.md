@@ -33,3 +33,9 @@ $ pnpm run build
 ```sh
 node node_modules/vitest/vitest.mjs run apps/backend-mock/utils/agreement-store.test.ts apps/backend-mock/utils/mock-agreement-detail.test.ts apps/backend-mock/utils/workflow-agreement.test.ts
 ```
+
+## 微信小程序登录
+
+配套小程序的真实微信登录、环境变量配置与启动方法，见 [小程序登录联调](./MINIAPP_LOGIN.md)。
+
+小程序底部导航配置见 [MINIAPP_NAVIGATION.md](./MINIAPP_NAVIGATION.md)。

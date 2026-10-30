@@ -56,9 +56,13 @@ export function listPrintElements(
       (el: Record<string, any>, elementIndex: number) => {
         const type = String(el?.printElementType?.type || 'unknown');
         const field = el?.options?.field as string | undefined;
-        const title = String(
+        const rawTitle = String(
           el?.options?.title || el?.printElementType?.title || '',
         );
+        const title =
+          el?.options?.agreeFormGrid && rawTitle === '自由表单'
+            ? '固定表单'
+            : rawTitle;
         const textType = el?.options?.textType as string | undefined;
         const typeLabel = textType ? `${type}(${textType})` : type;
         const label = `#${elementIndex + 1} ${title || field || typeLabel} [${typeLabel}]`;
@@ -224,12 +228,12 @@ export function normalizePrintAlign(raw: unknown): 'center' | 'left' | 'right' {
  */
 export function printAlignCss(raw: unknown) {
   const align = normalizePrintAlign(raw);
-  const justify =
-    align === 'center'
-      ? 'center'
-      : align === 'right'
-        ? 'flex-end'
-        : 'flex-start';
+  let justify;
+  if (align === 'center') {
+    justify = 'center';
+  } else {
+    justify = align === 'right' ? 'flex-end' : 'flex-start';
+  }
   return `text-align:${align};justify-content:${justify}`;
 }
 
@@ -997,7 +1001,7 @@ const TOOLBOX_TYPE_META: Record<
     type: 'longText',
   },
   table: { tid: 'agreePrintModule.table', title: '明细表', type: 'table' },
-  formGrid: { tid: 'agreePrintModule.table', title: '自由表单', type: 'table' },
+  formGrid: { tid: 'agreePrintModule.table', title: '固定表单', type: 'table' },
   qrcode: { tid: 'agreePrintModule.qrcode', title: '文本', type: 'text' },
   barcode: { tid: 'agreePrintModule.barcode', title: '文本', type: 'text' },
   hline: { tid: 'agreePrintModule.hline', title: '横线', type: 'hline' },
@@ -1050,11 +1054,12 @@ export function sanitizePrintTemplate(template: Record<string, any>) {
  * @param columns options.columns
  */
 function normalizeTableColumns(columns: unknown): Record<string, any>[][] {
-  const rows: unknown[] = Array.isArray(columns)
-    ? Array.isArray(columns[0])
-      ? columns
-      : [columns]
-    : [[]];
+  let rows: unknown[];
+  if (Array.isArray(columns)) {
+    rows = Array.isArray(columns[0]) ? columns : [columns];
+  } else {
+    rows = [[]];
+  }
   const next = rows
     .filter((row): row is unknown[] => Array.isArray(row))
     .map((row, ri) => {
@@ -1215,7 +1220,7 @@ export function buildToolboxPrintElement(
         textType: 'barcode',
         barcodeMode: 'CODE128',
         hideTitle: true,
-        barAutoWidth: true,
+        barAutoWidth: false,
         width: 160,
         height: 40,
         testData: 'XY-2026-001',
@@ -1305,6 +1310,24 @@ export function buildBoundPrintElement(
   }
   const isQr = item.textType === 'qrcode';
   const isBar = item.textType === 'barcode';
+  let elementHeight;
+  if (isQr) {
+    elementHeight = 50;
+  } else {
+    elementHeight = isBar ? 35 : 16;
+  }
+  let elementWidth;
+  if (isQr) {
+    elementWidth = 50;
+  } else {
+    elementWidth = isBar ? 140 : 200;
+  }
+  let elementType;
+  if (isQr) {
+    elementType = 'qrcode';
+  } else {
+    elementType = isBar ? 'barcode' : 'dynamicText';
+  }
   return {
     options: {
       left,
@@ -1312,8 +1335,8 @@ export function buildBoundPrintElement(
       title: item.text,
       field: item.field,
       testData: item.testData || '',
-      height: isQr ? 50 : isBar ? 35 : 16,
-      width: isQr ? 50 : isBar ? 140 : 200,
+      height: elementHeight,
+      width: elementWidth,
       fontSize: 10,
       ...(isQr ? { hideTitle: true, textType: 'qrcode', qrcodeLevel: 1 } : {}),
       ...(isBar
@@ -1321,12 +1344,12 @@ export function buildBoundPrintElement(
             hideTitle: true,
             textType: 'barcode',
             barcodeMode: 'CODE128',
-            barAutoWidth: true,
+            barAutoWidth: false,
           }
         : {}),
     },
     printElementType: {
-      ...typeMeta(isQr ? 'qrcode' : isBar ? 'barcode' : 'dynamicText'),
+      ...typeMeta(elementType),
     },
   };
 }

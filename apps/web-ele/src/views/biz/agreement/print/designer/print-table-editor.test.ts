@@ -3,6 +3,7 @@ import { createApp, h, nextTick, shallowRef } from 'vue';
 import { ElMessage } from 'element-plus';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { requireDefined } from '../../../../../../../shared/require-defined';
 import {
   buildToolboxPrintElement,
   listPrintElements,
@@ -45,7 +46,7 @@ describe('table editor transaction', () => {
       render: () =>
         h(PrintInspector, {
           templateJson: current.value,
-          selectedKey: listPrintElements(current.value)[0]!.key,
+          selectedKey: requireDefined(listPrintElements(current.value)[0]).key,
           sampleData: {
             rewardItems: [{ name: '签约奖励', amount: 1234 }],
           } as any,
@@ -67,23 +68,29 @@ describe('table editor transaction', () => {
         '[data-key="table-rewardItems"] .el-tree-node__content',
       );
       expect(source).not.toBeNull();
-      source!.click();
+      requireDefined(source).click();
       await flush();
       expect(
         document.querySelector('[aria-label="表格样例预览"]')?.textContent,
       ).toContain('签约奖励');
       expect(
         [...document.querySelectorAll('[role="dialog"]')].some(
-          (el) => el.getAttribute('aria-label') === '编辑表格 · 明细表',
+          (el) => el.getAttribute('aria-label') === '编辑明细表结构',
         ),
       ).toBe(true);
       expect(patches).toHaveLength(0);
+      const scope = document.querySelector(
+        '[role="dialog"] [aria-label="编辑范围"]',
+      )?.textContent;
+      expect(scope).toContain('奖励补贴');
+      expect(scope).toContain('草稿');
+      expect(scope).toContain('所有明细行');
     };
-    await button('编辑明细表');
+    await button('编辑明细表结构');
     await chooseSource();
     await button('取消');
     expect(JSON.stringify(current.value)).toBe(original);
-    await button('编辑明细表');
+    await button('编辑明细表结构');
     await chooseSource();
     await button('应用到画布');
     expect(patches).toHaveLength(1);
@@ -134,7 +141,7 @@ describe('table editor transaction', () => {
       render: () =>
         h(PrintInspector, {
           templateJson: current.value,
-          selectedKey: listPrintElements(current.value)[0]!.key,
+          selectedKey: requireDefined(listPrintElements(current.value)[0]).key,
           sampleData: {
             rewardItems: [{ name: '签约奖励', amount: 1234 }],
           } as any,
@@ -150,7 +157,7 @@ describe('table editor transaction', () => {
       host.remove();
     });
     await flush();
-    await button('编辑明细表');
+    await button('编辑明细表结构');
     expect(
       document.querySelector('[aria-label="表格样例预览"]')?.textContent,
     ).toContain('签约奖励');
@@ -162,14 +169,16 @@ describe('table editor transaction', () => {
     ).toContain('新列');
     await button('取消');
     expect(JSON.stringify(current.value)).toBe(original);
-    await button('编辑明细表');
+    await button('编辑明细表结构');
     expect(
       document.querySelector('[aria-label="表格样例预览"]')?.textContent,
     ).not.toContain('新列');
     await button('添加数据列');
-    const footerTab = [
-      ...document.querySelectorAll<HTMLElement>('[role="tab"]'),
-    ].find((el) => el.textContent?.trim() === '合计与备注')!;
+    const footerTab = requireDefined(
+      [...document.querySelectorAll<HTMLElement>('[role="tab"]')].find(
+        (el) => el.textContent?.trim() === '合计与备注',
+      ),
+    );
     footerTab.click();
     await flush();
     await button('添加备注行');
@@ -221,7 +230,7 @@ describe('table editor transaction', () => {
             inspector = value;
           },
           templateJson: current.value,
-          selectedKey: listPrintElements(current.value)[0]!.key,
+          selectedKey: requireDefined(listPrintElements(current.value)[0]).key,
           sampleData: {
             rewardItems: [{ name: '签约奖励', amount: 1234 }],
           } as any,
@@ -239,7 +248,7 @@ describe('table editor transaction', () => {
     await flush();
     expect(highlights).toEqual([]);
     const dialog = [...document.querySelectorAll('[role="dialog"]')].find(
-      (el) => el.getAttribute('aria-label') === '编辑表格 · 明细表',
+      (el) => el.getAttribute('aria-label') === '编辑明细表结构',
     );
     expect(dialog).toBeTruthy();
     expect(dialog?.textContent).toContain('点选表头编辑');

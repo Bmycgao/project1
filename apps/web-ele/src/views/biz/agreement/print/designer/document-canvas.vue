@@ -1,5 +1,4 @@
 <script setup lang="ts">
-/* oxlint-disable typescript/no-non-null-assertion -- Existing canvas code checks selection and document invariants before accessing these values. */
 import type { AgreePrintData } from '../types';
 import type {
   CanvasFieldDropPayload,
@@ -13,28 +12,38 @@ import {
   onBeforeUnmount,
   onMounted,
   ref,
+  useId,
   watch,
 } from 'vue';
 
+import { requireDefined } from '../../../../../../../shared/require-defined';
 import { cloneJson } from '../../clone';
 import {
   adjustDocumentElementSpacing,
   documentElementSpacing,
   documentRowMembers,
-  documentWidthLimits,
   MAX_DOCUMENT_SPACE_PT,
   moveDocumentElement,
   resizeDocumentColumns,
-  setDocumentElementWidth,
-  shiftDocumentElement,
 } from '../runtime/document-layout';
 import { renderDocument } from '../runtime/document-renderer';
 import { preparePrintTemplate } from '../runtime/prepare-template';
 import { fieldInFilterExpr } from '../runtime/print-row-filter';
 import {
+  minimumRowHeight,
+  rowHeightOverride,
+  setRowHeightOverride,
+} from '../runtime/print-row-height';
+import {
+  normalizeAgreeBodyCellMerges,
+  normalizeAgreeBodyHMerges,
+} from '../runtime/print-table-runtime';
+import {
   AGREE_PRINT_FIELD_DND,
   getAgreePrintHtml5Drag,
+  listLeafTableCells,
 } from '../template/print-element-meta';
+import { placeCellToolbar } from './place-cell-toolbar';
 import { usePalettePointerDrag } from './use-palette-pointer-drag';
 
 const props = defineProps<{
@@ -86,6 +95,7 @@ const emit = defineEmits<{
       shiftKey: boolean;
     },
   ];
+  tableBodySelectionClear: [];
   tableFooterCellSelect: [{ cellIndex: number; key: string; rowIndex: number }];
   tableHeaderCellSelect: [
     {
@@ -105,7 +115,182 @@ const emit = defineEmits<{
 }>();
 const host = ref<HTMLElement | null>(null);
 const shell = ref<HTMLElement | null>(null);
-const cellToolbarBox = ref<null | { left: number; top: number }>(null);
+const cellToolbar = ref<HTMLElement | null>(null);
+const rowHeightPanel = ref<HTMLElement | null>(null);
+const rowHeightOpen = ref(false);
+const rowHeightPanelId = useId();
+const cellToolbarBox = ref<null | {
+  left: number;
+  maxHeight: number;
+  maxWidth: number;
+  top: number;
+}>(null);
+const rowHeightPanelBox = ref<typeof cellToolbarBox.value>(null);
+const rowHeightTarget = ref<null | {
+  col: number;
+  key: string;
+  record: number;
+  rowKey?: string;
+  templateRow?: number;
+}>(null);
+const cellSelectionSize = computed(() => {
+  const selection = props.bodyCellSelection;
+  return {
+    rows: selection ? Math.abs(selection.endRow - selection.startRow) + 1 : 1,
+    cols: selection ? Math.abs(selection.endCol - selection.startCol) + 1 : 1,
+  };
+});
+const singleCellSelected = computed(
+  () =>
+    cellSelectionSize.value.rows === 1 && cellSelectionSize.value.cols === 1,
+);
+const cellSelectionLabel = computed(() => {
+  const selection = props.bodyCellSelection;
+  if (selection && !singleCellSelected.value)
+    return `已选 ${cellSelectionSize.value.rows} 行 × ${cellSelectionSize.value.cols} 列`;
+  const row = selection?.endRow ?? rowHeightTarget.value?.record ?? 0;
+  const col = selection?.endCol ?? rowHeightTarget.value?.col ?? 0;
+  return `第 ${row + 1} 行 · 第 ${col + 1} 列`;
+});
+const bodyCellActions = computed(() => {
+  const selection = props.bodyCellSelection;
+  if (!selection || !props.templateJson)
+    return { split: false, formula: false };
+  const [p, e] = selection.key.split(':').map(Number);
+  const options =
+    props.templateJson.panels?.[requireDefined(p)]?.printElements?.[
+      requireDefined(e)
+    ]?.options || {};
+  const leaves = listLeafTableCells(options.columns);
+  const row = selection.startRow;
+  const col = selection.startCol;
+  const merged = normalizeAgreeBodyCellMerges(
+    options.agreeBodyCellMerges,
+    leaves.length,
+  ).some(
+    (rule) =>
+      row >= rule.startRow &&
+      row < rule.startRow + rule.rowspan &&
+      col >= rule.startCol &&
+      col < rule.startCol + rule.colspan,
+  );
+  const rawRow = preparedData.value[options.field]?.[row] || {};
+  const horizontal = normalizeAgreeBodyHMerges(
+    options.agreeBodyHMerges,
+    leaves.length,
+  ).some(
+    (rule) =>
+      (rule.rowIndex === row ||
+        (rule.when &&
+          Object.keys(rule.when).length > 0 &&
+          Object.entries(rule.when).every(
+            ([key, value]) => String(rawRow[key] ?? '').trim() === value,
+          ))) &&
+      (rule.spans[col] ?? 0) > 1,
+  );
+  return {
+    split: singleCellSelected.value && (merged || horizontal),
+    formula: singleCellSelected.value && !!leaves[col]?.field,
+  };
+});
+const rowHeightOptions = computed(() => {
+  const target = rowHeightTarget.value;
+  if (!target || target.key !== props.selectedKey) return null;
+  const [p, e] = target.key.split(':').map(Number);
+  const element =
+    props.templateJson?.panels?.[requireDefined(p)]?.printElements?.[
+      requireDefined(e)
+    ];
+  if (element?.printElementType?.type !== 'table') return null;
+  if (
+    element.options.agreeFormGrid &&
+    !element.options.agreeFormGrid.rows[target.templateRow ?? -1]
+  )
+    return null;
+  return element.options;
+});
+const selectedTemplateRow = computed(
+  () =>
+    rowHeightOptions.value?.agreeFormGrid?.rows[
+      rowHeightTarget.value?.templateRow ?? -1
+    ],
+);
+const isRecordHeight = computed(
+  () =>
+    !!rowHeightOptions.value &&
+    (!rowHeightOptions.value.agreeFormGrid ||
+      !!selectedTemplateRow.value?.source),
+);
+const selectedRowOverride = computed(() =>
+  rowHeightOverride(
+    selectedTemplateRow.value?.source
+      ? selectedTemplateRow.value.recordHeights
+      : rowHeightOptions.value?.agreeBodyRowHeights,
+    rowHeightTarget.value?.rowKey,
+  ),
+);
+const canAdjustRowHeight = computed(
+  () => !isRecordHeight.value || !!rowHeightTarget.value?.rowKey,
+);
+const selectedRowHeight = computed(() => {
+  const options = rowHeightOptions.value;
+  return (
+    selectedRowOverride.value ??
+    (options?.agreeFormGrid
+      ? minimumRowHeight(
+          options.agreeFormGrid.rows[rowHeightTarget.value?.templateRow ?? -1]
+            ?.height,
+          22,
+        )
+      : minimumRowHeight(options?.tableBodyRowHeight))
+  );
+});
+
+function saveSelectedRowHeight(height?: number) {
+  const target = rowHeightTarget.value;
+  if (!target || !props.templateJson || !canAdjustRowHeight.value) return;
+  const next = cloneJson(props.templateJson);
+  const [p, e] = target.key.split(':').map(Number);
+  const options =
+    next.panels[requireDefined(p)].printElements[requireDefined(e)].options;
+  if (options.agreeFormGrid) {
+    const row = options.agreeFormGrid.rows[target.templateRow ?? -1];
+    if (!row) return;
+    if (row.source && target.rowKey) {
+      const heights = setRowHeightOverride(
+        row.recordHeights,
+        target.rowKey,
+        height,
+      );
+      if (Object.keys(heights).length > 0) row.recordHeights = heights;
+      else delete row.recordHeights;
+    } else if (height !== undefined) row.height = height;
+  } else if (target.rowKey) {
+    const heights = setRowHeightOverride(
+      options.agreeBodyRowHeights,
+      target.rowKey,
+      height,
+    );
+    if (Object.keys(heights).length > 0) options.agreeBodyRowHeights = heights;
+    else delete options.agreeBodyRowHeights;
+  }
+  commitLayout(next, target.key);
+}
+
+function changeSelectedRowHeight(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const target = rowHeightTarget.value;
+  if (
+    !target ||
+    !props.templateJson ||
+    !input.checkValidity() ||
+    !input.value
+  ) {
+    input.value = String(selectedRowHeight.value);
+    return;
+  }
+  saveSelectedRowHeight(Number(input.value));
+}
 const selectionBox = ref<null | { left: number; top: number }>(null);
 const guide = ref<null | {
   height: number;
@@ -116,12 +301,12 @@ const guide = ref<null | {
   width: number;
 }>(null);
 const busy = ref(false);
-const renderError = ref('');
+const errorMessage = ref('');
 const defaultHint =
-  '选中后拖动「调间距」或「排序」。点表头打开编辑明细表；表体可拖选合并/拆分。';
+  '选中元素后可拖动手柄调整位置；点表头编辑明细表，表体可拖选合并或拆分。';
 const hint = ref(defaultHint);
 let generation = 0;
-let preparedData: Record<string, any> = {};
+const preparedData = ref<Record<string, any>>({});
 let draggedKey = '';
 let draggedPaper: HTMLElement | null = null;
 let dragOriginY = 0;
@@ -138,16 +323,6 @@ const selection = computed(() => {
     ? { peers, index, box: item.element.options.agreeDocument }
     : null;
 });
-const spacingMm = computed(() =>
-  props.templateJson
-    ? Math.round(
-        ((documentElementSpacing(props.templateJson, props.selectedKey) *
-          25.4) /
-          72) *
-          10,
-      ) / 10
-    : 0,
-);
 const dividers = ref<
   Array<{
     height: number;
@@ -174,60 +349,6 @@ function commitLayout(next: Record<string, any>, key = props.selectedKey) {
   emit('update:templateJson', next);
   emit('update:selectedKey', key);
 }
-function toolbarWidth(event: Event) {
-  if (props.templateJson)
-    commitLayout(
-      setDocumentElementWidth(
-        props.templateJson,
-        props.selectedKey,
-        Number((event.target as HTMLInputElement).value),
-      ),
-    );
-}
-function toolbarSpacing(value: number) {
-  if (props.templateJson)
-    commitLayout(
-      adjustDocumentElementSpacing(
-        props.templateJson,
-        props.selectedKey,
-        (value * 72) / 25.4 -
-          documentElementSpacing(props.templateJson, props.selectedKey),
-      ),
-    );
-}
-function toolbarAlign(align: 'center' | 'left' | 'right') {
-  if (!props.templateJson || selection.value?.peers.length !== 1) return;
-  const next = cloneJson(props.templateJson);
-  const [p, i] = props.selectedKey.split(':').map(Number);
-  const box = next.panels[p!].printElements[i!].options.agreeDocument;
-  box.left =
-    align === 'right'
-      ? 100 - box.width
-      : align === 'center'
-        ? (100 - box.width) / 2
-        : 0;
-  commitLayout(next);
-}
-function toolbarShift(direction: -1 | 1) {
-  if (props.templateJson)
-    commitLayout(
-      shiftDocumentElement(props.templateJson, props.selectedKey, direction),
-    );
-}
-function toolbarSeparate() {
-  const peer = selection.value?.peers.find(
-    (item) => item.key !== props.selectedKey,
-  );
-  if (peer && props.templateJson)
-    commitLayout(
-      moveDocumentElement(
-        props.templateJson,
-        props.selectedKey,
-        peer.key,
-        'after',
-      ),
-    );
-}
 function startResize(
   event: PointerEvent,
   divider: (typeof dividers.value)[number],
@@ -248,7 +369,7 @@ function startResize(
     leftKey: divider.leftKey,
     rightKey: divider.rightKey,
     startX: event.clientX,
-    rowWidth: left.parentElement!.getBoundingClientRect().width,
+    rowWidth: requireDefined(left.parentElement).getBoundingClientRect().width,
     delta: 0,
     template: props.templateJson,
     left,
@@ -271,10 +392,10 @@ function moveResize(event: PointerEvent) {
     r.delta,
   );
   const peers = documentRowMembers(next, r.leftKey);
-  const a = peers.find((item) => item.key === r.leftKey)!.element.options
-    .agreeDocument;
-  const b = peers.find((item) => item.key === r.rightKey)!.element.options
-    .agreeDocument;
+  const a = requireDefined(peers.find((item) => item.key === r.leftKey)).element
+    .options.agreeDocument;
+  const b = requireDefined(peers.find((item) => item.key === r.rightKey))
+    .element.options.agreeDocument;
   r.left.style.flexBasis = r.left.style.width = `${a.width}%`;
   r.right.style.flexBasis = r.right.style.width = `${b.width}%`;
   const box = r.left.getBoundingClientRect();
@@ -333,30 +454,103 @@ function keyboardResize(
 
 function updateSelectionBox() {
   dividers.value = [];
-  cellToolbarBox.value = null;
   const cellSelection = props.bodyCellSelection;
-  if (cellSelection && shell.value) {
+  const rowTarget = rowHeightTarget.value;
+  let toolbarBox: typeof cellToolbarBox.value = null;
+  let heightPanelBox: typeof rowHeightPanelBox.value = null;
+  if ((cellSelection || rowTarget) && shell.value) {
     const element = [
       ...(host.value?.querySelectorAll<HTMLElement>('[data-doc-key]') || []),
-    ].filter((el) => el.dataset.docKey === cellSelection.key);
+    ].filter(
+      (el) => el.dataset.docKey === (cellSelection?.key || rowTarget?.key),
+    );
     const target = element
       .flatMap((el) => [
         ...el.querySelectorAll<HTMLElement>('td[data-doc-record]'),
       ])
-      .find(
-        (td) =>
-          Number(td.dataset.docRecord) === cellSelection.endRow &&
-          Number(td.dataset.docCol) === cellSelection.endCol,
-      );
+      .find((td) => {
+        let matchesRow;
+        if (cellSelection) {
+          matchesRow = Number(td.dataset.docRecord) === cellSelection.endRow;
+        } else {
+          matchesRow = rowTarget?.rowKey
+            ? td.dataset.docRowKey === rowTarget.rowKey &&
+              (rowTarget.templateRow === undefined ||
+                Number(td.dataset.docTemplateRow) === rowTarget.templateRow)
+            : Number(td.dataset.docRecord) === rowTarget?.record;
+        }
+        return (
+          matchesRow &&
+          Number(td.dataset.docCol) ===
+            (cellSelection?.endCol ?? rowTarget?.col)
+        );
+      });
     if (target) {
-      const rect = target.getBoundingClientRect();
+      let rect: Pick<DOMRect, 'bottom' | 'left' | 'right' | 'top'> =
+        target.getBoundingClientRect();
       const outer = shell.value.getBoundingClientRect();
-      cellToolbarBox.value = {
-        left: Math.max(0, Math.min(rect.left - outer.left, outer.width - 260)),
-        top: rect.bottom - outer.top + 4,
-      };
+      const bounds = visibleCanvasBounds();
+      const size = cellToolbar.value?.getBoundingClientRect();
+      if (cellSelection && !singleCellSelected.value) {
+        const fragment = target.closest('[data-doc-key]');
+        const cells = [
+          ...(fragment?.querySelectorAll('.document-cell-selected') || []),
+        ].map((cell) => cell.getBoundingClientRect());
+        const top = Math.min(...cells.map((cell) => cell.top));
+        const bottom = Math.max(...cells.map((cell) => cell.bottom));
+        if (
+          cells.length > 0 &&
+          bottom - top + (size?.height || 38) + 16 <= bounds.bottom - bounds.top
+        )
+          rect = {
+            ...rect,
+            top,
+            bottom,
+            left: Math.min(...cells.map((cell) => cell.left)),
+            right: Math.max(...cells.map((cell) => cell.right)),
+          };
+      }
+      if (
+        rect.bottom >= bounds.top &&
+        rect.top <= bounds.bottom &&
+        rect.right >= bounds.left &&
+        rect.left <= bounds.right
+      ) {
+        const placed = placeCellToolbar(rect, bounds, {
+          width: size?.width || 360,
+          height: size?.height || 38,
+        });
+        toolbarBox = {
+          ...placed,
+          left: placed.left - outer.left,
+          top: placed.top - outer.top,
+        };
+        if (rowHeightOpen.value) {
+          const panelSize = rowHeightPanel.value?.getBoundingClientRect();
+          const panel = placeCellToolbar(
+            {
+              left: placed.left,
+              right: placed.left + (size?.width || 360),
+              top: placed.top,
+              bottom: placed.top + (size?.height || 38),
+            },
+            bounds,
+            {
+              width: panelSize?.width || 320,
+              height: panelSize?.height || 190,
+            },
+          );
+          heightPanelBox = {
+            ...panel,
+            left: panel.left - outer.left,
+            top: panel.top - outer.top,
+          };
+        }
+      }
     }
   }
+  cellToolbarBox.value = toolbarBox;
+  rowHeightPanelBox.value = heightPanelBox;
   const selected = [
     ...(host.value?.querySelectorAll<HTMLElement>('[data-doc-key]') || []),
   ].find((el) => el.dataset.docKey === props.selectedKey);
@@ -373,8 +567,8 @@ function updateSelectionBox() {
     ) || []),
   ];
   for (let i = 0; i < members.length - 1; i++) {
-    const left = members[i]!;
-    const right = members[i + 1]!;
+    const left = requireDefined(members[i]);
+    const right = requireDefined(members[i + 1]);
     const a = left.getBoundingClientRect();
     const b = right.getBoundingClientRect();
     const peer = selection.value?.peers.find(
@@ -390,8 +584,8 @@ function updateSelectionBox() {
       left: (a.right + b.left) / 2 - outer.left - 5,
       top: Math.min(a.top, b.top) - outer.top,
       height: Math.max(a.bottom, b.bottom) - Math.min(a.top, b.top),
-      leftKey: left.dataset.docKey!,
-      rightKey: right.dataset.docKey!,
+      leftKey: requireDefined(left.dataset.docKey),
+      rightKey: requireDefined(right.dataset.docKey),
       value: peer.element.options.agreeDocument.width,
     });
   }
@@ -413,6 +607,61 @@ function updateSelectionBox() {
   };
 }
 
+function visibleCanvasBounds() {
+  const bounds = {
+    left: 0,
+    top: 0,
+    right: window.innerWidth,
+    bottom: window.innerHeight,
+  };
+  for (
+    let parent = shell.value?.parentElement;
+    parent;
+    parent = parent.parentElement
+  ) {
+    const style = getComputedStyle(parent);
+    const rect = parent.getBoundingClientRect();
+    if (
+      rect.width &&
+      /(auto|scroll|hidden|clip)/.test(style.overflowX || style.overflow)
+    ) {
+      bounds.left = Math.max(bounds.left, rect.left);
+      bounds.right = Math.min(bounds.right, rect.right);
+    }
+    if (
+      rect.height &&
+      /(auto|scroll|hidden|clip)/.test(style.overflowY || style.overflow)
+    ) {
+      bounds.top = Math.max(bounds.top, rect.top);
+      bounds.bottom = Math.min(bounds.bottom, rect.bottom);
+    }
+  }
+  return {
+    left: bounds.left + 8,
+    top: bounds.top + 8,
+    right: bounds.right - 8,
+    bottom: bounds.bottom - 8,
+  };
+}
+
+let selectionFrame = 0;
+function scheduleSelectionBox() {
+  if (selectionFrame) return;
+  selectionFrame = requestAnimationFrame(() => {
+    selectionFrame = 0;
+    updateSelectionBox();
+  });
+}
+
+function closeRowHeightOnOutsideClick(event: PointerEvent) {
+  const target = event.target as Node;
+  if (
+    !cellToolbar.value?.contains(target) &&
+    !rowHeightPanel.value?.contains(target)
+  )
+    rowHeightOpen.value = false;
+}
+
 /**
  * 设计器专用：往表头格塞 ▾，正式打印走另一份 renderDocument，不会带上按钮
  * @param td 表头格
@@ -432,6 +681,8 @@ function mountHeaderFilterButton(td: HTMLElement, canFilter: boolean) {
     btn.className = 'document-header-filter';
     btn.dataset.docHeaderFilter = '1';
     btn.setAttribute('aria-label', '筛选本列');
+    btn.setAttribute('aria-haspopup', 'dialog');
+    btn.title = '筛选本列';
     btn.textContent = '▾';
     btn.addEventListener('pointerdown', (event) => event.stopPropagation());
     btn.addEventListener('click', (event) => {
@@ -473,35 +724,99 @@ function selectOutline() {
       'document-selected',
       el.dataset.docKey === props.selectedKey,
     );
+    const activeCell =
+      rowHeightTarget.value?.key === el.dataset.docKey ||
+      props.bodyCellSelection?.key === el.dataset.docKey ||
+      props.headerCellSelection?.key === el.dataset.docKey;
+    el.classList.toggle('document-cell-active', activeCell);
+    el.classList.toggle('document-table-selected', !!el.querySelector('table'));
     el.draggable = false;
     if (el.firstElementChild instanceof HTMLElement)
       el.firstElementChild.draggable = false;
     el.title =
       '拖到空白处调间距；拖到其他内容上排序。也可使用选中后的拖动手柄。';
-    el.querySelectorAll<HTMLElement>('td[data-doc-col]').forEach((td) => {
-      const selection = props.bodyCellSelection;
-      const r = Number(td.dataset.docRecord);
-      const c = Number(td.dataset.docCol);
-      const inSelection =
-        !!selection &&
-        selection.key === el.dataset.docKey &&
-        r >= Math.min(selection.startRow, selection.endRow) &&
-        r <= Math.max(selection.startRow, selection.endRow) &&
-        c >= Math.min(selection.startCol, selection.endCol) &&
-        c <= Math.max(selection.startCol, selection.endCol);
-      td.classList.toggle(
-        'document-cell-selected',
-        inSelection ||
-          (el.dataset.docKey === props.highlightTableKey &&
-            c === props.highlightColIndex),
-      );
-    });
+    el.querySelectorAll<HTMLTableCellElement>('td[data-doc-col]').forEach(
+      (td) => {
+        const selection = props.bodyCellSelection;
+        const r = Number(td.dataset.docRecord);
+        const c = Number(td.dataset.docCol);
+        const target = rowHeightTarget.value;
+        const formSelected =
+          !selection &&
+          !!target &&
+          target.key === el.dataset.docKey &&
+          r === target.record &&
+          c === target.col;
+        const inSelection =
+          formSelected ||
+          (!!selection &&
+            selection.key === el.dataset.docKey &&
+            r >= Math.min(selection.startRow, selection.endRow) &&
+            r <= Math.max(selection.startRow, selection.endRow) &&
+            c >= Math.min(selection.startCol, selection.endCol) &&
+            c <= Math.max(selection.startCol, selection.endCol));
+        td.classList.toggle('document-cell-selected', inSelection);
+        td.classList.toggle(
+          'document-cell-single',
+          inSelection && singleCellSelected.value,
+        );
+        td.classList.toggle(
+          'document-cell-range',
+          inSelection && !singleCellSelected.value,
+        );
+        td.classList.toggle(
+          'document-column-highlight',
+          el.dataset.docKey === props.highlightTableKey &&
+            c === props.highlightColIndex,
+        );
+        const range = singleCellSelected.value ? null : selection;
+        td.classList.toggle(
+          'is-range-top',
+          !!range &&
+            inSelection &&
+            r === Math.min(range.startRow, range.endRow),
+        );
+        td.classList.toggle(
+          'is-range-bottom',
+          !!range &&
+            inSelection &&
+            r + td.rowSpan - 1 >= Math.max(range.startRow, range.endRow),
+        );
+        td.classList.toggle(
+          'is-range-left',
+          !!range &&
+            inSelection &&
+            c === Math.min(range.startCol, range.endCol),
+        );
+        td.classList.toggle(
+          'is-range-right',
+          !!range &&
+            inSelection &&
+            c + td.colSpan - 1 >= Math.max(range.startCol, range.endCol),
+        );
+        const heightTarget = rowHeightTarget.value;
+        td.parentElement?.classList.toggle(
+          'document-row-height-selected',
+          rowHeightOpen.value &&
+            !!heightTarget &&
+            td.dataset.docRecord !== undefined &&
+            heightTarget.key === el.dataset.docKey &&
+            (heightTarget.rowKey
+              ? td.dataset.docRowKey === heightTarget.rowKey &&
+                (heightTarget.templateRow === undefined ||
+                  Number(td.dataset.docTemplateRow) ===
+                    heightTarget.templateRow)
+              : r === heightTarget.record),
+        );
+      },
+    );
     const [panelIndex, elementIndex] = String(el.dataset.docKey || '')
       .split(':')
       .map(Number);
     const tableOptions =
-      props.templateJson?.panels?.[panelIndex!]?.printElements?.[elementIndex!]
-        ?.options || {};
+      props.templateJson?.panels?.[requireDefined(panelIndex)]?.printElements?.[
+        requireDefined(elementIndex)
+      ]?.options || {};
     const filterExpr = String(tableOptions.agreeRowFilter || '');
     el.querySelectorAll<HTMLElement>('td[data-doc-header]').forEach((td) => {
       const from = Number(td.dataset.docLeafStart);
@@ -538,20 +853,24 @@ watch(
     const version = ++generation;
     if (!props.templateJson) return;
     busy.value = true;
-    renderError.value = '';
+    errorMessage.value = '';
     try {
       const prepared = preparePrintTemplate(
         props.templateJson,
         (props.sampleData || {}) as AgreePrintData,
       );
-      const html = await renderDocument(prepared.template, prepared.printData);
+      const html = await renderDocument(prepared.template, prepared.printData, {
+        design: true,
+      });
       if (version !== generation) return;
-      preparedData = prepared.printData;
+      preparedData.value = prepared.printData;
       await nextTick();
       host.value?.replaceChildren(html);
       selectOutline();
     } catch (error) {
-      if (version === generation) renderError.value = (error as Error).message;
+      if (version === generation)
+        errorMessage.value =
+          error instanceof Error ? error.message : String(error);
     } finally {
       if (version === generation) busy.value = false;
     }
@@ -560,7 +879,11 @@ watch(
 );
 watch(
   () => props.selectedKey,
-  () => void nextTick(selectOutline),
+  () => {
+    if (rowHeightTarget.value?.key !== props.selectedKey)
+      rowHeightTarget.value = null;
+    void nextTick(selectOutline);
+  },
 );
 watch(
   () => props.zoom,
@@ -568,10 +891,12 @@ watch(
 );
 watch(
   () => [
+    rowHeightTarget.value,
     props.bodyCellSelection,
     props.headerCellSelection,
     props.highlightColIndex,
     props.highlightTableKey,
+    rowHeightOpen.value,
   ],
   selectOutline,
   { deep: true },
@@ -582,16 +907,34 @@ function cancelDrag(event: KeyboardEvent) {
     dragEnd();
   }
 }
+watch(cellToolbar, (element, previous) => {
+  if (previous) resizeObserver?.unobserve(previous);
+  if (element) resizeObserver?.observe(element);
+  if (element) void nextTick(updateSelectionBox);
+});
+watch(rowHeightPanel, (element, previous) => {
+  if (previous) resizeObserver?.unobserve(previous);
+  if (element) resizeObserver?.observe(element);
+  if (element) void nextTick(updateSelectionBox);
+});
+watch(rowHeightOpen, () => void nextTick(updateSelectionBox));
 onMounted(() => {
   resizeObserver = new ResizeObserver(updateSelectionBox);
   if (host.value) resizeObserver.observe(host.value);
   window.addEventListener('keydown', cancelDrag);
+  window.addEventListener('resize', scheduleSelectionBox);
+  window.addEventListener('scroll', scheduleSelectionBox, true);
+  window.addEventListener('pointerdown', closeRowHeightOnOutsideClick);
 });
 onBeforeUnmount(() => {
   generation++;
   cancelResize();
   resizeObserver?.disconnect();
   window.removeEventListener('keydown', cancelDrag);
+  window.removeEventListener('resize', scheduleSelectionBox);
+  window.removeEventListener('scroll', scheduleSelectionBox, true);
+  window.removeEventListener('pointerdown', closeRowHeightOnOutsideClick);
+  if (selectionFrame) cancelAnimationFrame(selectionFrame);
 });
 
 type DragPoint = PalettePoint & {
@@ -603,6 +946,8 @@ function cellAt(event: { target: EventTarget | null }) {
   return (event.target as HTMLElement)?.closest<HTMLElement>('[data-doc-key]');
 }
 function click(event: MouseEvent) {
+  rowHeightOpen.value = false;
+  rowHeightTarget.value = null;
   const cell = cellAt(event);
   const paper = (event.target as HTMLElement).closest<HTMLElement>(
     '[data-panel-index]',
@@ -612,13 +957,15 @@ function click(event: MouseEvent) {
     emit('update:selectedKey', '');
     return;
   }
-  emit('update:selectedKey', cell.dataset.docKey!);
+  emit('update:selectedKey', requireDefined(cell.dataset.docKey));
+  if (!(event.target as HTMLElement).closest('td[data-doc-record]'))
+    emit('tableBodySelectionClear');
   const footer = (event.target as HTMLElement).closest<HTMLElement>(
     'td[data-doc-footer]',
   );
   if (footer) {
     emit('tableFooterCellSelect', {
-      key: cell.dataset.docKey!,
+      key: requireDefined(cell.dataset.docKey),
       rowIndex: Number(footer.dataset.docFooterRow),
       cellIndex: Number(footer.dataset.docFooterCell),
     });
@@ -632,7 +979,7 @@ function click(event: MouseEvent) {
   }
   if (header && header.dataset.docLeafStart !== undefined) {
     emit('tableHeaderCellSelect', {
-      key: cell.dataset.docKey!,
+      key: requireDefined(cell.dataset.docKey),
       fromLeaf: Number(header.dataset.docLeafStart),
       toLeaf: Number(header.dataset.docLeafEnd ?? header.dataset.docLeafStart),
       field: header.dataset.docHeaderField || '',
@@ -646,19 +993,34 @@ function click(event: MouseEvent) {
   const td = (event.target as HTMLElement).closest<HTMLElement>(
     'td[data-doc-record]',
   );
-  const [p, i] = cell.dataset.docKey!.split(':').map(Number);
+  const [p, i] = requireDefined(cell.dataset.docKey).split(':').map(Number);
+  if (td) {
+    rowHeightTarget.value = {
+      col: Number(td.dataset.docCol),
+      key: requireDefined(cell.dataset.docKey),
+      record: Number(td.dataset.docRecord),
+      rowKey: td.dataset.docRowKey,
+      templateRow:
+        td.dataset.docTemplateRow === undefined
+          ? undefined
+          : Number(td.dataset.docTemplateRow),
+    };
+    void nextTick(selectOutline);
+  }
   if (
     td &&
-    !props.templateJson?.panels?.[p!]?.printElements?.[i!]?.options
-      ?.agreeFormGrid
+    !props.templateJson?.panels?.[requireDefined(p)]?.printElements?.[
+      requireDefined(i)
+    ]?.options?.agreeFormGrid
   )
     emit('tableBodyCellSelect', {
-      key: cell.dataset.docKey!,
+      key: requireDefined(cell.dataset.docKey),
       rowIndex: Number(td.dataset.docRecord),
       colIndex: Number(td.dataset.docCol),
       rawRow:
-        preparedData[cell.dataset.docField!]?.[Number(td.dataset.docRecord)] ||
-        {},
+        preparedData.value[requireDefined(cell.dataset.docField)]?.[
+          Number(td.dataset.docRecord)
+        ] || {},
       shiftKey: event.shiftKey,
     });
 }
@@ -666,9 +1028,9 @@ function context(event: MouseEvent) {
   const cell = cellAt(event);
   if (!cell) return;
   event.preventDefault();
-  emit('update:selectedKey', cell.dataset.docKey!);
+  emit('update:selectedKey', requireDefined(cell.dataset.docKey));
   emit('contextmenu', {
-    key: cell.dataset.docKey!,
+    key: requireDefined(cell.dataset.docKey),
     clientX: event.clientX,
     clientY: event.clientY,
   });
@@ -716,7 +1078,7 @@ function startCanvasPointer(
   beginCanvasPointer(
     event,
     {
-      key: cell.dataset.docKey!,
+      key: requireDefined(cell.dataset.docKey),
       mode,
       content: cell.firstElementChild as HTMLElement,
       paper,
@@ -757,7 +1119,9 @@ function target(event: DragPoint) {
     cell =
       candidates.toSorted((a, b) => {
         const distance = (el: HTMLElement) => {
-          const r = el.firstElementChild!.getBoundingClientRect();
+          const r = requireDefined(
+            el.firstElementChild,
+          ).getBoundingClientRect();
           return Math.min(
             Math.abs(event.clientY - r.top),
             Math.abs(event.clientY - r.bottom),
@@ -767,30 +1131,25 @@ function target(event: DragPoint) {
       })[0] || null;
     bounds = cell?.firstElementChild?.getBoundingClientRect();
   }
-  const placement = (() => {
+  let placement: 'after' | 'before' | 'beside' | 'beside-before' = 'after';
+  if (bounds) {
+    const insideY =
+      event.clientY >= bounds.top && event.clientY <= bounds.bottom;
     if (
-      bounds &&
-      event.clientY >= bounds.top &&
-      event.clientY <= bounds.bottom &&
+      insideY &&
       event.clientX > bounds.right - Math.min(32, bounds.width * 0.15) &&
       event.clientX <= bounds.right
-    ) {
-      return 'beside';
-    }
-    if (
-      bounds &&
-      event.clientY >= bounds.top &&
-      event.clientY <= bounds.bottom &&
+    )
+      placement = 'beside';
+    else if (
+      insideY &&
       event.clientX >= bounds.left &&
       event.clientX < bounds.left + Math.min(32, bounds.width * 0.15)
-    ) {
-      return 'beside-before';
-    }
-    if (bounds && event.clientY < bounds.top + bounds.height / 2) {
-      return 'before';
-    }
-    return 'after';
-  })();
+    )
+      placement = 'beside-before';
+    else if (event.clientY < bounds.top + bounds.height / 2)
+      placement = 'before';
+  }
   return {
     cell,
     paper,
@@ -836,7 +1195,10 @@ function dragOver(event: DragPoint) {
     event.dataTransfer.dropEffect = draggedKey ? 'move' : 'copy';
   const delta = spacingDelta(event, drop);
   if (delta !== null) {
-    const current = documentElementSpacing(props.templateJson!, draggedKey);
+    const current = documentElementSpacing(
+      requireDefined(props.templateJson),
+      draggedKey,
+    );
     const spacing = Math.max(
       0,
       Math.min(Math.max(MAX_DOCUMENT_SPACE_PT, current), current + delta),
@@ -867,39 +1229,49 @@ function dragOver(event: DragPoint) {
     hint.value = '调间距请留在当前纸张内；跨页移动请使用「排序」';
     return;
   }
-  hint.value =
-    drop.placement === 'beside' || drop.placement === 'beside-before'
-      ? `松开放到目标${drop.placement === 'beside-before' ? '左' : '右'}侧`
-      : drop.placement === 'before'
-        ? '松开插入目标上方'
-        : '松开插入目标下方';
+  let dropHint;
+  if (drop.placement === 'beside' || drop.placement === 'beside-before') {
+    dropHint = `松开放到目标${drop.placement === 'beside-before' ? '左' : '右'}侧`;
+  } else {
+    dropHint =
+      drop.placement === 'before' ? '松开插入目标上方' : '松开插入目标下方';
+  }
+  hint.value = dropHint;
   if (drop.cell && shell.value) {
-    const bounds = drop.cell.firstElementChild!.getBoundingClientRect();
-    const row = drop.cell.parentElement!.getBoundingClientRect();
+    const bounds = requireDefined(
+      drop.cell.firstElementChild,
+    ).getBoundingClientRect();
+    const row = requireDefined(drop.cell.parentElement).getBoundingClientRect();
     const outer = shell.value.getBoundingClientRect();
     const beside =
       drop.placement === 'beside' || drop.placement === 'beside-before';
+    let guideLeft;
+    if (beside) {
+      guideLeft =
+        drop.placement === 'beside-before' ? bounds.left : bounds.right;
+    } else {
+      guideLeft = row.left;
+    }
+    let guideTop;
+    if (beside) {
+      guideTop = bounds.top;
+    } else {
+      guideTop = drop.placement === 'before' ? row.top : row.bottom;
+    }
+    let guideLabel;
+    if (beside) {
+      guideLabel = besideLabel(requireDefined(drop.key), drop.placement);
+    } else {
+      guideLabel =
+        drop.placement === 'before' ? '插入此行之前' : '插入此行之后';
+    }
     guide.value = {
       kind: beside ? 'beside' : 'order',
-      left:
-        (beside
-          ? drop.placement === 'beside-before'
-            ? bounds.left
-            : bounds.right
-          : row.left) - outer.left,
-      top:
-        (beside
-          ? bounds.top
-          : drop.placement === 'before'
-            ? row.top
-            : row.bottom) - outer.top,
+      left: guideLeft - outer.left,
+      top: guideTop - outer.top,
       width: beside ? 3 : row.width,
       height: beside ? bounds.height : 3,
-      label: beside
-        ? besideLabel(drop.key!, drop.placement)
-        : drop.placement === 'before'
-          ? '插入此行之前'
-          : '插入此行之后',
+      label: guideLabel,
     };
   } else guide.value = null;
 }
@@ -961,7 +1333,10 @@ function drop(event: DragPoint, externalPayload?: PalettePayload) {
     } else {
       next = cloneJson(props.templateJson);
       const [p, i] = source.split(':').map(Number);
-      const [element] = next.panels[p!].printElements.splice(i!, 1);
+      const [element] = next.panels[requireDefined(p)].printElements.splice(
+        requireDefined(i),
+        1,
+      );
       element.options.agreeDocument.row = 0;
       next.panels[dest.panelIndex].printElements.push(element);
       selected = `${dest.panelIndex}:${next.panels[dest.panelIndex].printElements.length - 1}`;
@@ -1030,92 +1405,134 @@ defineExpose({
   >
     <p class="document-hint">文档流排版 · {{ busy ? '正在排版…' : hint }}</p>
     <div
-      v-if="selection"
-      class="document-layout-toolbar"
-      role="toolbar"
-      aria-label="常用排版"
-      @keydown.stop
-      @click.stop
-    >
-      <span>排版</span>
-      <button
-        type="button"
-        :disabled="selection.index === 0"
-        @click="toolbarShift(-1)"
-      >
-        向左换位
-      </button>
-      <button
-        type="button"
-        :disabled="selection.index === selection.peers.length - 1"
-        @click="toolbarShift(1)"
-      >
-        向右换位
-      </button>
-      <button
-        v-if="selection.peers.length > 1"
-        type="button"
-        @click="toolbarSeparate"
-      >
-        独占一行
-      </button>
-      <label>宽度
-        <input
-          aria-label="元素宽度百分比"
-          type="number"
-          :min="documentWidthLimits(selection.peers.length).min"
-          :max="documentWidthLimits(selection.peers.length).max"
-          :value="Math.round(selection.box.width * 10) / 10"
-          step="1"
-          @change="toolbarWidth"
-        />
-        %</label>
-      <template v-if="selection.peers.length === 1">
-        <button type="button" @click="toolbarAlign('left')">靠左</button>
-        <button type="button" @click="toolbarAlign('center')">居中</button>
-        <button type="button" @click="toolbarAlign('right')">靠右</button>
-      </template>
-      <label>上方间距
-        <input
-          aria-label="上方间距毫米"
-          type="number"
-          min="0"
-          :value="spacingMm"
-          step="1"
-          @change="
-            toolbarSpacing(Number(($event.target as HTMLInputElement).value))
-          "
-        />
-        mm</label>
-      <button type="button" @click="toolbarSpacing(0)">清除间距</button>
-      <span v-if="selection.peers.length > 1">拖动列间蓝线调宽</span>
-    </div>
-    <div
-      v-if="bodyCellSelection && cellToolbarBox && !busy"
+      v-if="(bodyCellSelection || rowHeightOptions) && cellToolbarBox && !busy"
+      ref="cellToolbar"
       class="document-cell-toolbar"
       :style="{
         left: `${cellToolbarBox.left}px`,
         top: `${cellToolbarBox.top}px`,
+        maxWidth: `${cellToolbarBox.maxWidth}px`,
+        maxHeight: `${cellToolbarBox.maxHeight}px`,
       }"
       @pointerdown.stop
       @click.stop
       role="toolbar"
       aria-label="选中单元格操作"
+      @keydown.esc.stop.prevent="rowHeightOpen = false"
     >
-      <span>已选
-        {{
-          Math.abs(bodyCellSelection.endRow - bodyCellSelection.startRow) + 1
-        }}
-        ×
-        {{
-          Math.abs(bodyCellSelection.endCol - bodyCellSelection.startCol) + 1
+      <div class="document-cell-toolbar__actions">
+        <span class="document-cell-toolbar__label">{{
+          cellSelectionLabel
         }}</span>
-      <button type="button" @click="emit('bodyMergeRequested')">合并</button>
-      <button type="button" @click="emit('bodySplitRequested')">拆分</button>
-      <button type="button" @click="emit('bodyFormulaRequested')">计算</button>
+        <template v-if="bodyCellSelection && !rowHeightOptions?.agreeFormGrid">
+          <span
+            :title="
+              singleCellSelected
+                ? '请选择至少两个相邻单元格，可拖选或按住 Shift 点选终点'
+                : '合并所选矩形区域'
+            "
+          >
+            <button
+              type="button"
+              :disabled="singleCellSelected"
+              @click="emit('bodyMergeRequested')"
+            >
+              合并
+            </button>
+          </span>
+          <span
+            :title="
+              bodyCellActions.split
+                ? '拆分当前合并单元格'
+                : '请选择一个手工合并的单元格；自动合并请在列规则中调整'
+            "
+          >
+            <button
+              type="button"
+              :disabled="!bodyCellActions.split"
+              @click="emit('bodySplitRequested')"
+            >
+              拆分
+            </button>
+          </span>
+          <span
+            :title="
+              bodyCellActions.formula
+                ? '设置当前单元格的计算公式'
+                : '请选择一个绑定字段的单元格'
+            "
+          >
+            <button
+              type="button"
+              :disabled="!bodyCellActions.formula"
+              @click="emit('bodyFormulaRequested')"
+            >
+              计算
+            </button>
+          </span>
+        </template>
+        <button
+          v-if="rowHeightOptions"
+          type="button"
+          :aria-expanded="rowHeightOpen"
+          :aria-controls="rowHeightPanelId"
+          title="更多：行高设置"
+          @click="rowHeightOpen = !rowHeightOpen"
+        >
+          更多 ⋯
+        </button>
+      </div>
     </div>
-    <p v-if="renderError" class="document-error" role="alert">
-      {{ renderError }}
+    <div
+      v-if="rowHeightOpen && rowHeightOptions && rowHeightPanelBox && !busy"
+      ref="rowHeightPanel"
+      :id="rowHeightPanelId"
+      class="document-row-height-panel"
+      role="group"
+      aria-label="行高设置"
+      :style="{
+        left: `${rowHeightPanelBox.left}px`,
+        top: `${rowHeightPanelBox.top}px`,
+        maxWidth: `${rowHeightPanelBox.maxWidth}px`,
+        maxHeight: `${rowHeightPanelBox.maxHeight}px`,
+      }"
+      @pointerdown.stop
+      @click.stop
+      @keydown.esc.stop.prevent="rowHeightOpen = false"
+    >
+      <strong>行高设置</strong>
+      <label v-if="rowHeightOptions" class="document-row-height-control">
+        当前行最小高度
+        <input
+          type="number"
+          :value="selectedRowHeight"
+          :min="rowHeightOptions.agreeFormGrid ? 18 : 6"
+          max="600"
+          step="any"
+          aria-label="画布行最小高度"
+          :disabled="!canAdjustRowHeight"
+          @change="changeSelectedRowHeight"
+        />
+        pt
+      </label>
+      <button
+        v-if="rowHeightOptions && isRecordHeight"
+        type="button"
+        :disabled="selectedRowOverride === undefined"
+        @click="saveSelectedRowHeight()"
+      >
+        恢复默认行高
+      </button>
+      <small v-if="rowHeightOptions">{{
+        !canAdjustRowHeight
+          ? '记录内容相同且没有唯一标识，请在数据中提供唯一 id 后单独调整。'
+          : isRecordHeight
+            ? `${selectedRowOverride === undefined ? '当前行跟随默认' : '当前行已单独设置'}；仅影响本记录，长内容自动撑高。`
+            : '仅调整当前行；同行所有单元格同步变化，长内容自动撑高。'
+      }}</small>
+    </div>
+    <p v-if="errorMessage" class="document-error" role="alert">
+      {{ errorMessage }}
     </p>
     <div
       v-if="selectionBox && !busy"
@@ -1192,51 +1609,6 @@ defineExpose({
   background: var(--el-bg-color-page);
 }
 
-.document-layout-toolbar {
-  position: sticky;
-  top: 0;
-  z-index: 5;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  padding: 8px;
-  margin-bottom: 12px;
-  font-size: 12px;
-  color: var(--el-text-color-primary);
-  background: var(--el-bg-color);
-  border: 1px solid var(--el-border-color);
-  border-radius: 6px;
-}
-
-.document-layout-toolbar button {
-  padding: 3px 6px;
-  color: var(--el-color-primary);
-  cursor: pointer;
-  border: 1px solid var(--el-color-primary-light-7);
-  border-radius: 4px;
-}
-
-.document-layout-toolbar button:disabled {
-  cursor: default;
-  opacity: 0.4;
-}
-
-.document-layout-toolbar label {
-  display: flex;
-  gap: 4px;
-  align-items: center;
-}
-
-.document-layout-toolbar input {
-  width: 60px;
-  padding: 3px;
-  color: var(--el-text-color-primary);
-  background: var(--el-bg-color);
-  border: 1px solid var(--el-border-color);
-  border-radius: 3px;
-}
-
 .document-column-divider {
   position: absolute;
   z-index: 3;
@@ -1270,35 +1642,160 @@ defineExpose({
 
 .document-cell-toolbar {
   position: absolute;
-  z-index: 2;
+  z-index: 4;
   display: flex;
-  gap: 12px;
-  padding: 8px;
+  flex-direction: column;
+  width: max-content;
+  overflow: auto;
   font-size: 12px;
   color: var(--el-text-color-primary);
   background: var(--el-bg-color-overlay);
-  border: 1px solid var(--el-color-primary-light-7);
-  border-radius: 6px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 8px;
   box-shadow: 0 3px 12px #0002;
 }
 
-.document-cell-toolbar input {
-  width: 88px;
-  padding: 1px 4px;
-  border: 1px solid #bfdbfe;
-  border-radius: 3px;
+.document-cell-toolbar__actions {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  min-height: 36px;
+  padding: 4px 6px;
+  white-space: nowrap;
 }
 
-.document-canvas :deep(.document-cell-selected) {
-  outline: 2px solid #60a5fa;
+.document-cell-toolbar__label {
+  padding: 0 8px;
+  margin-right: 4px;
+  color: var(--el-text-color-secondary);
+  border-right: 1px solid var(--el-border-color-light);
+}
+
+.document-cell-toolbar button,
+.document-row-height-panel button {
+  padding: 4px 8px;
+  color: inherit;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+}
+
+.document-cell-toolbar button:hover:not(:disabled),
+.document-cell-toolbar button[aria-expanded='true'] {
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+}
+
+.document-cell-toolbar button:disabled,
+.document-row-height-panel button:disabled {
+  color: var(--el-text-color-disabled);
+  cursor: not-allowed;
+}
+
+.document-cell-toolbar button:focus-visible,
+.document-row-height-panel button:focus-visible {
+  outline: 2px solid var(--el-color-primary);
   outline-offset: -2px;
+}
+
+.document-row-height-panel {
+  position: absolute;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 320px;
+  padding: 12px;
+  overflow: auto;
+  font-size: 12px;
+  color: var(--el-text-color-primary);
+  white-space: normal;
+  background: var(--el-bg-color-overlay);
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 8px;
+  box-shadow: 0 3px 12px #0002;
+}
+
+.document-row-height-panel strong {
+  font-weight: 500;
+}
+
+.document-row-height-panel small {
+  line-height: 1.5;
+  color: var(--el-text-color-secondary);
+}
+
+.document-row-height-panel button {
+  align-self: flex-start;
+  padding-left: 0;
+  color: var(--el-color-primary);
+}
+
+.document-row-height-control {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.document-row-height-control input {
+  width: 64px;
+  padding: 3px;
+  color: inherit;
+  background: var(--el-fill-color-blank);
+  border: 1px solid var(--el-border-color);
+  border-radius: 4px;
+}
+
+.document-canvas :deep(.document-row-height-selected > td) {
+  background-image: linear-gradient(rgb(64 158 255 / 5%), rgb(64 158 255 / 5%));
+}
+
+.document-canvas :deep(.document-cell-single) {
+  outline: 2px solid #409eff;
+  outline-offset: -2px;
+}
+
+.document-canvas :deep(.document-cell-range) {
+  --cell-top: transparent;
+  --cell-bottom: transparent;
+  --cell-left: transparent;
+  --cell-right: transparent;
+
+  background-image: linear-gradient(
+    rgb(64 158 255 / 10%),
+    rgb(64 158 255 / 10%)
+  );
+  box-shadow:
+    inset 0 2px var(--cell-top),
+    inset 0 -2px var(--cell-bottom),
+    inset 2px 0 var(--cell-left),
+    inset -2px 0 var(--cell-right);
+}
+
+.document-canvas :deep(.is-range-top) {
+  --cell-top: #409eff;
+}
+
+.document-canvas :deep(.is-range-bottom) {
+  --cell-bottom: #409eff;
+}
+
+.document-canvas :deep(.is-range-left) {
+  --cell-left: #409eff;
+}
+
+.document-canvas :deep(.is-range-right) {
+  --cell-right: #409eff;
+}
+
+.document-canvas :deep(.document-column-highlight) {
+  background-image: linear-gradient(rgb(64 158 255 / 8%), rgb(64 158 255 / 8%));
 }
 
 .document-canvas :deep(td[data-doc-header]) {
   position: relative;
-
-  /* 压过渲染器 inline padding，给 ▾ 留槽，避免挡住标题 */
-  padding-right: 16px !important;
+  overflow: visible;
   cursor: pointer;
 }
 
@@ -1309,36 +1806,43 @@ defineExpose({
 }
 
 .document-canvas :deep(.document-header-filter) {
+  /* 将编辑控件贴在右下边线上，不占用表头文字的排版宽度。 */
   position: absolute;
-  top: 50%;
-  right: 1px;
-  z-index: 1;
-  width: 14px;
-  height: 16px;
+  right: -3px;
+  bottom: -7px;
+  z-index: 2;
+  width: 12px;
+  height: 12px;
   padding: 0;
-  font-size: 10px;
-  line-height: 16px;
+  font-size: 9px;
+  line-height: 10px;
   color: #64748b;
+  pointer-events: none;
   cursor: pointer;
-  background: transparent;
-  border: 0;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 3px;
   opacity: 0;
-  transform: translateY(-50%);
 }
 
 .document-canvas :deep(td[data-doc-header]:hover .document-header-filter),
+.document-canvas :deep(.document-header-filter:focus-visible),
 .document-canvas :deep(.document-header-filter.is-on),
 .document-canvas :deep(.document-header-filter.is-sorted) {
+  pointer-events: auto;
   opacity: 1;
 }
 
 .document-canvas :deep(.document-header-filter:hover),
+.document-canvas :deep(.document-header-filter:focus-visible),
 .document-canvas :deep(.document-header-filter.is-on) {
   color: #15803d;
+  border-color: currentcolor;
 }
 
 .document-canvas :deep(.document-header-filter.is-sorted) {
   color: #1d4ed8;
+  border-color: currentcolor;
 }
 
 .document-hint {
@@ -1374,8 +1878,40 @@ defineExpose({
   outline: 1px dashed #60a5fa;
 }
 
+/* 扩大细线的编辑命中区域，不改变正文占位或打印结果。 */
+.document-canvas :deep([data-doc-type='hline']),
+.document-canvas :deep([data-doc-type='vline']) {
+  position: relative;
+}
+
+.document-canvas :deep([data-doc-type='hline']::before) {
+  position: absolute;
+  inset: -5px 0;
+  cursor: grab;
+  content: '';
+}
+
+.document-canvas :deep([data-doc-type='vline']::before) {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -5px;
+  width: 12px;
+  cursor: grab;
+  content: '';
+}
+
 .document-canvas :deep(.document-selected > :first-child) {
   outline: 2px solid #409eff !important;
+}
+
+.document-canvas
+  :deep(.document-selected.document-table-selected > :first-child) {
+  outline-width: 1px !important;
+}
+
+.document-canvas :deep(.document-selected.document-cell-active > :first-child) {
+  outline: 1px solid #cbd5e1 !important;
 }
 
 .document-drag-handles {

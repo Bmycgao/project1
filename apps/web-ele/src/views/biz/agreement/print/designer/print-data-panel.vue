@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import type { AgreePrintFieldItem } from '../data/fields';
 /**
- * 数据源：拖到画布精准定位；点选时自动添加，已有文本选中则改绑定
+ * 数据源：字段点击或拖动用于新增；绑定当前元素使用独立按钮。
  */
 import type { AgreePrintData } from '../types';
 
@@ -25,13 +25,13 @@ const props = defineProps<{
   pointerDrag?: boolean;
   /** 当前画布选中元素的绑定字段 */
   selectedField?: string;
+  selectedLabel?: string;
   /** 当前画布选中元素类型，用于说明单击行为 */
   selectedType?: string;
 }>();
 
 const emit = defineEmits<{
-  /** 点选：已有选中元素时改绑定 */
-  pick: [AgreePrintFieldItem];
+  pick: [AgreePrintFieldItem, 'add' | 'bind'];
   pointerDragStart: [PointerEvent, AgreePrintFieldItem];
 }>();
 
@@ -41,15 +41,13 @@ const showKeys = ref(false);
 let dragging = false;
 
 const actionHint = computed(() => {
-  if (props.selectedType && props.selectedType !== 'table') {
-    return props.selectedField
-      ? `已选中绑定字段 ${props.selectedField}：单击主表字段可改绑；拖动会新建元素。`
-      : '已选中文本元素：单击主表字段可绑定；拖动会新建元素。';
+  if (props.selectedType === 'text') {
+    return `绑定目标：${props.selectedLabel || props.selectedField || '当前文本'}。点击字段添加新元素；点「绑定」替换此元素的字段。`;
   }
   if (props.selectedType === 'table') {
     return '已选中表格：列和数据源请在右侧编辑；从这里单击或拖动表名会新建另一张表。';
   }
-  return '未选择元素：单击会在当前页自动添加；拖到画布可精确指定位置。';
+  return '点击字段添加到画布，或拖动指定位置。选中文本后，可使用「绑定」替换其字段。';
 });
 
 watch(keyword, (value) => {
@@ -59,7 +57,12 @@ watch(keyword, (value) => {
 watch(
   () => props.selectedType,
   (type) => {
-    const group = type === 'table' ? 'tables' : type ? 'main' : '';
+    let group;
+    if (type === 'table') {
+      group = 'tables';
+    } else {
+      group = type ? 'main' : '';
+    }
     if (group && !extraOpen.value.includes(group)) {
       extraOpen.value = [...extraOpen.value, group];
     }
@@ -76,11 +79,13 @@ function filterList(list: AgreePrintFieldItem[]) {
   return list
     .map((item) => {
       const raw = d[item.field];
-      const sample = Array.isArray(raw)
-        ? `${raw.length} 行`
-        : raw === null || raw === undefined
-          ? ''
-          : String(raw).slice(0, 36);
+      let sample;
+      if (Array.isArray(raw)) {
+        sample = `${raw.length} 行`;
+      } else {
+        sample =
+          raw === null || raw === undefined ? '' : String(raw).slice(0, 36);
+      }
       return { ...item, sample };
     })
     .filter((item) => {
@@ -121,18 +126,17 @@ function onDragEnd() {
 }
 
 /**
- * 点选：已选中纸面元素时改绑定
+ * 添加和绑定分别传递，避免选择状态改变点击含义。
  * @param item 字段
  */
-function onPick(item: AgreePrintFieldItem) {
+function onPick(item: AgreePrintFieldItem, action: 'add' | 'bind' = 'add') {
   if (dragging) return;
-  emit('pick', item);
+  emit('pick', item, action);
 }
 </script>
 
 <template>
   <div class="print-data-panel">
-    <div class="print-data-panel__title">可绑定字段</div>
     <div class="print-data-panel__status">
       {{ actionHint }}
     </div>
@@ -199,36 +203,53 @@ function onPick(item: AgreePrintFieldItem) {
         <template #title>
           <div class="print-data-panel__collapse-title">
             <strong>主表字段</strong>
-            <span>单击添加/改绑，拖动定位</span>
+            <span>点击添加到画布</span>
           </div>
         </template>
         <div class="print-data-panel__fields">
-          <button
+          <div
             v-for="row in textRows"
             :key="row.field"
-            type="button"
-            class="print-data-panel__row"
+            class="print-data-panel__field"
             :class="{
               'is-current': row.field === selectedField,
-              'is-long-text':
-                row.field === 'agreementName' || row.field === 'printMeta',
             }"
-            :draggable="!pointerDrag"
-            @pointerdown="pointerDrag && emit('pointerDragStart', $event, row)"
-            :title="`${row.text} (${row.field})${row.sample ? `；样例 ${row.sample}` : ''}；单击添加/改绑，拖到画布新建`"
-            @dragstart="onDragStart($event, row)"
-            @dragend="onDragEnd"
-            @click="onPick(row)"
           >
-            <span class="print-data-panel__grip">⠿</span>
-            <span class="print-data-panel__name">{{ row.text }}</span>
-            <code v-if="showKeys" class="print-data-panel__key">
-              {{ row.field }}
-            </code>
-            <span v-else class="print-data-panel__val">
-              {{ row.sample || '暂无样例' }}
-            </span>
-          </button>
+            <button
+              type="button"
+              class="print-data-panel__row"
+              :draggable="!pointerDrag"
+              @pointerdown="
+                pointerDrag && emit('pointerDragStart', $event, row)
+              "
+              :aria-label="`添加到画布：${row.text}`"
+              :title="`${row.text} (${row.field})${row.sample ? `；样例 ${row.sample}` : ''}；点击添加到画布，拖动指定位置`"
+              @dragstart="onDragStart($event, row)"
+              @dragend="onDragEnd"
+              @click="onPick(row)"
+            >
+              <span class="print-data-panel__grip">⠿</span>
+              <span class="print-data-panel__name">{{ row.text }}</span>
+              <code v-if="showKeys" class="print-data-panel__key">
+                {{ row.field }}
+              </code>
+              <span v-else class="print-data-panel__val">
+                {{ row.sample || '暂无样例' }}
+              </span>
+              <span class="print-data-panel__add" aria-hidden="true">＋</span>
+            </button>
+            <button
+              v-if="selectedType === 'text'"
+              type="button"
+              class="print-data-panel__bind"
+              :disabled="row.field === selectedField"
+              :aria-label="`将${row.text}绑定到当前元素`"
+              :title="`替换「${selectedLabel || selectedField || '当前文本'}」的绑定`"
+              @click="onPick(row, 'bind')"
+            >
+              {{ row.field === selectedField ? '已绑定' : '绑定' }}
+            </button>
+          </div>
         </div>
         <div v-if="textRows.length === 0" class="print-data-panel__empty">
           没有匹配的主表字段
@@ -244,15 +265,9 @@ function onPick(item: AgreePrintFieldItem) {
   flex: 1;
   flex-direction: column;
   min-height: 0;
-  padding-top: 10px;
+  padding-top: 0;
   font-size: 12px;
   color: var(--el-text-color-primary);
-  border-top: 1px dashed var(--el-border-color);
-}
-
-.print-data-panel__title {
-  margin-bottom: 4px;
-  font-weight: 600;
 }
 
 .print-data-panel__status {
@@ -284,7 +299,7 @@ function onPick(item: AgreePrintFieldItem) {
 
 .print-data-panel__row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) minmax(72px, 42%);
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 35%) auto;
   gap: 4px;
   align-items: center;
   width: 100%;
@@ -303,9 +318,45 @@ function onPick(item: AgreePrintFieldItem) {
   background: var(--el-color-primary-light-9);
 }
 
-.print-data-panel__row.is-current {
+.print-data-panel__field.is-current {
   color: var(--el-color-primary);
   background: var(--el-color-primary-light-8);
+}
+
+.print-data-panel__field {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.print-data-panel__field .print-data-panel__row {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+}
+
+.print-data-panel__add {
+  color: var(--el-color-primary);
+}
+
+.print-data-panel__bind {
+  flex: none;
+  padding: 0 7px;
+  font-size: 11px;
+  color: var(--el-color-primary);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--el-border-color-lighter);
+}
+
+.print-data-panel__bind:hover {
+  background: var(--el-color-primary-light-9);
+}
+
+.print-data-panel__bind:disabled {
+  color: var(--el-text-color-secondary);
+  cursor: default;
 }
 
 .print-data-panel__row:last-child {

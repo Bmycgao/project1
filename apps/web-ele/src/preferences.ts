@@ -16,4 +16,10 @@ export const overridesPreferences = defineOverridesPreferences({
     name: import.meta.env.VITE_APP_TITLE,
   },
   copyright: appCopyrightPreferences,
+  sidebar: {
+    width: 184,
+  },
+  theme: {
+    mode: 'light',
+  },
 });

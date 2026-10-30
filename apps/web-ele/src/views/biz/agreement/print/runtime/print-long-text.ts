@@ -1,8 +1,28 @@
 import { evalPrintBool, evalPrintExpr, validatePrintExpr } from './print-expr';
+import { maskPrintDisplay } from './print-masking';
 
 export interface PrintTextSection {
   content: string;
   when: string;
+}
+
+/** 不设置时沿用旧模板的空一行；0 表示分段但不增加留白。 */
+export function normalizePrintTextSectionGap(
+  value: unknown,
+): number | undefined {
+  if (value === '' || value === null || value === undefined) return undefined;
+  const gap = Number(value);
+  return Number.isFinite(gap) && gap >= 0 ? gap : undefined;
+}
+
+export function resolvePrintTextBlocks(
+  sections: PrintTextSection[],
+  data: Record<string, unknown>,
+) {
+  return sections
+    .filter((section) => evalPrintBool(section.when, data))
+    .map((section) => resolvePrintTextTemplate(section.content, data))
+    .filter((content) => content.trim().length > 0);
 }
 
 /** 校验正文里的复合参数；简单字段允许缺值并按空文字显示。 */
@@ -43,13 +63,13 @@ export function resolvePrintTextTemplate(
           value === undefined ||
           typeof value === 'object'
           ? ''
-          : String(value);
+          : maskPrintDisplay(value, String(value), data, expression);
       }
       if (!validatePrintExpr(expression, data).ok) return '';
       const value = evalPrintExpr(expression, data, { silent: true });
       return value === null || value === undefined || typeof value === 'object'
         ? ''
-        : String(value);
+        : maskPrintDisplay(value, String(value), data, '', expression);
     },
   );
 }
@@ -59,11 +79,7 @@ export function resolvePrintTextSections(
   sections: PrintTextSection[],
   data: Record<string, unknown>,
 ) {
-  return sections
-    .filter((section) => evalPrintBool(section.when, data))
-    .map((section) => resolvePrintTextTemplate(section.content, data))
-    .filter(Boolean)
-    .join('\n\n');
+  return resolvePrintTextBlocks(sections, data).join('\n\n');
 }
 
 /** 使用每个元素独立的运行时字段，避免多个长文本互相覆盖。 */
@@ -81,7 +97,12 @@ export function prepareLongTextSections(
       )
         continue;
       const field = `__agree_text_${pi}_${ei}`;
-      data[field] = resolvePrintTextSections(options.agreeTextSections, source);
+      const blocks = resolvePrintTextBlocks(options.agreeTextSections, source);
+      const gap = normalizePrintTextSectionGap(options.agreeTextSectionGap);
+      data[field] = blocks.join(gap === undefined ? '\n\n' : '\n');
+      // 只在打印副本记录已求值内容，保持业务原始数值和保存的正文不变。
+      if (gap === undefined) delete options.__agreeTextBlocks;
+      else options.__agreeTextBlocks = blocks;
       options.field = field;
       options.hideTitle = true;
       options.title = '';

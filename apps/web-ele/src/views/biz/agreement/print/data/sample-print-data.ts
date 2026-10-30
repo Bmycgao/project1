@@ -4,11 +4,31 @@ import type { AgreePrintData } from '../types';
 import { buildAgreementDetail } from '../../data/mock-data';
 import { buildAgreePrintData } from './build-print-data';
 
+export type PrintSamplePreset = 'example';
+
 /**
  * 设计器 / 规则测试用样例协议详情（含双房屋、奖励项）
  */
 export function buildDesignerSampleDetail() {
   const detail = buildAgreementDetail('PRINT-DEMO');
+  detail.compensationItems = [
+    ...(detail.compensationItems || []),
+    ...Array.from({ length: 30 }, (_, index) => {
+      const amount = (index + 1) * 1000;
+      return {
+        id: `print-page-${index + 1}`,
+        name: `附属设施补偿 ${String(index + 1).padStart(2, '0')}`,
+        calcType: '定额',
+        quantity: 1,
+        unitPrice: amount,
+        amount,
+        remark:
+          index % 10 === 0
+            ? '按现场登记清单核算，明细以双方确认记录为准。'
+            : '',
+      };
+    }),
+  ];
   const extraHouses: HouseRow[] = [
     {
       id: 'ph1',
@@ -46,6 +66,11 @@ export function buildDesignerSampleDetail() {
     ];
   }
   detail.statusValue = detail.statusValue || '组长已复核';
+  // 样例金额跟随样例明细；真实协议的金额仍由业务数据决定。
+  detail.basic.amount = [
+    ...detail.compensationItems,
+    ...detail.rewardItems,
+  ].reduce((total, row) => total + Number(row.amount || 0), 0);
   return detail;
 }
 

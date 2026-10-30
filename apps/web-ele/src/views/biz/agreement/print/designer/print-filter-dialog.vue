@@ -43,7 +43,9 @@ function onApply(expr: string) {
   <ElDialog
     :model-value="modelValue"
     title="筛选打印行"
-    width="640px"
+    width="min(900px, 94vw)"
+    top="6vh"
+    body-class="print-condition-dialog-body"
     append-to-body
     destroy-on-close
     @update:model-value="emit('update:modelValue', $event)"
@@ -59,8 +61,8 @@ function onApply(expr: string) {
     />
     <template #footer>
       <ElButton @click="panelRef?.clearFilter()">
-清除筛选（打印全部行）
-</ElButton>
+        清除筛选（打印全部行）
+      </ElButton>
       <ElButton @click="close">取消</ElButton>
       <ElButton type="primary" @click="panelRef?.apply()">应用到模板</ElButton>
     </template>

@@ -1,7 +1,8 @@
-import { createApp, h, nextTick } from 'vue';
+import { createApp, h, nextTick, ref, shallowRef } from 'vue';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { requireDefined } from '../../../../../../../shared/require-defined';
 import { toDocumentTemplate } from '../runtime/document-layout';
 import {
   AGREE_PRINT_FIELD_DND,
@@ -11,7 +12,7 @@ import DocumentCanvas from './document-canvas.vue';
 
 // These rectangles test hit targets and drag feedback; real pagination is checked in a browser.
 vi.mock('../runtime/document-renderer', () => ({
-  renderDocument: async (template: any) => {
+  renderDocument: async (template: any, data: any) => {
     const paper = document.createElement('section');
     paper.dataset.panelIndex = '0';
     paper.getBoundingClientRect = () =>
@@ -43,6 +44,37 @@ vi.mock('../runtime/document-renderer', () => ({
       cell.dataset.docKey = `0:${i}`;
       const content = document.createElement('div');
       content.textContent = `内容${i}`;
+      if (
+        template.panels[0].printElements[i]?.printElementType.type === 'table'
+      ) {
+        const table = document.createElement('table');
+        const body = table.createTBody();
+        const options = template.panels[0].printElements[i].options;
+        cell.dataset.docField = options.field;
+        const records = options.agreeFormGrid ? [1] : [0, 1];
+        for (const record of records) {
+          const tr = body.insertRow();
+          for (let col = 0; col < (options.columns?.[0]?.length || 1); col++) {
+            const td = tr.insertCell();
+            td.dataset.docRecord = String(record);
+            td.dataset.docCol = String(col);
+            const rowKey = data[options.field]?.[record]?.__agreeRowKey;
+            if (rowKey) td.dataset.docRowKey = rowKey;
+            if (options.agreeFormGrid) td.dataset.docTemplateRow = '1';
+            td.textContent = '测试单元格';
+            td.getBoundingClientRect = () =>
+              ({
+                left: 20 + col * 150,
+                right: 170 + col * 150,
+                top: 300 + record * 24,
+                bottom: 324 + record * 24,
+                width: 150,
+                height: 24,
+              }) as DOMRect;
+          }
+        }
+        content.append(table);
+      }
       content.getBoundingClientRect = () =>
         ({
           top: 100 + i * 100,
@@ -74,11 +106,28 @@ vi.mock('../runtime/document-renderer', () => ({
 }));
 
 const cleanups: Array<() => void> = [];
+
+// 给挂载及浮层更新一个真实事件循环，避免 Vue 把同一毫秒内的合成点击视为旧事件。
+async function userClick(element: HTMLElement) {
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  element.click();
+  await nextTick();
+}
 afterEach(() => {
   cleanups.splice(0).forEach((fn) => fn());
   vi.restoreAllMocks();
 });
-async function mount(sameRow = false) {
+async function mount(
+  sameRow = false,
+  tableOptions?: Record<string, any>,
+  sampleData?: Record<string, unknown>,
+) {
+  sampleData ??= {
+    houses: [
+      { id: 'row-a', address: '甲' },
+      { id: 'row-b', address: '乙' },
+    ],
+  };
   const template = toDocumentTemplate({
     panels: [
       {
@@ -95,11 +144,18 @@ async function mount(sameRow = false) {
       },
     ],
   });
+  if (tableOptions) {
+    template.panels[0].printElements[2].printElementType.type = 'table';
+    Object.assign(template.panels[0].printElements[2].options, tableOptions);
+  }
   if (sameRow)
     template.panels[0].printElements.forEach((el: any, i: number) => {
       el.options.agreeDocument = { row: 0, left: i * 33, width: 30, gap: 0 };
     });
   const patches: any[] = [];
+  const current = shallowRef(template);
+  const bodySelection = ref<any>(null);
+  const cellActions = { merge: vi.fn(), split: vi.fn(), formula: vi.fn() };
   const toolboxDrops: any[] = [];
   const fieldDrops: any[] = [];
   let canvas: any;
@@ -114,11 +170,37 @@ async function mount(sameRow = false) {
         },
         onToolboxDrop: (value: any) => toolboxDrops.push(value),
         onFieldDrop: (value: any) => fieldDrops.push(value),
-        templateJson: template,
-        sampleData: {} as any,
+        templateJson: current.value,
+        sampleData: sampleData as any,
         selectedKey: '0:2',
+        bodyCellSelection: bodySelection.value,
+        onTableBodySelectionClear: () => {
+          bodySelection.value = null;
+        },
+        onTableBodyCellSelect: (value) => {
+          bodySelection.value =
+            value.shiftKey && bodySelection.value
+              ? {
+                  ...bodySelection.value,
+                  endRow: value.rowIndex,
+                  endCol: value.colIndex,
+                }
+              : {
+                  key: value.key,
+                  startRow: value.rowIndex,
+                  endRow: value.rowIndex,
+                  startCol: value.colIndex,
+                  endCol: value.colIndex,
+                };
+        },
+        onBodyMergeRequested: cellActions.merge,
+        onBodySplitRequested: cellActions.split,
+        onBodyFormulaRequested: cellActions.formula,
         zoom: 100,
-        'onUpdate:templateJson': (v) => patches.push(v),
+        'onUpdate:templateJson': (v) => {
+          patches.push(v);
+          current.value = v;
+        },
         'onUpdate:selectedKey': (v) => selections.push(v),
       }),
   });
@@ -130,10 +212,13 @@ async function mount(sameRow = false) {
     app.unmount();
     host.remove();
   });
-  const button = (text: string) =>
-    [...host.querySelectorAll('button')].find((el) =>
+  const button = (text: string) => {
+    const result = [...host.querySelectorAll('button')].find((el) =>
       el.textContent?.includes(text),
-    )!;
+    );
+    if (!result) throw new Error(`Missing button: ${text}`);
+    return result;
+  };
   const hit = vi.spyOn(document, 'elementFromPoint');
   const pointer = async (el: EventTarget, type: string, y: number, x = 100) => {
     const event = new MouseEvent(type, {
@@ -150,6 +235,8 @@ async function mount(sameRow = false) {
   };
   return {
     host,
+    bodySelection,
+    cellActions,
     canvas,
     toolboxDrops,
     fieldDrops,
@@ -158,11 +245,283 @@ async function mount(sameRow = false) {
     button,
     pointer,
     hit,
-    paper: host.querySelector('[data-panel-index]')!,
+    paper: requireDefined(host.querySelector('[data-panel-index]')),
   };
 }
 
+describe('单元格选中与工具条', () => {
+  const columns = [
+    [
+      { title: '地址', field: 'address' },
+      { title: '编号', field: 'id' },
+    ],
+  ];
+
+  it('单格突出单元格并弱化整表，默认不显示整行高亮和行高面板', async () => {
+    const m = await mount(false, { field: 'houses', columns });
+    const cell = requireDefined(
+      m.host.querySelector<HTMLTableCellElement>(
+        'td[data-doc-record="0"][data-doc-col="0"]',
+      ),
+    );
+    await userClick(cell);
+    await nextTick();
+    expect(cell.classList.contains('document-cell-single')).toBe(true);
+    expect(
+      cell
+        .closest('[data-doc-key]')
+        ?.classList.contains('document-cell-active'),
+    ).toBe(true);
+    expect(m.host.querySelector('.document-row-height-selected')).toBeNull();
+    expect(m.host.querySelector('.document-row-height-panel')).toBeNull();
+    expect(
+      m.host.querySelector('.document-cell-toolbar__label')?.textContent,
+    ).toBe('第 1 行 · 第 1 列');
+    expect(m.button('合并').disabled).toBe(true);
+    expect(m.button('拆分').disabled).toBe(true);
+    expect(m.button('计算').disabled).toBe(false);
+    await userClick(m.button('合并'));
+    expect(m.cellActions.merge).not.toHaveBeenCalled();
+    await userClick(m.button('计算'));
+    expect(m.cellActions.formula).toHaveBeenCalledOnce();
+    await userClick(m.button('更多'));
+    await nextTick();
+    expect(m.host.querySelector('.document-row-height-panel')).not.toBeNull();
+    expect(
+      cell.parentElement?.classList.contains('document-row-height-selected'),
+    ).toBe(true);
+    m.button('更多').dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+    );
+    await nextTick();
+    expect(m.host.querySelector('.document-row-height-panel')).toBeNull();
+    expect(m.host.querySelector('.document-row-height-selected')).toBeNull();
+    expect(cell.classList.contains('document-cell-single')).toBe(true);
+  });
+
+  it('矩形选区显示统一范围边界，启用合并并禁用单格计算', async () => {
+    const m = await mount(false, { field: 'houses', columns });
+    await userClick(
+      requireDefined(
+        m.host.querySelector<HTMLTableCellElement>(
+          'td[data-doc-record="0"][data-doc-col="0"]',
+        ),
+      ),
+    );
+    requireDefined(
+      m.host.querySelector<HTMLTableCellElement>(
+        'td[data-doc-record="1"][data-doc-col="1"]',
+      ),
+    ).dispatchEvent(new MouseEvent('click', { shiftKey: true, bubbles: true }));
+    await nextTick();
+    expect(
+      m.host.querySelector('.document-cell-toolbar__label')?.textContent,
+    ).toBe('已选 2 行 × 2 列');
+    expect(m.host.querySelectorAll('.document-cell-range')).toHaveLength(4);
+    expect(m.host.querySelectorAll('.document-cell-single')).toHaveLength(0);
+    expect(m.host.querySelectorAll('.is-range-top')).toHaveLength(2);
+    expect(m.host.querySelectorAll('.is-range-bottom')).toHaveLength(2);
+    expect(m.host.querySelectorAll('.is-range-left')).toHaveLength(2);
+    expect(m.host.querySelectorAll('.is-range-right')).toHaveLength(2);
+    expect(m.button('合并').disabled).toBe(false);
+    expect(m.button('计算').disabled).toBe(true);
+    await userClick(m.button('合并'));
+    expect(m.cellActions.merge).toHaveBeenCalledOnce();
+  });
+
+  it('点击表格容器空白时回到整表选择，清除单元格工具条', async () => {
+    const m = await mount(false, { field: 'houses', columns });
+    const cell = requireDefined(
+      m.host.querySelector<HTMLTableCellElement>('td[data-doc-record]'),
+    );
+    await userClick(cell);
+    await nextTick();
+    requireDefined(
+      requireDefined(cell.closest('[data-doc-key]')).firstElementChild,
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await nextTick();
+    expect(m.bodySelection.value).toBeNull();
+    expect(m.host.querySelector('.document-cell-toolbar')).toBeNull();
+    expect(m.host.querySelector('.document-cell-single')).toBeNull();
+    expect(m.host.querySelector('.document-cell-active')).toBeNull();
+  });
+
+  it.each([
+    {
+      agreeBodyCellMerges: [
+        { startRow: 0, startCol: 0, rowspan: 1, colspan: 2 },
+      ],
+    },
+    { agreeBodyHMerges: [{ rowIndex: 0, spans: [2, 0] }] },
+  ])('已手工合并的单格允许拆分', async (rules) => {
+    const m = await mount(false, { field: 'houses', columns, ...rules });
+    await userClick(
+      requireDefined(
+        m.host.querySelector<HTMLTableCellElement>(
+          'td[data-doc-record="0"][data-doc-col="0"]',
+        ),
+      ),
+    );
+    await nextTick();
+    expect(m.button('拆分').disabled).toBe(false);
+    await userClick(m.button('拆分'));
+    expect(m.cellActions.split).toHaveBeenCalledOnce();
+  });
+});
+
 describe('document drag feedback', () => {
+  it('does not save an override for indistinguishable records without a unique id', async () => {
+    const m = await mount(
+      false,
+      { field: 'houses', columns: [[{ title: '地址', field: 'address' }]] },
+      { houses: [{ address: '相同' }, { address: '相同' }] },
+    );
+    await userClick(
+      requireDefined(m.host.querySelector<HTMLElement>('td[data-doc-record]')),
+    );
+    await nextTick();
+    await nextTick();
+    await userClick(m.button('更多'));
+    await nextTick();
+    const input = requireDefined(
+      m.host.querySelector<HTMLInputElement>(
+        'input[aria-label="画布行最小高度"]',
+      ),
+    );
+    expect(input.disabled).toBe(true);
+    expect(
+      m.host.querySelector('.document-row-height-panel')?.textContent,
+    ).toContain('唯一标识');
+    input.value = '40';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await nextTick();
+    expect(m.patches).toHaveLength(0);
+  });
+  it.each([false, true])(
+    'changes the correct row height from a canvas cell (fixed form: %s)',
+    async (form) => {
+      const grid = {
+        version: 1,
+        columns: [100],
+        rows: [
+          { cells: [{ mode: 'text', value: '第一行' }], height: 22 },
+          { cells: [{ mode: 'text', value: '第二行' }], height: 24 },
+        ],
+      };
+      const m = await mount(
+        false,
+        form
+          ? { agreeFormGrid: grid }
+          : {
+              field: 'houses',
+              columns: [[{ title: '地址', field: 'address' }]],
+              tableBodyRowHeight: 18,
+            },
+      );
+      await userClick(
+        requireDefined(
+          m.host.querySelector<HTMLElement>('td[data-doc-record]'),
+        ),
+      );
+      await nextTick();
+      await nextTick();
+      await userClick(m.button('更多'));
+      await nextTick();
+      const input = requireDefined(
+        m.host.querySelector<HTMLInputElement>(
+          'input[aria-label="画布行最小高度"]',
+        ),
+      );
+      expect(input).not.toBeNull();
+      expect(
+        m.host.querySelector('.document-row-height-panel')?.textContent,
+      ).toContain('当前行最小高度');
+      input.value = '40';
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      await nextTick();
+      expect(m.patches).toHaveLength(1);
+      const options = m.patches[0].panels[0].printElements[2].options;
+      expect(
+        form
+          ? {
+              heights: options.agreeFormGrid.rows.map((row: any) => row.height),
+              original: requireDefined(grid.rows[1]).height,
+            }
+          : {
+              minimum: options.tableBodyRowHeight,
+              overrides: Object.values(options.agreeBodyRowHeights),
+            },
+      ).toEqual(
+        form
+          ? { heights: [22, 40], original: 24 }
+          : { minimum: 18, overrides: [40] },
+      );
+      if (!form) {
+        await nextTick();
+        await nextTick();
+        await userClick(m.button('恢复默认行高'));
+        await nextTick();
+      }
+      const finalOptions = m.patches.at(-1).panels[0].printElements[2].options;
+      expect(
+        form
+          ? finalOptions.agreeFormGrid.rows.map((row: any) => row.height)
+          : finalOptions.agreeBodyRowHeights,
+      ).toEqual(form ? [22, 40] : undefined);
+      expect(
+        form
+          ? requireDefined(grid.rows[1]).height
+          : finalOptions.tableBodyRowHeight,
+      ).toBe(form ? 24 : 18);
+    },
+  );
+  it('changes only the selected record in a repeated form row and can restore the template default', async () => {
+    const grid = {
+      version: 1,
+      columns: [100],
+      rows: [
+        { cells: [{ mode: 'text', value: '固定行' }], height: 22 },
+        {
+          source: 'houses',
+          height: 24,
+          cells: [{ mode: 'field', value: 'row.address' }],
+        },
+      ],
+    };
+    const m = await mount(false, { agreeFormGrid: grid });
+    await userClick(
+      requireDefined(m.host.querySelector<HTMLElement>('td[data-doc-record]')),
+    );
+    await nextTick();
+    await userClick(m.button('更多'));
+    await nextTick();
+    const input = requireDefined(
+      m.host.querySelector<HTMLInputElement>(
+        'input[aria-label="画布行最小高度"]',
+      ),
+    );
+    input.value = '48';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await nextTick();
+    expect(
+      m.patches[0].panels[0].printElements[2].options.agreeFormGrid.rows[1]
+        .height,
+    ).toBe(24);
+    expect(
+      Object.values(
+        m.patches[0].panels[0].printElements[2].options.agreeFormGrid.rows[1]
+          .recordHeights,
+      ),
+    ).toEqual([48]);
+    await nextTick();
+    await nextTick();
+    await userClick(m.button('恢复默认行高'));
+    await nextTick();
+    expect(
+      m.patches.at(-1).panels[0].printElements[2].options.agreeFormGrid.rows[1]
+        .recordHeights,
+    ).toBeUndefined();
+  });
   it('previews a clamped spacing drop, commits only on release and consumes legacy row gap', async () => {
     const m = await mount();
     m.hit.mockReturnValue(m.paper);
@@ -220,7 +579,7 @@ describe('column controls', () => {
     );
   it('previews resize using rendered width and commits once on release with selection intact', async () => {
     const m = await mount(true);
-    const divider = m.host.querySelector('[role="separator"]')!;
+    const divider = requireDefined(m.host.querySelector('[role="separator"]'));
     pointer(divider, 'pointerdown', 200);
     pointer(window, 'pointermove', 230);
     pointer(window, 'pointermove', 260);
@@ -239,8 +598,10 @@ describe('column controls', () => {
   });
   it('restores temporary widths and does not commit when Escape is pressed on separator', async () => {
     const m = await mount(true);
-    const divider = m.host.querySelector('[role="separator"]')!;
-    const left = m.host.querySelector<HTMLElement>('[data-doc-key="0:0"]')!;
+    const divider = requireDefined(m.host.querySelector('[role="separator"]'));
+    const left = requireDefined(
+      m.host.querySelector<HTMLElement>('[data-doc-key="0:0"]'),
+    );
     const original = left.style.cssText;
     pointer(divider, 'pointerdown', 200);
     pointer(window, 'pointermove', 260);
@@ -252,9 +613,9 @@ describe('column controls', () => {
     expect(left.style.cssText).toBe(original);
     expect(m.patches).toHaveLength(0);
   });
-  it('supports keyboard resizing and left swap without clearing the selection', async () => {
+  it('supports keyboard resizing without clearing the selection', async () => {
     const m = await mount(true);
-    m.host.querySelector('[role="separator"]')!.dispatchEvent(
+    requireDefined(m.host.querySelector('[role="separator"]')).dispatchEvent(
       new KeyboardEvent('keydown', {
         key: 'ArrowRight',
         shiftKey: true,
@@ -265,34 +626,7 @@ describe('column controls', () => {
     expect(
       m.patches[0].panels[0].printElements[0].options.agreeDocument.width,
     ).toBe(35);
-    m.button('向左换位').click();
-    expect(
-      m.patches[1].panels[0].printElements[2].options.agreeDocument.left,
-    ).toBe(33);
-    expect(m.selections).toEqual(['0:2', '0:2']);
-  });
-  it('edits millimetre spacing and width through the toolbar', async () => {
-    const m = await mount();
-    const input = m.host.querySelector<HTMLInputElement>(
-      '[aria-label="上方间距毫米"]',
-    )!;
-    input.value = '25.4';
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    expect(
-      m.patches[0].panels[0].printElements[2].options.agreeDocument.spaceBefore,
-    ).toBe(72);
-    const width = m.host.querySelector<HTMLInputElement>(
-      '[aria-label="元素宽度百分比"]',
-    )!;
-    width.value = '40';
-    width.dispatchEvent(new Event('change', { bubbles: true }));
-    expect(
-      m.patches[1].panels[0].printElements[2].options.agreeDocument.width,
-    ).toBe(40);
-    m.button('清除间距').click();
-    expect(
-      m.patches[2].panels[0].printElements[2].options.agreeDocument.spaceBefore,
-    ).toBe(0);
+    expect(m.selections).toEqual(['0:2']);
   });
 });
 
@@ -346,10 +680,12 @@ describe('pointer palette drop targets', () => {
 describe('direct canvas pointer movement', () => {
   it('moves an unselected element without selecting during the gesture or relying on native dragstart', async () => {
     const m = await mount();
-    const content = m.host.querySelector(
-      '[data-doc-key="0:0"] > :first-child',
-    )!;
-    const target = m.host.querySelector('[data-doc-key="0:1"] > :first-child')!;
+    const content = requireDefined(
+      m.host.querySelector('[data-doc-key="0:0"] > :first-child'),
+    );
+    const target = requireDefined(
+      m.host.querySelector('[data-doc-key="0:1"] > :first-child'),
+    );
     m.hit.mockReturnValue(target);
     await m.pointer(content, 'pointerdown', 110);
     await m.pointer(document, 'pointermove', 225);

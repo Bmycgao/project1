@@ -1,13 +1,107 @@
-import { createApp, h, nextTick, shallowRef } from 'vue';
+import { createApp, h, nextTick, ref, shallowRef } from 'vue';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { requireDefined } from '../../../../../../../shared/require-defined';
+import { toDocumentTemplate } from '../runtime/document-layout';
 import { preparePrintTemplate } from '../runtime/prepare-template';
+import { agreePrintTemplate } from '../template/agreement-template';
 import { listPrintElements } from '../template/print-element-meta';
+import { normalizeDesignerTemplate } from './normalize-designer-template';
 import PrintInspector from './print-inspector.vue';
 
 const cleanups: Array<() => void> = [];
 afterEach(() => cleanups.splice(0).forEach((cleanup) => cleanup()));
+
+it('updates a text binding when the editor loses focus', async () => {
+  const current = shallowRef<Record<string, any>>({
+    panels: [
+      {
+        printElements: [
+          {
+            printElementType: { type: 'text' },
+            options: {
+              field: 'agreementNo',
+              title: '协议编号',
+              top: 20,
+              left: 20,
+            },
+          },
+        ],
+      },
+    ],
+  });
+  const host = document.createElement('div');
+  document.body.append(host);
+  const app = createApp({
+    render: () =>
+      h(PrintInspector, {
+        templateJson: current.value,
+        selectedKey: requireDefined(listPrintElements(current.value)[0]).key,
+        sampleData: {} as any,
+        onCanvasPatch: (next) => {
+          current.value = next;
+        },
+      }),
+  });
+  app.mount(host);
+  cleanups.push(() => {
+    app.unmount();
+    host.remove();
+  });
+  await nextTick();
+
+  const item = [...host.querySelectorAll('.el-form-item')].find(
+    (el) => el.querySelector('label')?.textContent?.trim() === '绑定字段',
+  );
+  const input = item?.querySelector<HTMLInputElement>('input');
+  if (!input) throw new Error('Missing binding input');
+  input.value = 'signDate';
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  await nextTick();
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  await nextTick();
+  expect(
+    requireDefined(listPrintElements(current.value)[0]).options.field,
+  ).toBe('signDate');
+});
+
+it('keeps property tabs available after restoring and reselecting an element', async () => {
+  const current = shallowRef<Record<string, any>>(
+    toDocumentTemplate(JSON.parse(JSON.stringify(agreePrintTemplate))),
+  );
+  const selectedKey = ref('');
+  const host = document.createElement('div');
+  document.body.append(host);
+  const app = createApp({
+    render: () =>
+      h(PrintInspector, {
+        templateJson: current.value,
+        selectedKey: selectedKey.value,
+        sampleData: {} as any,
+      }),
+  });
+  app.mount(host);
+  cleanups.push(() => {
+    app.unmount();
+    host.remove();
+  });
+
+  current.value = normalizeDesignerTemplate(agreePrintTemplate);
+  await nextTick();
+  selectedKey.value = requireDefined(
+    listPrintElements(current.value).find(
+      (element) => element.options.field === 'agreementName',
+    ),
+  ).key;
+  await nextTick();
+  expect(host.textContent).toContain('agreementName');
+  expect(
+    [...host.querySelectorAll('[role="tab"]')].map((el) =>
+      el.textContent?.trim(),
+    ),
+  ).toEqual(expect.arrayContaining(['内容与数据', '外观', '规则']));
+});
 
 async function mountInspector() {
   const current = shallowRef<Record<string, any>>({
@@ -50,8 +144,8 @@ async function mountInspector() {
     render() {
       return h(PrintInspector, {
         templateJson: current.value,
-        selectedKey: listPrintElements(current.value)[0]!.key,
-        sampleData: {} as any,
+        selectedKey: requireDefined(listPrintElements(current.value)[0]).key,
+        sampleData: { rewardItems: [{ amount: 10 }], amount: 25 } as any,
         onCanvasPatch: (next) => {
           current.value = next;
         },
@@ -98,7 +192,7 @@ describe('flow group controls', () => {
     if (!clear) throw new Error('Missing group clear control');
     clear.click();
     await nextTick();
-    const options = listPrintElements(current.value)[0]!.options;
+    const options = requireDefined(listPrintElements(current.value)[0]).options;
     expect(options).not.toHaveProperty('agreeFlowGroup');
     expect(options).not.toHaveProperty('agreeFlowFloat');
     expect(options).not.toHaveProperty('agreeFlowStretch');
@@ -123,7 +217,9 @@ describe('flow group controls', () => {
     if (!fixed) throw new Error('Missing fixed positioning option');
     fixed.click();
     await nextTick();
-    expect(listPrintElements(current.value)[0]!.options).toMatchObject({
+    expect(
+      requireDefined(listPrintElements(current.value)[0]).options,
+    ).toMatchObject({
       agreeFlowMode: 'fixed',
       agreeFlowGroup: 'header',
     });
@@ -152,39 +248,58 @@ describe('visible condition display modes', () => {
     expect(host.textContent).not.toContain('应用条件');
   });
 
-  it('opens the simple builder after choosing 按条件 without writing a formula', async () => {
+  it('opens a shared condition dialog and preserves an always-hidden rule on cancel', async () => {
     const { current, host } = await mountInspector();
-    clickLabeledControl(host, '按条件');
+    clickLabeledControl(host, '按条件显示');
     await nextTick();
-    expect(host.textContent).toContain('常用条件');
-    expect(host.textContent).toContain('应用条件');
+    expect(document.body.textContent).toContain('条件配置');
+    expect(document.body.textContent).toContain('应用条件');
     expect(
-      listPrintElements(current.value)[0]!.options.agreeVisibleWhen || '',
-    ).toBe('');
+      requireDefined(listPrintElements(current.value)[0]).options
+        .agreeVisibleWhen,
+    ).toBe('false');
+    const cancel = [...document.querySelectorAll('button')].find(
+      (el) => el.textContent?.trim() === '取消',
+    );
+    cancel?.click();
+    await nextTick();
+    expect(
+      requireDefined(listPrintElements(current.value)[0]).options
+        .agreeVisibleWhen,
+    ).toBe('false');
+    expect(host.textContent).toContain('当前元素始终隐藏');
   });
 
-  it('shows two-layer expression help in 高级表达式', async () => {
-    const { host } = await mountInspector();
-    clickLabeledControl(host, '按条件');
+  it('uses shared field/function help and only writes a formula on apply', async () => {
+    const { current, host } = await mountInspector();
+    clickLabeledControl(host, '按条件显示');
     await nextTick();
-    clickLabeledControl(host, '高级表达式');
+    clickLabeledControl(document.body, '公式编辑');
     await nextTick();
-    expect(host.textContent).toContain('全部函数与字段');
-    expect(host.textContent).toContain('可用：协议字段');
-    expect(host.textContent).not.toContain('IF(条件, 真, 假)');
-    const open = [...host.querySelectorAll('button')].find(
-      (btn) => btn.textContent?.trim() === '全部函数与字段',
+    expect(document.body.textContent).toContain('被征收人');
+    const input = requireDefined(
+      document.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="表达式"]',
+      ),
     );
-    open?.click();
+    input.value = 'COUNT(rewardItems) > 0';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
     await nextTick();
-    expect(host.textContent).toContain('被征收人');
-    expect(host.textContent).not.toContain('IF(条件, 真, 假)');
-    const judge = [...host.querySelectorAll('[role="tab"]')].find(
-      (el) => el.textContent?.trim() === '判断',
+    input.dispatchEvent(new FocusEvent('blur'));
+    await nextTick();
+    expect(
+      requireDefined(listPrintElements(current.value)[0]).options
+        .agreeVisibleWhen,
+    ).toBe('false');
+    const apply = [...document.querySelectorAll('button')].find(
+      (el) => el.textContent?.trim() === '应用条件',
     );
-    (judge as HTMLElement | undefined)?.click();
+    apply?.click();
     await nextTick();
-    expect(host.textContent).toContain('IF(条件, 真, 假)');
+    expect(
+      requireDefined(listPrintElements(current.value)[0]).options
+        .agreeVisibleWhen,
+    ).toBe('COUNT(rewardItems) > 0');
   });
 
   it('writes false when choosing 始终隐藏', async () => {
@@ -192,13 +307,15 @@ describe('visible condition display modes', () => {
     clickLabeledControl(host, '始终显示');
     await nextTick();
     expect(
-      listPrintElements(current.value)[0]!.options.agreeVisibleWhen || '',
+      requireDefined(listPrintElements(current.value)[0]).options
+        .agreeVisibleWhen || '',
     ).toBe('');
     clickLabeledControl(host, '始终隐藏');
     await nextTick();
-    expect(listPrintElements(current.value)[0]!.options.agreeVisibleWhen).toBe(
-      'false',
-    );
+    expect(
+      requireDefined(listPrintElements(current.value)[0]).options
+        .agreeVisibleWhen,
+    ).toBe('false');
   });
 });
 
@@ -230,8 +347,9 @@ async function mountTableInspector() {
     render() {
       return h(PrintInspector, {
         templateJson: current.value,
-        selectedKey: listPrintElements(current.value)[0]!.key,
+        selectedKey: requireDefined(listPrintElements(current.value)[0]).key,
         sampleData: {
+          amount: 25,
           rewardItems: [
             { name: 'a', amount: 1 },
             { name: '', amount: 0 },
@@ -266,4 +384,35 @@ describe('table filter chips', () => {
     expect(text).toContain('奖励项目 不为空');
     expect(text).toContain('更多条件');
   });
+});
+
+it('opens visibility conditions for a table and accepts a root field also used by a column', async () => {
+  const { current, host } = await mountTableInspector();
+  const when = [
+    ...host.querySelectorAll<HTMLElement>('.el-radio-button__inner'),
+  ].find((el) => el.textContent?.trim() === '按条件显示');
+  when?.click();
+  await nextTick();
+  expect(document.body.textContent).toContain('设置元素显示条件');
+  const formula = [
+    ...document.querySelectorAll<HTMLElement>('.el-radio-button__inner'),
+  ].find((el) => el.textContent?.trim() === '公式编辑');
+  formula?.click();
+  await nextTick();
+  const input = requireDefined(
+    document.querySelector<HTMLTextAreaElement>('[aria-label="表达式"]'),
+  );
+  input.value = 'amount > 0';
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  await nextTick();
+  const apply = [
+    ...document.querySelectorAll<HTMLButtonElement>('button'),
+  ].find((el) => el.textContent?.trim() === '应用条件');
+  apply?.click();
+  await nextTick();
+  expect(
+    requireDefined(listPrintElements(current.value)[0]).options
+      .agreeVisibleWhen,
+  ).toBe('amount > 0');
+  expect(host.textContent).not.toContain('amount 是表体行字段');
 });

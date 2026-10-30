@@ -1,5 +1,6 @@
 import { formatPrintValue } from '../data/format-print-value';
 import { evalPrintExpr } from './print-expr';
+import { maskPrintDisplay } from './print-masking';
 
 /** 文本的字段/公式与显示格式共用同一套求值顺序。 */
 export function resolvePrintTextValue(
@@ -17,7 +18,13 @@ export function resolvePrintTextValue(
     value = options.testData;
   }
   if (value !== null && typeof value === 'object') return '';
-  return formatPrintValue(value, String(options.agreeFormat || ''), data);
+  return maskPrintDisplay(
+    value,
+    formatPrintValue(value, String(options.agreeFormat || ''), data),
+    data,
+    field,
+    expr,
+  );
 }
 
 /**

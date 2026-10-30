@@ -1,3 +1,8 @@
+/**
+ * 这是普通 TypeScript 模块，不是独立页面，也不是 list.vue 自动附带的文件。
+ * list.vue 显式 import useColumns；modules/form.vue 使用 useFormSchema。
+ * 将重复的字段/列配置放在这里，让页面专注查询、弹窗和保存操作。
+ */
 import type { VbenFormSchema } from '#/adapter/form';
 import type { OnActionClickFn, VxeTableGridColumns } from '#/adapter/vxe-table';
 import type { SystemDeptApi } from '#/api/system/dept';
@@ -5,11 +10,11 @@ import type { SystemDeptApi } from '#/api/system/dept';
 import { getDeptList } from '#/api';
 import { $t } from '#/locales';
 
-/** 部门表单 schema */
+/** 部门表单 schema：用配置描述字段、组件、标签和校验规则，再由 Vben 表单渲染。 */
 export function useFormSchema(): VbenFormSchema[] {
   return [
     {
-      component: 'ApiTreeSelect',
+      component: 'ApiTreeSelect', // 组件名称由表单适配器映射为真正的组件。
       componentProps: {
         api: getDeptList,
         childrenField: 'children',
@@ -17,7 +22,7 @@ export function useFormSchema(): VbenFormSchema[] {
         valueField: 'id',
         class: 'w-full',
       },
-      fieldName: 'pid',
+      fieldName: 'pid', // 对应表单数据中的 pid（上级部门 id）。
       label: $t('system.dept.parentDept'),
     },
     {
@@ -89,7 +94,7 @@ export function useColumns(
       align: 'center',
       cellRender: {
         attrs: { nameField: 'name', onClick: onActionClick },
-        name: 'CellOperation',
+        name: 'CellOperation', // 在 #/adapter/vxe-table.ts 注册的操作列渲染器。
         options: [
           { code: 'append', text: '新增下级', show: canCreate },
           { code: 'edit', show: canEdit },

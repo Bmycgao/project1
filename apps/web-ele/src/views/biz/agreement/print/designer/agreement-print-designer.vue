@@ -1,25 +1,24 @@
 <script lang="ts" setup>
 import type { AgreePrintFieldItem } from '../data/fields';
+import type { PrintSamplePreset } from '../data/sample-print-data';
+import type { PrintTemplatePreset } from '../template/template-presets';
 import type { AgreePrintData } from '../types';
 import type { ColumnFilterAnchor } from './print-column-filter-place';
 import type {
   CanvasFieldDropPayload,
   CanvasToolboxDropPayload,
 } from './template-model';
-/**
- * 协议打印设计器（重构版）
- * - 自绘多页纵向连续画布，越界自动翻页
- * - 复用既有纯逻辑：字段面板 / 检视器 / 预览打印管线 / 元素构造 / 纸张换算
- * - 对外契约与旧设计器一致：props(templateId, delegateSave)、expose(getTemplateJson, markClean)、emit(saveRequested)
- */
 import type { PalettePayload, PalettePoint } from './use-palette-pointer-drag';
 
 import {
   computed,
   nextTick,
+  onActivated,
   onBeforeUnmount,
+  onDeactivated,
   onMounted,
   ref,
+  shallowRef,
   watch,
 } from 'vue';
 
@@ -28,6 +27,9 @@ import {
   ElButton,
   ElButtonGroup,
   ElDialog,
+  ElDropdown,
+  ElDropdownItem,
+  ElDropdownMenu,
   ElInput,
   ElMessage,
   ElMessageBox,
@@ -107,16 +109,24 @@ import {
   setAgreePrintHtml5Drag,
 } from '../template/print-element-meta';
 import {
+  createPrintTemplatePreset,
+  readPrintTemplatePreset,
+} from '../template/template-presets';
+import {
   loadAgreePrintTemplate,
   saveAgreePrintTemplate,
 } from '../template/template-store';
 import CanvasStage from './canvas-stage.vue';
 import DocumentCanvas from './document-canvas.vue';
+import { normalizeDesignerTemplate } from './normalize-designer-template';
 import { placeColumnFilterPopover } from './print-column-filter-place';
 import PrintColumnFilter from './print-column-filter.vue';
 import PrintDataPanel from './print-data-panel.vue';
+import PrintEditScope from './print-edit-scope.vue';
 import PrintExprHelp from './print-expr-help.vue';
 import PrintInspector from './print-inspector.vue';
+import PrintMaskingDialog from './print-masking-dialog.vue';
+import PrintTemplatePresetPicker from './print-template-preset-picker.vue';
 import PrintWatermarkDialog from './print-watermark-dialog.vue';
 import {
   autoPaginate,
@@ -126,6 +136,13 @@ import {
 } from './template-model';
 import { usePalettePointerDrag } from './use-palette-pointer-drag';
 
+/**
+ * 协议打印设计器（重构版）
+ * - 自绘多页纵向连续画布，越界自动翻页
+ * - 复用既有纯逻辑：字段面板 / 检视器 / 预览打印管线 / 元素构造 / 纸张换算
+ * - 对外契约与旧设计器一致：props(templateId, delegateSave)、expose(getTemplateJson, markClean)、emit(saveRequested)
+ */
+
 const props = defineProps<{
   /** 委托父页保存（编辑页用） */
   delegateSave?: boolean;
@@ -134,6 +151,8 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
+  dirtyChange: [dirty: boolean];
+  readyChange: [ready: boolean];
   /** 委托保存时把 JSON 抛给父页 */
   saveRequested: [json: Record<string, any>];
 }>();
@@ -141,35 +160,62 @@ const emit = defineEmits<{
 /** 选中元素时用于临时定位的标记键 */
 const SEL_MARK = '__agreeSel';
 
-/** 左侧可添加的积木 */
-const TOOLBOX = [
-  { tid: 'staticTitle', label: '标题' },
+/** 先呈现三种最常用的内容，其他元素按需展开。 */
+const PRIMARY_TOOLS = [
   { tid: 'dynamicText', label: '文本' },
+  { tid: 'formGrid', label: '固定表单' },
+  { tid: 'table', label: '明细表' },
+];
+const ADVANCED_TOOLS = [
+  { tid: 'staticTitle', label: '标题' },
   { tid: 'longText', label: '长文本' },
-  { tid: 'tableChoice', label: '表格' },
   { tid: 'qrcode', label: '二维码' },
   { tid: 'barcode', label: '条形码' },
   { tid: 'hline', label: '横线' },
   { tid: 'vline', label: '竖线' },
   { tid: 'rect', label: '矩形' },
-  { tid: 'pageBreak', label: '页面隔断' },
+  { tid: 'pageBreak', label: '分页符' },
 ];
-
-const tableChoiceOpen = ref(false);
-let pendingTableDrop: CanvasToolboxDropPayload | null = null;
-function chooseTableKind(tid: 'formGrid' | 'table') {
-  const pending = pendingTableDrop;
-  pendingTableDrop = null;
-  tableChoiceOpen.value = false;
-  if (pending) onCanvasToolboxDrop({ ...pending, tid });
-  else addToolbox(tid);
-}
+const advancedToolsOpen = ref(false);
 const templateJson = ref<null | Record<string, any>>(null);
 const sampleData = ref<AgreePrintData>(buildDesignerSamplePrintData());
+const maskingOpen = ref(false);
+const maskingField = ref('');
+function openPrintMasking(field = '') {
+  maskingField.value = field;
+  maskingOpen.value = true;
+}
+function applyPrintMasking(next: Record<string, any>) {
+  commit(next, { markSelected: true, paginate: false });
+  ElMessage.success('打印脱敏已应用，请保存模板');
+}
 const zoom = ref(100);
 const zoomMode = ref<'fit' | 'manual'>('fit');
 const loading = ref(false);
 const dirty = ref(false);
+let savedTemplateSnapshot = '';
+let designerActive = true;
+const previewLoading = ref(false);
+const previewPrinting = ref(false);
+/** 只保留已成功展示的版式和数据，试打直接复用这次预览。 */
+const previewPrintJob = shallowRef<null | {
+  data: AgreePrintData;
+  instance: { print: (...args: any[]) => unknown };
+  template: Record<string, any>;
+}>(null);
+let previewRequest = 0;
+const previewSamplePreset = ref<'custom' | PrintSamplePreset>('example');
+const previewSampleLabel = computed(
+  () =>
+    ({
+      example: '完整示例数据',
+      custom: '自定义数据',
+    })[previewSamplePreset.value],
+);
+const presetDialogOpen = ref(false);
+const resetPreset = ref<PrintTemplatePreset>('example');
+const previewPageCount = ref<null | number>(null);
+const previewError = ref('');
 
 /** 选中：以「面板下标 / 元素下标」为稳定标识 */
 const selPanel = ref(-1);
@@ -275,8 +321,11 @@ const canUndo = ref(false);
 const canRedo = ref(false);
 
 /** 左右侧栏折叠，扩大画布 */
-const leftCollapsed = ref(false);
+const leftCollapsed = ref(true);
 const rightCollapsed = ref(false);
+const inspectorRequested = ref(false);
+const leftScrollRef = ref<HTMLElement | null>(null);
+const fieldsSectionRef = ref<HTMLElement | null>(null);
 
 /** 画布右键菜单 */
 const ctxMenu = ref({ open: false, x: 0, y: 0 });
@@ -306,6 +355,11 @@ const selectedElement = computed(() => {
     ) || null
   );
 });
+const rightPanelHidden = computed(
+  () =>
+    rightCollapsed.value ||
+    (!selectedElement.value && !inspectorRequested.value),
+);
 
 /** 检视器用选中键：与 listPrintElements 的 key 对齐 */
 const inspectorKey = computed(() => selectedElement.value?.key || '');
@@ -357,24 +411,17 @@ async function fetchTemplateJson(): Promise<Record<string, any>> {
 
 /** 载入模板：横向历史模板归一为竖向 */
 async function loadTemplate() {
+  previewOpen.value = false;
+  previewPrintJob.value = null;
   loading.value = true;
   try {
-    let tpl = toDocumentTemplate(
-      sanitizePrintTemplate(await fetchTemplateJson()),
-    );
-    const spec = readTemplatePaperSpec(tpl);
-    if (spec.orientation === 'landscape') {
-      tpl = applyPaperToTemplate(tpl, {
-        sizeId: spec.sizeId,
-        orientation: 'portrait',
-        customWidthMm: spec.customWidthMm || spec.heightMm,
-        customHeightMm: spec.customHeightMm || spec.widthMm,
-      }).template;
-    }
+    const tpl = normalizeDesignerTemplate(await fetchTemplateJson());
     templateJson.value = tpl;
+    previewSamplePreset.value = 'example';
+    sampleData.value = buildDesignerSamplePrintData();
     currentPanel.value = 0;
     clearSelection();
-    dirty.value = false;
+    markClean(tpl);
     resetHistory(tpl);
     fitToWidth();
   } catch (error: any) {
@@ -383,6 +430,10 @@ async function loadTemplate() {
     loading.value = false;
   }
 }
+
+watch([templateJson, sampleData], () => {
+  previewPageCount.value = null;
+});
 
 // ---------------- 选中互转 ----------------
 
@@ -573,6 +624,11 @@ function selectedBodyFormulaContext() {
 const bodyFormulaHelpFields = computed(() =>
   rowPrintExprFields(selectedBodyFormulaContext()?.leaves || []),
 );
+const bodyFormulaTarget = computed(() => {
+  const ctx = selectedBodyFormulaContext();
+  if (!ctx) return '当前单元格';
+  return `${ctx.el.options.title || ctx.el.options.field || '明细表'} · 第 ${ctx.selection.startRow + 1} 条记录 · ${ctx.leaf.title || ctx.leaf.field}`;
+});
 
 /**
  * 把帮助芯片插入当前单元格公式
@@ -586,19 +642,23 @@ function insertBodyFormulaToken(token: string) {
   );
 }
 
-/** 单格公式即时校验；与最终保存使用完全相同的样例行上下文。 */
+/** 参数填写预览与最终公式校验共用当前记录上下文。 */
+const bodyFormulaSampleContext = computed(() => {
+  const ctx = selectedBodyFormulaContext();
+  return {
+    ...(sampleData.value as unknown as Record<string, unknown>),
+    ...ctx?.selection.rawStartRow,
+    i: ctx?.selection.startRow ?? 0,
+    index: ctx?.selection.startRow ?? 0,
+    row: ctx?.selection.rawStartRow || {},
+  };
+});
 const bodyFormulaValidation = computed(() => {
   const expr = bodyFormulaExpr.value.trim();
   if (!expr) return null;
-  const ctx = selectedBodyFormulaContext();
-  if (!ctx) return { message: '当前单元格已失去选中状态', ok: false };
-  return validatePrintExpr(expr, {
-    ...(sampleData.value as unknown as Record<string, unknown>),
-    ...ctx.selection.rawStartRow,
-    i: ctx.selection.startRow,
-    index: ctx.selection.startRow,
-    row: ctx.selection.rawStartRow,
-  });
+  if (!selectedBodyFormulaContext())
+    return { message: '当前单元格已失去选中状态', ok: false };
+  return validatePrintExpr(expr, bodyFormulaSampleContext.value);
 });
 
 /** 依据当前字段生成快捷公式，避免示例中的 quantity 等字段误写到别的列。 */
@@ -709,7 +769,9 @@ function applyBodyCellFormula() {
     { paginate: false },
   );
   bodyFormulaOpen.value = false;
-  ElMessage.success(expr ? '已写入当前单元格计算' : '已清除当前单元格计算');
+  ElMessage.success(
+    `${expr ? '单格计算' : '清除计算'}已应用到画布，请保存模板`,
+  );
 }
 
 function onTableFooterCellSelect(payload: {
@@ -718,7 +780,10 @@ function onTableFooterCellSelect(payload: {
   rowIndex: number;
 }) {
   onCanvasSelect(payload.key);
-  inspectorRef.value?.focusFooterCell(payload.rowIndex, payload.cellIndex);
+  void nextTick(() => {
+    if (canvasSelectedKey.value === payload.key)
+      inspectorRef.value?.focusFooterCell(payload.rowIndex, payload.cellIndex);
+  });
 }
 
 /** 点选表头：高亮后打开编辑明细表，不在画布上合并/拆分 */
@@ -744,10 +809,13 @@ function onTableHeaderCellSelect(payload: {
     field: payload.fromLeaf === payload.toLeaf ? payload.field : '',
     mergeId: payload.mergeId,
   };
-  inspectorRef.value?.openTableEditor({
-    fromLeaf: payload.fromLeaf,
-    toLeaf: payload.toLeaf,
-    mergeId: payload.mergeId,
+  void nextTick(() => {
+    if (canvasSelectedKey.value !== payload.key) return;
+    inspectorRef.value?.openTableEditor({
+      fromLeaf: payload.fromLeaf,
+      toLeaf: payload.toLeaf,
+      mergeId: payload.mergeId,
+    });
   });
 }
 
@@ -973,7 +1041,7 @@ function commit(
   // 回定位选中并清除标记
   relocateSelection(working);
   templateJson.value = working;
-  dirty.value = true;
+  updateDirty();
   if (opts?.pushHist !== false) {
     pushHistory(working);
   }
@@ -1027,7 +1095,7 @@ function undo() {
   clearSelection();
   templateJson.value = cloneTemplate(snap);
   lastHistoryFp = templateFingerprint(snap);
-  dirty.value = true;
+  updateDirty();
   applyingHistory = false;
 }
 
@@ -1045,7 +1113,7 @@ function redo() {
   clearSelection();
   templateJson.value = cloneTemplate(snap);
   lastHistoryFp = templateFingerprint(snap);
-  dirty.value = true;
+  updateDirty();
   applyingHistory = false;
 }
 
@@ -1075,13 +1143,8 @@ function activePanelIndex() {
 function addToolbox(tid: string) {
   if (!templateJson.value) return;
   if (toolboxDragging) return;
-  if (tid === 'tableChoice') {
-    pendingTableDrop = null;
-    tableChoiceOpen.value = true;
-    return;
-  }
   if (tid === 'pageBreak') {
-    ElMessage.info('请把「页面隔断」拖到纸面需要分页的位置');
+    ElMessage.info('请把「分页符」拖到纸面需要另起一页的位置');
     return;
   }
   const panelIndex = activePanelIndex();
@@ -1114,16 +1177,18 @@ function onToolboxDragEnd() {
   }, 0);
 }
 
-/** 字段面板点选：有选中则改绑定，否则新增已绑定元素 */
-function onFieldPick(item: AgreePrintFieldItem) {
+/** 字段点击始终新增，只有显式绑定动作才能替换当前文本。 */
+function onFieldPick(
+  item: AgreePrintFieldItem,
+  action: 'add' | 'bind' = 'add',
+) {
   if (!templateJson.value) return;
-  // 已选中文本元素 → 改字段绑定
-  if (selPanel.value >= 0) {
+  if (action === 'bind') {
     const cur = listPrintElements(templateJson.value).find(
       (e) =>
         e.panelIndex === selPanel.value && e.elementIndex === selElement.value,
     );
-    if (cur && cur.type !== 'table') {
+    if (cur?.type === 'text' && item.group !== 'table') {
       const next = patchElementOptions(
         templateJson.value,
         { panelIndex: selPanel.value, elementIndex: selElement.value },
@@ -1134,8 +1199,11 @@ function onFieldPick(item: AgreePrintFieldItem) {
         },
       );
       commit(next, { markSelected: true, paginate: false });
+      ElMessage.success(`已绑定「${item.text}」并更新画布，请保存模板`);
       return;
     }
+    ElMessage.warning('请先选中文本元素，再绑定字段');
+    return;
   }
   // 否则新增绑定元素
   const panelIndex = activePanelIndex();
@@ -1147,6 +1215,7 @@ function onFieldPick(item: AgreePrintFieldItem) {
   (node.options as Record<string, any>)[SEL_MARK] = true;
   const next = insertPrintElement(templateJson.value, panelIndex, -1, node);
   commit(next, { markSelected: true });
+  ElMessage.success(`已添加「${item.text}」到画布，请保存模板`);
 }
 
 /** 字段拖入纸面：按目标页和落点新建已绑定元素 */
@@ -1178,11 +1247,6 @@ function onCanvasFieldDrop(payload: CanvasFieldDropPayload) {
 
 /** 积木拖入纸面；页面隔断会把线下内容整体搬到紧随其后的新页 */
 function onCanvasToolboxDrop(payload: CanvasToolboxDropPayload) {
-  if (payload.tid === 'tableChoice') {
-    pendingTableDrop = { ...payload };
-    tableChoiceOpen.value = true;
-    return;
-  }
   if (!templateJson.value) return;
   const panel = templateJson.value.panels?.[payload.panelIndex];
   if (!panel) return;
@@ -1202,7 +1266,7 @@ function onCanvasToolboxDrop(payload: CanvasToolboxDropPayload) {
     void nextTick(() => canvasRef.value?.scrollToPanel(result.newPanelIndex));
     ElMessage.success(
       result.movedCount > 0
-        ? `已隔断，${result.movedCount} 个元素移到第 ${result.newPanelIndex + 1} 个手工区段`
+        ? `已隔断，${result.movedCount} 个元素移到第 ${result.newPanelIndex + 1} 个内容区段`
         : '已在此处隔断并新增空白页',
     );
     return;
@@ -1315,13 +1379,13 @@ function addPage() {
 /** 删除当前页 */
 async function removeCurrentPage() {
   if (!templateJson.value || pageCount.value <= 1) {
-    ElMessage.warning('至少保留一个手工区段');
+    ElMessage.warning('至少保留一个内容区段');
     return;
   }
   const idx = activePanelIndex();
   try {
     await ElMessageBox.confirm(
-      `确认删除第 ${idx + 1} 个手工区段及其中所有内容（含自动续页）？`,
+      `确认删除第 ${idx + 1} 个内容区段及其中所有内容（含自动续页）？`,
       '删除区段',
       {
         type: 'warning',
@@ -1402,14 +1466,22 @@ let resizeOb: null | ResizeObserver = null;
 
 /** 快速预览：复用打印管线 getHtml */
 async function onPreview() {
-  if (!templateJson.value) return;
+  if (!templateJson.value || previewPrinting.value) return;
+  const request = ++previewRequest;
+  previewOpen.value = true;
+  previewLoading.value = true;
+  previewError.value = '';
+  previewPageCount.value = null;
+  previewPrintJob.value = null;
+  const json = cloneTemplate(templateJson.value);
+  const data = cloneTemplate(sampleData.value);
   try {
     const { PrintTemplate } = await ensureHiprint();
-    const json = cloneTemplate(templateJson.value);
+    if (request !== previewRequest || !previewOpen.value) return;
     applyPrintPageSizeFromTemplate(json);
     const { printData: enriched, template: preparedTpl } = preparePrintTemplate(
       json,
-      sampleData.value,
+      data,
     );
     const previewTpl = isDocumentTemplate(preparedTpl)
       ? await createDocumentPrint(preparedTpl, enriched)
@@ -1418,8 +1490,8 @@ async function onPreview() {
         });
     if (!isDocumentTemplate(preparedTpl))
       installHeaderMergeRuntime(previewTpl, preparedTpl);
-    previewOpen.value = true;
     await nextTick();
+    if (request !== previewRequest || !previewOpen.value) return;
     const host = previewHost.value;
     if (!host) return;
     host.innerHTML = '';
@@ -1427,16 +1499,82 @@ async function onPreview() {
     const $html = previewTpl.getHtml(enriched);
     if ($html?.appendTo) $html.appendTo(host);
     await nextTick();
+    if (request !== previewRequest || !previewOpen.value) return;
     normalizePrintPreviewPages(host, paperSpec.value.heightMm);
     fitPrintPreviewHost(host, paperSpec.value.widthMm);
+    const pageCount = host.querySelectorAll('.hiprint-printPaper').length;
+    previewPageCount.value = pageCount > 0 ? pageCount : null;
+    if (previewPageCount.value !== null && previewPageCount.value > 0) {
+      previewPrintJob.value = {
+        instance: previewTpl,
+        data: enriched,
+        template: json,
+      };
+    }
   } catch (error: any) {
-    ElMessage.error(error?.message || '预览失败');
+    if (request !== previewRequest || !previewOpen.value) return;
+    previewPageCount.value = null;
+    previewError.value = error?.message || '请检查模板和预览数据';
+    if (previewHost.value) previewHost.value.innerHTML = '';
+  } finally {
+    if (request === previewRequest) previewLoading.value = false;
   }
+}
+
+/** 打开浏览器打印窗口，不保存模板，也不重新读取已保存版式。 */
+async function onPrintSample() {
+  const job = previewPrintJob.value;
+  if (
+    !previewOpen.value ||
+    previewLoading.value ||
+    previewPrinting.value ||
+    dataJsonOpen.value ||
+    !job
+  )
+    return;
+  previewPrinting.value = true;
+  try {
+    applyPrintPageSizeFromTemplate(job.template);
+    await job.instance.print(
+      job.data,
+      {},
+      {
+        callback: () => {
+          if (previewPrintJob.value === job && previewOpen.value)
+            ElMessage.success('已打开打印窗口，请确认设置后打印或取消');
+        },
+      },
+    );
+  } catch (error: any) {
+    if (previewPrintJob.value === job && previewOpen.value)
+      ElMessage.error(error?.message || '打开打印窗口失败，请重试');
+  } finally {
+    if (previewPrintJob.value === job) previewPrinting.value = false;
+  }
+}
+
+watch(previewOpen, (open) => {
+  if (!open) {
+    previewRequest += 1;
+    previewLoading.value = false;
+    previewPrintJob.value = null;
+    previewPrinting.value = false;
+  }
+});
+
+function updateDirty() {
+  dirty.value = JSON.stringify(templateJson.value) !== savedTemplateSnapshot;
+}
+
+/** 保存基线独立于撤销栈；撤销到已保存版本时恢复“已保存”。 */
+function markClean(json = templateJson.value) {
+  savedTemplateSnapshot = JSON.stringify(json);
+  updateDirty();
 }
 
 /** 保存 */
 async function onSave() {
-  const json = templateJson.value;
+  const json = templateJson.value ? cloneTemplate(templateJson.value) : null;
   if (!json?.panels?.length) {
     ElMessage.warning('画布为空');
     return;
@@ -1448,34 +1586,39 @@ async function onSave() {
   try {
     if (props.templateId) {
       await updatePrintTemplate(props.templateId, { templateJson: json });
-      dirty.value = false;
+      markClean(json);
       ElMessage.success('模板已保存到服务端');
       return;
     }
     saveAgreePrintTemplate(json);
-    dirty.value = false;
+    markClean(json);
     ElMessage.success('模板已保存（本地）');
   } catch (error: any) {
     ElMessage.error(error?.message || '保存失败');
   }
 }
 
-/** 恢复默认版式 */
-async function onReset() {
-  try {
-    await ElMessageBox.confirm('将重新加载默认版式，是否继续？', '恢复默认', {
-      type: 'warning',
-    });
-  } catch {
-    return;
+/** 载入起始版式；临时预览数据独立保留，版式变更可撤销。 */
+function onReset() {
+  resetPreset.value = readPrintTemplatePreset(templateJson.value || {});
+  presetDialogOpen.value = true;
+}
+
+function applyStartingPreset() {
+  const tpl = normalizeDesignerTemplate(
+    createPrintTemplatePreset(resetPreset.value),
+  );
+  if (templateJson.value?.agreePrintMaskRules) {
+    tpl.agreePrintMaskRules = cloneTemplate(
+      templateJson.value.agreePrintMaskRules,
+    );
   }
-  const tpl = cloneTemplate(agreePrintTemplate);
-  templateJson.value = tpl;
-  sampleData.value = buildDesignerSamplePrintData();
   clearSelection();
-  dirty.value = true;
-  resetHistory(tpl);
+  currentPanel.value = 0;
+  commit(tpl, { paginate: false });
   fitToWidth();
+  presetDialogOpen.value = false;
+  ElMessage.success('已替换版式，可撤销；点击顶部保存后写入模板');
 }
 
 /** 打开水印对话框 */
@@ -1527,6 +1670,7 @@ function applyJsonEditor() {
 
 /** 打开数据源 JSON 编辑器 */
 function openDataJsonEditor() {
+  if (previewPrinting.value) return;
   dataJsonOpen.value = true;
 }
 
@@ -1534,21 +1678,91 @@ function openDataJsonEditor() {
  * 用粘贴的业务 JSON 替换设计器样例（影响画布表体与快速预览）
  * @param data 解析后的 printData
  */
-function onDataJsonApply(data: AgreePrintData) {
+function onDataJsonApply(
+  data: AgreePrintData,
+  source: 'custom' | PrintSamplePreset = 'custom',
+) {
   sampleData.value = data;
-  dirty.value = true;
-  ElMessage.success('已应用数据源 JSON，画布表体与快速预览会用这份数据');
+  previewSamplePreset.value = source;
+  ElMessage.success('预览数据已更新，仅在当前编辑会话中使用，不随模板保存');
+  if (previewOpen.value) void onPreview();
+}
+
+function onMoreCommand(command: string) {
+  switch (command) {
+    case 'delete-section': {
+      void removeCurrentPage();
+      break;
+    }
+    case 'reset': {
+      void onReset();
+      break;
+    }
+    case 'template-json': {
+      openJsonEditor();
+      break;
+    }
+    case 'toggle-left': {
+      toggleLeftPanel();
+      break;
+    }
+    case 'toggle-right': {
+      toggleRightPanel();
+      break;
+    }
+    case 'watermark': {
+      openWatermarkDialog();
+      break;
+    }
+  }
 }
 
 /** 切换左侧栏折叠，并重新适宽 */
 function toggleLeftPanel() {
   leftCollapsed.value = !leftCollapsed.value;
+  if (!leftCollapsed.value) revealFloatingPanel('left');
   fitToWidth();
+}
+
+/** 与窄窗口的容器查询保持一致，避免两个浮动面板同时遮住画布。 */
+function revealFloatingPanel(side: 'left' | 'right') {
+  const width = stageRef.value?.parentElement?.clientWidth;
+  if (!width || width > 1100) return;
+  if (side === 'left') {
+    rightCollapsed.value = true;
+    inspectorRequested.value = false;
+  } else {
+    leftCollapsed.value = true;
+  }
+}
+
+function openLibrary(section: 'add' | 'fields') {
+  leftCollapsed.value = false;
+  revealFloatingPanel('left');
+  void nextTick(() => {
+    leftScrollRef.value?.scrollTo({
+      top: section === 'fields' ? fieldsSectionRef.value?.offsetTop || 0 : 0,
+      behavior: 'smooth',
+    });
+    fitToWidth();
+  });
 }
 
 /** 切换右侧栏折叠，并重新适宽 */
 function toggleRightPanel() {
-  rightCollapsed.value = !rightCollapsed.value;
+  if (selectedElement.value) {
+    rightCollapsed.value = !rightCollapsed.value;
+  } else {
+    inspectorRequested.value = !inspectorRequested.value;
+    rightCollapsed.value = false;
+  }
+  if (!rightPanelHidden.value) revealFloatingPanel('right');
+  fitToWidth();
+}
+
+function closeInspector() {
+  rightCollapsed.value = true;
+  inspectorRequested.value = false;
   fitToWidth();
 }
 
@@ -1591,11 +1805,42 @@ function ctxDelete() {
  * @param e 键盘事件
  */
 function onDesignerKeydown(e: KeyboardEvent) {
-  const t = e.target as HTMLElement | null;
-  const typing = !!t?.closest('input, textarea, [contenteditable="true"]');
+  if (!designerActive || loading.value) return;
+  const t = e.target instanceof Element ? e.target : null;
+  // 弹窗可能来自检视器或父页，且通过 Teleport 挂在 body 下。
+  const dialogOpen = [
+    ...document.querySelectorAll<HTMLElement>(
+      '[role="dialog"], [role="alertdialog"]',
+    ),
+  ].some((el) => {
+    if (el.getClientRects().length === 0) return false;
+    for (let node: HTMLElement | null = el; node; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      if (
+        node.hidden ||
+        style.display === 'none' ||
+        style.visibility === 'hidden'
+      )
+        return false;
+    }
+    return true;
+  });
+  if (dialogOpen) {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's')
+      e.preventDefault();
+    return;
+  }
+  const typing = !!t?.closest(
+    'input, textarea, [contenteditable="true"], [role="combobox"], [role="menu"], [role="listbox"], .document-cell-toolbar, .document-row-height-panel',
+  );
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
     e.preventDefault();
-    void onSave();
+    if (typing && t instanceof HTMLElement) {
+      t.blur();
+      void nextTick().then(onSave);
+    } else {
+      void onSave();
+    }
     return;
   }
   if (typing) return;
@@ -1636,9 +1881,18 @@ function onDesignerKeydown(e: KeyboardEvent) {
     if (selPanel.value < 0) return;
     e.preventDefault();
     const step = e.shiftKey ? 5 : 1;
-    const dx =
-      e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
-    const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
+    let dx;
+    if (e.key === 'ArrowLeft') {
+      dx = -step;
+    } else {
+      dx = e.key === 'ArrowRight' ? step : 0;
+    }
+    let dy;
+    if (e.key === 'ArrowUp') {
+      dy = -step;
+    } else {
+      dy = e.key === 'ArrowDown' ? step : 0;
+    }
     nudgeSelected(dx, dy);
   }
 }
@@ -1666,14 +1920,32 @@ function onDocPointerDown(e: MouseEvent) {
 onMounted(() => {
   void loadTemplate();
   if (stageRef.value && typeof ResizeObserver !== 'undefined') {
-    resizeOb = new ResizeObserver(() => updateFitWidthZoom());
+    resizeOb = new ResizeObserver(() => {
+      if (!leftCollapsed.value && !rightPanelHidden.value)
+        revealFloatingPanel('right');
+      updateFitWidthZoom();
+    });
     resizeOb.observe(stageRef.value);
   }
   window.addEventListener('keydown', onDesignerKeydown);
   window.addEventListener('pointerdown', onDocPointerDown, true);
 });
 
+onActivated(() => {
+  designerActive = true;
+});
+onDeactivated(() => {
+  designerActive = false;
+  previewOpen.value = false;
+  previewPrintJob.value = null;
+  previewRequest += 1;
+  previewLoading.value = false;
+});
+
 onBeforeUnmount(() => {
+  designerActive = false;
+  previewPrintJob.value = null;
+  previewRequest += 1;
   resizeOb?.disconnect();
   resizeOb = null;
   window.removeEventListener('keydown', onDesignerKeydown);
@@ -1690,9 +1962,24 @@ watch(
 defineExpose({
   getTemplateJson: () =>
     templateJson.value ? cloneTemplate(templateJson.value) : null,
-  markClean: () => {
-    dirty.value = false;
+  preview: onPreview,
+  markClean,
+});
+
+watch(dirty, (value) => emit('dirtyChange', value), { immediate: true });
+watch(
+  [loading, templateJson],
+  ([busy, json]) => {
+    emit('readyChange', !busy && Boolean(json?.panels?.length));
   },
+  { immediate: true },
+);
+watch(inspectorKey, (key) => {
+  if (key) {
+    rightCollapsed.value = false;
+    inspectorRequested.value = false;
+    revealFloatingPanel('right');
+  }
 });
 </script>
 
@@ -1707,32 +1994,12 @@ defineExpose({
         添加{{ palettePreview.label }} · 松开放置，Esc 取消
       </div>
     </Teleport>
-    <ElDialog
-      v-model="tableChoiceOpen"
-      title="添加表格"
-      width="560px"
-      append-to-body
-      @closed="pendingTableDrop = null"
+    <!-- 页面设置和画布操作。编辑页的预览、保存留在唯一的顶部操作区。 -->
+    <div
+      class="agree-designer__toolbar"
+      role="toolbar"
+      aria-label="打印模板操作"
     >
-      <p class="mb-4 text-sm text-gray-500">
-        选择起步方式，两种表格都支持文档流排版。{{
-          pendingTableDrop ? '将在刚才的落点添加。' : '将在当前区段添加。'
-        }}
-      </p>
-      <div class="agree-designer__table-choices">
-        <button type="button" @click="chooseTableKind('table')">
-          <strong>明细表</strong><span>选择一个数据源，按列配置并自动重复记录。适合房屋、补偿、奖励清单。</span>
-        </button>
-        <button type="button" @click="chooseTableKind('formGrid')">
-          <strong>自由表单</strong><span>按单元格设置内容，可混排固定信息、动态明细、合计和签字。</span>
-        </button>
-      </div>
-      <template #footer>
-        <ElButton @click="tableChoiceOpen = false">取消</ElButton>
-      </template>
-    </ElDialog>
-    <!-- 顶部工具栏 -->
-    <div class="agree-designer__toolbar">
       <div class="agree-designer__group">
         <span class="agree-designer__label">纸张</span>
         <ElSelect
@@ -1748,20 +2015,20 @@ defineExpose({
             :value="p.id"
           />
         </ElSelect>
-        <span class="agree-designer__hint">{{ paperDesc }}（竖向）</span>
+        <span class="agree-designer__hint agree-designer__paper-desc">{{ paperDesc }}（竖向）</span>
       </div>
 
       <div class="agree-designer__group">
-        <ElButton size="small" @click="toggleLeftPanel">
-          {{ leftCollapsed ? '展开左栏' : '收起左栏' }}
-        </ElButton>
-        <ElButton size="small" @click="toggleRightPanel">
-          {{ rightCollapsed ? '展开右栏' : '收起右栏' }}
-        </ElButton>
         <ElButtonGroup>
-          <ElButton size="small" @click="nudgeZoom(-10)">-</ElButton>
-          <ElButton size="small" @click="resetZoom">{{ zoom }}%</ElButton>
-          <ElButton size="small" @click="nudgeZoom(10)">+</ElButton>
+          <ElButton size="small" aria-label="缩小画布" @click="nudgeZoom(-10)">
+            -
+          </ElButton>
+          <ElButton size="small" title="恢复到 100%" @click="resetZoom">
+            {{ zoom }}%
+          </ElButton>
+          <ElButton size="small" aria-label="放大画布" @click="nudgeZoom(10)">
+            +
+          </ElButton>
         </ElButtonGroup>
         <ElButton
           size="small"
@@ -1773,11 +2040,9 @@ defineExpose({
       </div>
 
       <div class="agree-designer__group">
-        <ElButton size="small" @click="addPage">新增手工区段</ElButton>
-        <ElButton size="small" @click="removeCurrentPage">删除区段</ElButton>
-        <span class="agree-designer__hint">
-          第 {{ activePanelIndex() + 1 }} / {{ pageCount }} 个手工区段 ·
-          内容自动续页
+        <ElButton size="small" @click="addPage">新增内容区段</ElButton>
+        <span class="agree-designer__hint agree-designer__section-status">
+          内容区段 {{ activePanelIndex() + 1 }}/{{ pageCount }}
         </span>
       </div>
 
@@ -1787,22 +2052,6 @@ defineExpose({
         </ElButton>
         <ElButton size="small" :disabled="!canRedo" @click="redo">
           重做
-        </ElButton>
-        <ElButton
-          size="small"
-          :disabled="selPanel < 0"
-          @click="duplicateSelected"
-        >
-          复制
-        </ElButton>
-        <ElButton
-          size="small"
-          type="danger"
-          plain
-          :disabled="selPanel < 0"
-          @click="deleteSelected"
-        >
-          删除元素
         </ElButton>
       </div>
 
@@ -1819,21 +2068,61 @@ defineExpose({
         >
           收进纸张
         </ElButton>
-        <span v-if="dirty" class="agree-designer__hint">未保存</span>
-        <ElButton
-          size="small"
-          :type="watermarkOn ? 'primary' : 'default'"
-          @click="openWatermarkDialog"
+        <span
+          v-if="dirty && !delegateSave"
+          class="agree-designer__save-state"
+          role="status"
         >
-          {{ watermarkOn ? '水印·开' : '水印' }}
+          模板未保存
+        </span>
+        <ElButton
+          v-if="!delegateSave"
+          size="small"
+          type="primary"
+          plain
+          @click="onPreview"
+        >
+          预览
         </ElButton>
-        <ElButton size="small" @click="openJsonEditor">模板 JSON</ElButton>
-        <ElButton size="small" @click="openDataJsonEditor">
-          数据源 JSON
+        <ElButton
+          v-if="!delegateSave"
+          size="small"
+          type="primary"
+          @click="onSave"
+        >
+          保存模板
         </ElButton>
-        <ElButton size="small" @click="onReset">恢复默认</ElButton>
-        <ElButton size="small" @click="onPreview">快速预览</ElButton>
-        <ElButton size="small" type="primary" @click="onSave">保存</ElButton>
+        <ElButton size="small" @click="openPrintMasking()"> 打印脱敏 </ElButton>
+        <ElDropdown trigger="click" @command="onMoreCommand">
+          <ElButton size="small" aria-label="页面设置与更多操作">
+            页面设置与更多
+          </ElButton>
+          <template #dropdown>
+            <ElDropdownMenu>
+              <ElDropdownItem command="toggle-left">
+                {{ leftCollapsed ? '展开左栏' : '收起左栏' }}
+              </ElDropdownItem>
+              <ElDropdownItem command="toggle-right">
+                {{ rightPanelHidden ? '展开元素属性' : '收起元素属性' }}
+              </ElDropdownItem>
+              <ElDropdownItem
+                command="delete-section"
+                :disabled="pageCount <= 1"
+              >
+                删除当前内容区段
+              </ElDropdownItem>
+              <ElDropdownItem command="watermark" divided>
+                {{ watermarkOn ? '水印设置（已开启）' : '水印设置' }}
+              </ElDropdownItem>
+              <ElDropdownItem command="template-json" divided>
+                编辑模板 JSON
+              </ElDropdownItem>
+              <ElDropdownItem command="reset" divided>
+                载入起始版式
+              </ElDropdownItem>
+            </ElDropdownMenu>
+          </template>
+        </ElDropdown>
       </div>
     </div>
 
@@ -1842,63 +2131,151 @@ defineExpose({
       class="agree-designer__body"
       :class="{
         'is-left-collapsed': leftCollapsed,
-        'is-right-collapsed': rightCollapsed,
+        'is-right-collapsed': rightPanelHidden,
       }"
     >
+      <nav class="agree-designer__rail" aria-label="画布工具">
+        <button type="button" title="添加内容" @click="openLibrary('add')">
+          <span>＋</span><small>添加</small>
+        </button>
+        <button
+          type="button"
+          title="查找数据字段"
+          @click="openLibrary('fields')"
+        >
+          <span>▤</span><small>字段</small>
+        </button>
+        <button type="button" title="定位画布元素" @click="toggleRightPanel">
+          <span>▧</span><small>元素</small>
+        </button>
+        <button type="button" title="新增内容区段" @click="addPage">
+          <span>▦</span><small>区段</small>
+        </button>
+      </nav>
       <!-- 左：积木 + 字段 -->
       <div class="agree-designer__left" @click.capture="suppressPaletteClick">
-        <div class="agree-designer__palette">
-          <div class="agree-designer__panel-heading">
-            <div class="agree-designer__panel-title">添加元素</div>
-            <span>单击自动添加 · 拖动精准定位</span>
-          </div>
-          <div class="agree-designer__toolbox">
-            <button
-              v-for="t in TOOLBOX"
-              :key="t.tid"
-              class="agree-designer__tool"
-              :class="{ 'is-page-break': t.tid === 'pageBreak' }"
-              :draggable="!isDocumentTemplate(templateJson)"
-              @pointerdown="
-                onPalettePointerDown(
-                  $event,
-                  { kind: AGREE_PRINT_TOOLBOX_DND, tid: t.tid },
-                  t.label,
-                )
-              "
-              :aria-label="
-                t.tid === 'pageBreak'
-                  ? '拖到元素上方或下方，在此另起一页'
-                  : `单击添加${t.label}，或拖到纸面指定位置`
-              "
-              :title="
-                t.tid === 'pageBreak'
-                  ? '拖到元素上方或下方，在此另起一页'
-                  : `单击添加${t.label}，或拖到纸面指定位置`
-              "
-              @dragstart="onToolboxDragStart($event, t.tid)"
-              @dragend="onToolboxDragEnd"
-              @click="addToolbox(t.tid)"
-            >
-              <span class="agree-designer__tool-grip">⠿</span>
-              <span>{{ t.label }}</span>
-            </button>
-          </div>
+        <div class="agree-designer__library-heading">
+          <strong>内容与字段</strong>
+          <ElButton
+            size="small"
+            text
+            aria-label="收起内容面板"
+            @click="toggleLeftPanel"
+          >
+            ×
+          </ElButton>
         </div>
-        <div class="agree-designer__fields">
-          <PrintDataPanel
-            :data="sampleData"
-            :pointer-drag="isDocumentTemplate(templateJson)"
-            @pointer-drag-start="onFieldPointerDown"
-            :selected-field="selectedElement?.field"
-            :selected-type="selectedElement?.type"
-            @pick="onFieldPick"
-          />
+        <div ref="leftScrollRef" class="agree-designer__left-scroll">
+          <div class="agree-designer__palette">
+            <div class="agree-designer__panel-heading">
+              <strong class="agree-designer__panel-title">添加内容</strong>
+            </div>
+            <div
+              class="agree-designer__toolbox agree-designer__toolbox--primary"
+            >
+              <button
+                v-for="t in PRIMARY_TOOLS"
+                :key="t.tid"
+                class="agree-designer__tool"
+                :draggable="!isDocumentTemplate(templateJson)"
+                @pointerdown="
+                  onPalettePointerDown(
+                    $event,
+                    { kind: AGREE_PRINT_TOOLBOX_DND, tid: t.tid },
+                    t.label,
+                  )
+                "
+                :aria-label="`单击添加${t.label}，或拖到纸面指定位置`"
+                :title="`单击添加${t.label}，或拖到纸面指定位置`"
+                @dragstart="onToolboxDragStart($event, t.tid)"
+                @dragend="onToolboxDragEnd"
+                @click="addToolbox(t.tid)"
+              >
+                <span class="agree-designer__tool-grip">⠿</span>
+                <span>{{ t.label }}</span>
+              </button>
+            </div>
+            <p class="agree-designer__tool-description">
+              固定表单按格绑定信息；明细表按数据源重复记录。
+            </p>
+            <button
+              type="button"
+              class="agree-designer__advanced-toggle"
+              :aria-expanded="advancedToolsOpen"
+              @click="advancedToolsOpen = !advancedToolsOpen"
+            >
+              {{
+                advancedToolsOpen
+                  ? '收起其他元素'
+                  : '其他元素：标题、二维码、线条等'
+              }}
+            </button>
+            <div
+              v-if="advancedToolsOpen"
+              class="agree-designer__toolbox agree-designer__toolbox--advanced"
+            >
+              <button
+                v-for="t in ADVANCED_TOOLS"
+                :key="t.tid"
+                class="agree-designer__tool"
+                :class="{ 'is-page-break': t.tid === 'pageBreak' }"
+                :draggable="!isDocumentTemplate(templateJson)"
+                @pointerdown="
+                  onPalettePointerDown(
+                    $event,
+                    { kind: AGREE_PRINT_TOOLBOX_DND, tid: t.tid },
+                    t.label,
+                  )
+                "
+                :aria-label="
+                  t.tid === 'pageBreak'
+                    ? '拖到元素上方或下方，在此另起一页'
+                    : `单击添加${t.label}，或拖到纸面指定位置`
+                "
+                :title="
+                  t.tid === 'pageBreak'
+                    ? '拖到元素上方或下方，在此另起一页'
+                    : `单击添加${t.label}，或拖到纸面指定位置`
+                "
+                @dragstart="onToolboxDragStart($event, t.tid)"
+                @dragend="onToolboxDragEnd"
+                @click="addToolbox(t.tid)"
+              >
+                <span class="agree-designer__tool-grip">⠿</span>
+                <span>{{ t.label }}</span>
+              </button>
+            </div>
+          </div>
+          <div ref="fieldsSectionRef" class="agree-designer__fields">
+            <div class="agree-designer__panel-heading">
+              <strong class="agree-designer__panel-title">数据字段</strong>
+            </div>
+            <PrintDataPanel
+              :data="sampleData"
+              :pointer-drag="isDocumentTemplate(templateJson)"
+              @pointer-drag-start="onFieldPointerDown"
+              :selected-field="selectedElement?.field"
+              :selected-label="String(selectedElement?.options.title || '')"
+              :selected-type="selectedElement?.type"
+              @pick="onFieldPick"
+            />
+          </div>
         </div>
       </div>
 
       <!-- 中：画布 -->
       <div ref="stageRef" class="agree-designer__stage">
+        <div class="agree-designer__sample-bar">
+          <span>当前样例：{{ previewSampleLabel }} · 仅用于画布和预览</span>
+          <ElButton
+            size="small"
+            text
+            type="primary"
+            @click="openDataJsonEditor"
+          >
+            编辑预览数据
+          </ElButton>
+        </div>
         <component
           :is="isDocumentTemplate(templateJson) ? DocumentCanvas : CanvasStage"
           ref="canvasRef"
@@ -1916,6 +2293,7 @@ defineExpose({
           @body-formula-requested="openBodyCellFormula"
           @body-merge-requested="mergeSelectedBodyCells"
           @body-split-requested="splitSelectedBodyCell"
+          @table-body-selection-clear="bodyCellSelection = null"
           @header-filter-requested="openHeaderColumnFilter"
           @field-drop="onCanvasFieldDrop"
           @page-select="onCanvasPageSelect"
@@ -1928,6 +2306,34 @@ defineExpose({
 
       <!-- 右：检视器 -->
       <div class="agree-designer__right">
+        <div class="agree-designer__selection-actions">
+          <span>{{ selectedElement ? '已选中元素' : '定位元素' }}</span>
+          <div>
+            <ElButton
+              v-if="selectedElement"
+              size="small"
+              text
+              @click="duplicateSelected"
+            >
+              复制
+</ElButton><ElButton
+              v-if="selectedElement"
+              size="small"
+              text
+              type="danger"
+              @click="deleteSelected"
+            >
+              删除
+</ElButton><ElButton
+              size="small"
+              text
+              aria-label="收起属性面板"
+              @click="closeInspector"
+            >
+              ×
+            </ElButton>
+          </div>
+        </div>
         <PrintInspector
           ref="inspectorRef"
           :highlight-col-index="highlightColIndex"
@@ -1936,6 +2342,7 @@ defineExpose({
           :selected-key="inspectorKey"
           @canvas-patch="onInspectorPatch"
           @highlight-col="onHighlightColumn"
+          @edit-masking="openPrintMasking"
           @update:selected-key="onInspectorSelect"
         />
       </div>
@@ -1981,16 +2388,86 @@ defineExpose({
     <!-- 预览弹窗 -->
     <ElDialog
       v-model="previewOpen"
-      title="快速预览"
+      :title="
+        previewPageCount ? `打印预览 · 共 ${previewPageCount} 页` : '打印预览'
+      "
       :width="previewDialogWidthCss(paperSpec.widthMm)"
+      top="5vh"
       append-to-body
+      @close="previewOpen = false"
     >
-      <div class="agree-designer__preview">
+      <div class="agree-designer__preview-meta">
+        <span>当前使用{{ previewSampleLabel }}，仅供检查排版。</span>
+        <ElButton
+          size="small"
+          :disabled="previewPrinting"
+          @click="openDataJsonEditor"
+        >
+          编辑预览数据
+        </ElButton>
+      </div>
+      <ElAlert
+        v-if="previewError"
+        class="mb-2"
+        type="error"
+        :closable="false"
+        :title="`预览失败：${previewError}`"
+      />
+      <ElButton
+        v-if="previewError"
+        class="mb-2"
+        size="small"
+        @click="onPreview"
+      >
+        重新生成预览
+      </ElButton>
+      <div
+        v-if="previewLoading"
+        class="agree-designer__preview-progress"
+        role="status"
+      >
+        正在生成打印预览，请稍候…
+      </div>
+      <div
+        class="agree-designer__preview"
+        :aria-busy="previewLoading"
+        v-loading="previewLoading"
+      >
         <div ref="previewHost" class="agree-designer__preview-host"></div>
       </div>
+      <template #footer>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <span class="text-xs text-gray-500">打印当前预览，无需先保存模板。</span>
+          <div>
+            <ElButton :disabled="previewPrinting" @click="previewOpen = false">
+              关闭
+            </ElButton>
+            <ElButton
+              type="primary"
+              :loading="previewPrinting"
+              :disabled="
+                previewLoading ||
+                !!previewError ||
+                !previewPrintJob ||
+                dataJsonOpen
+              "
+              @click="onPrintSample"
+            >
+              打印样张
+            </ElButton>
+          </div>
+        </div>
+      </template>
     </ElDialog>
 
     <!-- 水印：复用既有对话框，写回 panel.watermarkOptions -->
+    <PrintMaskingDialog
+      v-model="maskingOpen"
+      :template-json="templateJson"
+      :sample-data="sampleData"
+      :initial-field="maskingField"
+      @apply="applyPrintMasking"
+    />
     <PrintWatermarkDialog
       v-model="watermarkOpen"
       :template-json="templateJson"
@@ -2019,9 +2496,32 @@ defineExpose({
     </ElDialog>
 
     <!-- 数据源 JSON：只改样例业务数据，不改版式 -->
+    <ElDialog
+      v-model="presetDialogOpen"
+      title="载入起始版式"
+      width="min(560px, 94vw)"
+      append-to-body
+      destroy-on-close
+    >
+      <ElAlert
+        type="warning"
+        :closable="false"
+        class="mb-4"
+        title="替换当前所有区段、元素和版式规则，可撤销。保留打印脱敏与当前预览数据；顶部保存后生效。示例的奖励区在无奖励时隐藏。"
+      />
+      <PrintTemplatePresetPicker v-model="resetPreset" />
+      <template #footer>
+        <ElButton @click="presetDialogOpen = false">取消</ElButton>
+        <ElButton type="primary" @click="applyStartingPreset">
+          应用版式
+        </ElButton>
+      </template>
+    </ElDialog>
     <PrintDataJsonDialog
       v-model="dataJsonOpen"
       :initial-data="sampleData"
+      usage="designer"
+      :initial-preset="previewSamplePreset"
       @apply="onDataJsonApply"
     />
 
@@ -2033,10 +2533,15 @@ defineExpose({
       append-to-body
       destroy-on-close
     >
+      <PrintEditScope
+        :target="bodyFormulaTarget"
+        scope="仅当前记录的这个单元格；其他记录继续使用原值或整列公式"
+        draft
+      />
       <ElAlert
         type="info"
         :closable="false"
-        title="只覆盖当前选中行的当前格；同一列每一行都要计算时，请在「编辑表格结构与计算」中设置逐行公式。规则优先按行 ID/名称匹配，换排序后仍尽量跟随同一条数据。"
+        title="同一列每一行都要计算时，请在「编辑明细表结构」中设置逐行公式。规则优先按行 ID/名称匹配，换排序后仍尽量跟随同一条数据。"
       />
       <div
         class="mt-3 rounded border border-gray-200 bg-gray-50 px-3 py-2 text-xs leading-5 text-gray-600"
@@ -2066,6 +2571,7 @@ defineExpose({
       />
       <PrintExprHelp
         scene="cell"
+        :context="bodyFormulaSampleContext"
         :fields="bodyFormulaHelpFields"
         @insert="insertBodyFormulaToken"
       />
@@ -2116,36 +2622,6 @@ defineExpose({
 </template>
 
 <style scoped>
-.agree-designer__table-choices {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-}
-
-.agree-designer__table-choices button {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 20px;
-  color: var(--el-text-color-primary);
-  text-align: left;
-  cursor: pointer;
-  background: var(--el-bg-color);
-  border: 1px solid var(--el-border-color);
-  border-radius: 8px;
-}
-
-.agree-designer__table-choices button:hover {
-  background: var(--el-color-primary-light-9);
-  border-color: var(--el-color-primary);
-}
-
-.agree-designer__table-choices span {
-  font-size: 13px;
-  line-height: 1.7;
-  color: var(--el-text-color-secondary);
-}
-
 .agree-designer__drag-preview {
   position: fixed;
   z-index: 10000;
@@ -2163,6 +2639,7 @@ defineExpose({
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  container-type: inline-size;
   overflow: hidden;
   color: var(--el-text-color-primary);
   background: var(--el-bg-color);
@@ -2173,9 +2650,9 @@ defineExpose({
 .agree-designer__toolbar {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 14px;
+  gap: 8px 12px;
   align-items: center;
-  padding: 8px 12px;
+  padding: 10px 12px;
   background: var(--el-bg-color);
   border-bottom: 1px solid var(--el-border-color);
 }
@@ -2184,6 +2661,7 @@ defineExpose({
   display: flex;
   gap: 6px;
   align-items: center;
+  min-height: 28px;
 }
 
 .agree-designer__group + .agree-designer__group {
@@ -2193,6 +2671,11 @@ defineExpose({
 
 .agree-designer__group--right {
   margin-left: auto;
+}
+
+.agree-designer__paper-desc,
+.agree-designer__section-status {
+  white-space: nowrap;
 }
 
 .agree-designer__label {
@@ -2205,6 +2688,15 @@ defineExpose({
   color: var(--el-text-color-secondary);
 }
 
+.agree-designer__save-state {
+  padding: 3px 7px;
+  font-size: 11px;
+  color: var(--el-color-warning-dark-2);
+  white-space: nowrap;
+  background: var(--el-color-warning-light-9);
+  border-radius: 4px;
+}
+
 .agree-designer__warn {
   font-size: 12px;
   color: var(--el-color-danger);
@@ -2213,20 +2705,57 @@ defineExpose({
 .agree-designer__body {
   display: grid;
   flex: 1;
-  grid-template-columns: 240px minmax(0, 1fr) 320px;
+  grid-template-columns: 56px 250px minmax(0, 1fr) 320px;
   min-height: 0;
 }
 
 .agree-designer__body.is-left-collapsed {
-  grid-template-columns: 0 minmax(0, 1fr) 320px;
+  grid-template-columns: 56px 0 minmax(0, 1fr) 320px;
 }
 
 .agree-designer__body.is-right-collapsed {
-  grid-template-columns: 240px minmax(0, 1fr) 0;
+  grid-template-columns: 56px 250px minmax(0, 1fr) 0;
 }
 
 .agree-designer__body.is-left-collapsed.is-right-collapsed {
-  grid-template-columns: 0 minmax(0, 1fr) 0;
+  grid-template-columns: 56px 0 minmax(0, 1fr) 0;
+}
+
+.agree-designer__rail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 5px;
+  background: var(--el-bg-color);
+  border-right: 1px solid var(--el-border-color);
+}
+
+.agree-designer__rail button {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: center;
+  padding: 8px 2px;
+  color: var(--el-text-color-secondary);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+}
+
+.agree-designer__rail button:hover,
+.agree-designer__rail button:focus-visible {
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+}
+
+.agree-designer__rail button span {
+  font-size: 17px;
+  line-height: 1;
+}
+
+.agree-designer__rail button small {
+  font-size: 11px;
 }
 
 .agree-designer__left,
@@ -2258,8 +2787,72 @@ defineExpose({
 }
 
 .agree-designer__palette {
-  padding: 10px;
+  padding: 12px 10px 14px;
+  border-bottom: 1px solid var(--el-border-color);
+}
+
+.agree-designer__left-scroll {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.agree-designer__library-heading {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  font-size: 12px;
   border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.agree-designer__selection-actions {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  background: var(--el-bg-color);
+  border-bottom: 1px solid var(--el-border-color);
+}
+
+.agree-designer__sample-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  background: var(--el-bg-color-page);
+  border-bottom: 1px solid var(--el-border-color);
+}
+
+.agree-designer__preview-meta {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 8px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.agree-designer__preview-progress {
+  padding: 12px 0;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
 }
 
 .agree-designer__panel-heading {
@@ -2286,6 +2879,37 @@ defineExpose({
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 6px;
+}
+
+.agree-designer__toolbox--primary {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.agree-designer__toolbox--primary .agree-designer__tool:last-child {
+  grid-column: 1 / -1;
+}
+
+.agree-designer__tool-description {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--el-text-color-secondary);
+}
+
+.agree-designer__advanced-toggle {
+  width: 100%;
+  padding: 8px 0;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--el-color-primary);
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+}
+
+.agree-designer__toolbox--advanced {
+  padding-top: 2px;
 }
 
 .agree-designer__tool {
@@ -2327,11 +2951,12 @@ defineExpose({
 }
 
 .agree-designer__fields {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-  overflow: hidden;
+  display: block;
+  padding: 12px 10px;
+}
+
+.agree-designer__fields :deep(.print-data-panel__extra) {
+  overflow: visible;
 }
 
 .agree-designer__stage {
@@ -2345,7 +2970,7 @@ defineExpose({
 .agree-designer__preview {
   display: flex;
   justify-content: center;
-  max-height: 72vh;
+  max-height: max(160px, calc(90dvh - 180px));
   padding: 12px;
   overflow: auto;
   background: var(--el-bg-color-page);
@@ -2396,5 +3021,44 @@ defineExpose({
 
 .agree-designer__ctx button.is-danger {
   color: var(--el-color-danger);
+}
+
+@container (max-width: 1100px) {
+  .agree-designer__body,
+  .agree-designer__body.is-left-collapsed,
+  .agree-designer__body.is-right-collapsed,
+  .agree-designer__body.is-left-collapsed.is-right-collapsed {
+    position: relative;
+    grid-template-columns: 56px minmax(0, 1fr);
+  }
+
+  .agree-designer__rail {
+    grid-row: 1;
+    grid-column: 1;
+  }
+
+  .agree-designer__stage {
+    grid-row: 1;
+    grid-column: 2;
+  }
+
+  .agree-designer__left,
+  .agree-designer__right {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 5;
+    width: min(320px, calc(100% - 56px));
+    box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
+  }
+
+  .agree-designer__left {
+    left: 56px;
+    width: min(250px, calc(100% - 56px));
+  }
+
+  .agree-designer__right {
+    right: 0;
+  }
 }
 </style>

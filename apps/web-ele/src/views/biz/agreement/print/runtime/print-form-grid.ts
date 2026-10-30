@@ -1,5 +1,12 @@
+import { requireDefined } from '../../../../../../../shared/require-defined';
 import { formatPrintValue } from '../data/format-print-value';
 import { evalPrintExpr } from './print-expr';
+import { maskPrintDisplay } from './print-masking';
+import {
+  identifyPrintRows,
+  normalizeRowHeights,
+  rowHeightOverride,
+} from './print-row-height';
 
 export interface FormGridCell {
   mode: 'field' | 'formula' | 'text';
@@ -16,7 +23,10 @@ export interface FormGridRow {
   /** 空字符串表示固定行；填写数组路径后，本行按数组逐项重复。 */
   source?: string;
   empty?: 'blank' | 'omit';
+  /** 整行最小高度（pt）；内容换行时允许自动撑高。 */
   height?: number;
+  /** 动态模板行中按记录标识保存的单行覆盖。 */
+  recordHeights?: Record<string, number>;
 }
 
 export interface FormGrid {
@@ -104,11 +114,11 @@ export function readFormField(root: unknown, path: string): unknown {
 export function normalizeFormGrid(raw: unknown): FormGrid {
   const input = (raw || {}) as Partial<FormGrid>;
   const columns =
-    Array.isArray(input.columns) && input.columns.length
+    Array.isArray(input.columns) && input.columns.length > 0
       ? input.columns.map((width) => Math.max(20, Number(width) || 80))
       : [100, 100, 100, 100];
   const rows = (
-    Array.isArray(input.rows) && input.rows.length
+    Array.isArray(input.rows) && input.rows.length > 0
       ? input.rows
       : [{ cells: [] }]
   ).map(
@@ -116,6 +126,10 @@ export function normalizeFormGrid(raw: unknown): FormGrid {
       source: String(row.source || '').trim(),
       empty: row.empty === 'omit' ? 'omit' : 'blank',
       height: Math.max(18, Number(row.height) || 22),
+      ...(row.source &&
+      Object.keys(normalizeRowHeights(row.recordHeights)).length > 0
+        ? { recordHeights: normalizeRowHeights(row.recordHeights) }
+        : {}),
       cells: columns.map((_, index) => {
         const cell = row.cells?.[index];
         return {
@@ -140,7 +154,7 @@ export function normalizeFormGrid(raw: unknown): FormGrid {
   const spans = formGridSpans(grid);
   rows.forEach((row, r) =>
     row.cells.forEach((cell, c) => {
-      const span = spans[r]![c]!;
+      const span = requireDefined(requireDefined(spans[r])[c]);
       cell.rowspan = span[0] || 1;
       cell.colspan = span[1] || 1;
     }),
@@ -157,7 +171,7 @@ export function formGridSpans(grid: FormGrid): [number, number][][] {
   grid.rows.forEach((row, r) =>
     row.cells.forEach((cell, c) => {
       if (covered.has(`${r}:${c}`)) {
-        spans[r]![c] = [0, 0];
+        requireDefined(spans[r])[c] = [0, 0];
         return;
       }
       let down = Math.min(
@@ -179,7 +193,7 @@ export function formGridSpans(grid: FormGrid): [number, number][][] {
       let width = across;
       for (let x = c + 1; x < c + width; x++)
         if (covered.has(`${r}:${x}`)) width = x - c;
-      spans[r]![c] = [down, width];
+      requireDefined(spans[r])[c] = [down, width];
       for (let y = r; y < r + down; y++)
         for (let x = c; x < c + width; x++)
           if (y !== r || x !== c) covered.add(`${y}:${x}`);
@@ -230,8 +244,11 @@ export function mergeFormCells(
   );
   for (let r = top; r <= bottom; r++)
     for (let c = left; c <= right; c++)
-      Object.assign(next.rows[r]!.cells[c]!, { rowspan: 1, colspan: 1 });
-  Object.assign(next.rows[top]!.cells[left]!, {
+      Object.assign(requireDefined(requireDefined(next.rows[r]).cells[c]), {
+        rowspan: 1,
+        colspan: 1,
+      });
+  Object.assign(requireDefined(requireDefined(next.rows[top]).cells[left]), {
     rowspan: bottom - top + 1,
     colspan: right - left + 1,
   });
@@ -269,7 +286,7 @@ export function resizeFormGrid(
           c,
           down,
           across,
-          cell: { ...next.rows[r]!.cells[c]! },
+          cell: { ...requireDefined(requireDefined(next.rows[r]).cells[c]) },
         });
     }),
   );
@@ -309,10 +326,14 @@ export function resizeFormGrid(
     if (newSpan <= 0) continue;
     const r = axis === 'row' ? newStart : merge.r;
     const c = axis === 'column' ? newStart : merge.c;
-    Object.assign(next.rows[r]!.cells[c]!, merge.cell, {
-      rowspan: axis === 'row' ? newSpan : merge.down,
-      colspan: axis === 'column' ? newSpan : merge.across,
-    });
+    Object.assign(
+      requireDefined(requireDefined(next.rows[r]).cells[c]),
+      merge.cell,
+      {
+        rowspan: axis === 'row' ? newSpan : merge.down,
+        colspan: axis === 'column' ? newSpan : merge.across,
+      },
+    );
   }
   return normalizeFormGrid(next);
 }
@@ -325,19 +346,21 @@ export function compileFormGrid(raw: unknown, root: Record<string, unknown>) {
     const source = templateRow.source
       ? readFormField(root, templateRow.source)
       : undefined;
-    const records = templateRow.source
-      ? Array.isArray(source) && source.length
-        ? source
-        : templateRow.empty === 'omit'
-          ? []
-          : [null]
-      : [null];
+    let records: Array<null | Record<string, unknown>> = [null];
+    if (templateRow.source) {
+      if (Array.isArray(source) && source.length > 0)
+        records = identifyPrintRows(source);
+      else records = templateRow.empty === 'omit' ? [] : [null];
+    }
     records.forEach((record, index) => {
       const context = { ...root, root, row: record || {}, index };
       const data: Record<string, unknown> = {
         agreeCellMerges: spans[templateIndex],
         __formTemplateRow: templateIndex,
-        __formHeight: templateRow.height,
+        __formHeight:
+          rowHeightOverride(templateRow.recordHeights, record?.__agreeRowKey) ??
+          templateRow.height,
+        __agreeRowKey: record?.__agreeRowKey,
         __formStyles: templateRow.cells.map((cell) => ({
           textAlign: cell.align,
           fontWeight: cell.bold ? '700' : '400',
@@ -351,11 +374,18 @@ export function compileFormGrid(raw: unknown, root: Record<string, unknown>) {
             templateRow.source && record === null
               ? ''
               : evalPrintExpr(cell.value, context, { silent: true });
-        data[`__form_c${c}`] = formatPrintValue(
-          value,
-          cell.format || '',
-          context,
-        );
+        const formatted = formatPrintValue(value, cell.format || '', context);
+        data[`__form_c${c}`] =
+          cell.mode === 'text'
+            ? formatted
+            : maskPrintDisplay(
+                value,
+                formatted,
+                context,
+                cell.mode === 'field' ? cell.value : '',
+                cell.mode === 'formula' ? cell.value : '',
+                templateRow.source || '',
+              );
       });
       rows.push(data);
     });
@@ -386,7 +416,7 @@ export function prepareFormGrids(
           checked: true,
           align: 'left',
           formatter2: `function formCellText(value) { return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/\\n/g, '<br/>'); }`,
-          styler2: `function formCellStyle(value, row) { var style = Object.assign({}, row && row.__formStyles && row.__formStyles[${index}]); style.height = String(row && row.__formHeight || 22) + 'pt'; return style; }`,
+          styler2: `function formCellStyle(value, row) { return Object.assign({}, row && row.__formStyles && row.__formStyles[${index}]); }`,
         })),
       ];
       options.tableHeaderRepeat = 'none';
@@ -402,6 +432,6 @@ export function prepareFormGrids(
         'agreeRowFilter',
         'agreeFooters',
       ])
-        delete options[key];
+        Reflect.deleteProperty(options, key);
     }
 }

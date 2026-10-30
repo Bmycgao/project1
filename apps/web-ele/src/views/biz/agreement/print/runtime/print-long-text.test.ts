@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { resolveTextPreview } from '../designer/template-model';
 import { preparePrintTemplate } from './prepare-template';
 import {
+  normalizePrintTextSectionGap,
+  resolvePrintTextBlocks,
   resolvePrintTextSections,
   resolvePrintTextTemplate,
 } from './print-long-text';
@@ -13,6 +15,62 @@ describe('conditional long text', () => {
     { content: '高额条款\n金额 {{amount}} 元', when: 'amount > 500000' },
     { content: '普通条款', when: 'amount <= 500000' },
   ];
+  it('accepts zero and positive gaps while keeping missing or invalid values at the legacy default', () => {
+    expect(normalizePrintTextSectionGap(0)).toBe(0);
+    expect(normalizePrintTextSectionGap('6.5')).toBe(6.5);
+    for (const gap of [undefined, null, '', -1, Number.NaN, Infinity, 'bad'])
+      expect(normalizePrintTextSectionGap(gap)).toBeUndefined();
+  });
+  it('omits hidden and empty blocks while preserving manual newlines inside visible blocks', () => {
+    expect(
+      resolvePrintTextBlocks(
+        [
+          { content: '甲\n\n乙', when: '' },
+          { content: '隐藏', when: 'false' },
+          { content: '{{missing}}', when: '' },
+          { content: '  \n ', when: '' },
+          { content: '丙', when: '' },
+        ],
+        {},
+      ),
+    ).toEqual(['甲\n\n乙', '丙']);
+  });
+  it.each([0, 6.5])(
+    'prepares independent block data for custom gap %s without rewriting the saved template',
+    (gap) => {
+      const template = {
+        agreeLayout: 'document-flow',
+        panels: [
+          {
+            printElements: [
+              {
+                printElementType: { type: 'longText' },
+                options: {
+                  agreeTextSections: sections,
+                  agreeTextSectionGap: gap,
+                },
+              },
+            ],
+          },
+        ],
+      };
+      const snapshot = JSON.stringify(template);
+      const result = preparePrintTemplate(template, {
+        amount: 600_000,
+        name: '张三',
+      } as any);
+      const options = result.template.panels[0].printElements[0].options;
+      expect(options.__agreeTextBlocks).toEqual([
+        '甲方：张三',
+        '高额条款\n金额 600000 元',
+      ]);
+      expect(
+        (result.printData as unknown as Record<string, unknown>)[options.field],
+      ).toBe('甲方：张三\n高额条款\n金额 600000 元');
+      expect(options.agreeTextSectionGap).toBe(gap);
+      expect(JSON.stringify(template)).toBe(snapshot);
+    },
+  );
   it('selects clauses from parameters and preserves paragraph breaks', () => {
     expect(
       resolvePrintTextSections(sections, { amount: 600_000, name: '张三' }),

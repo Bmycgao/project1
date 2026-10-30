@@ -417,6 +417,25 @@ function hydrateRbacFromDisk() {
 
 hydrateRbacFromDisk();
 
+// 新入口只在首次安装时授予默认管理角色；之后手动撤销权限不会被重新授予。
+if (
+  !readPersistJson<{ done: boolean }>('miniapp-users-menu-migration.json')?.done
+) {
+  for (const id of collectIdsByMenuNames(['SystemMiniappUsers']))
+    grantNewMenuToDefaultRoles(id);
+  writePersistJson('miniapp-users-menu-migration.json', { done: true });
+}
+
+// 只在安装新入口时授权默认管理员一次，之后尊重角色中撤销的权限。
+if (
+  !readPersistJson<{ done: boolean }>('miniapp-navigation-menu-migration.json')
+    ?.done
+) {
+  for (const id of collectIdsByMenuNames(['SystemMiniappNavigation']))
+    grantNewMenuToDefaultRoles(id);
+  writePersistJson('miniapp-navigation-menu-migration.json', { done: true });
+}
+
 // Grant the new mock task center once to existing demo roles. Instance access still
 // requires being the initiator/candidate/previous participant; administrators can inspect.
 if (

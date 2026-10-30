@@ -2,8 +2,17 @@ import type { AgreePrintData } from '../types';
 
 import dayjs from 'dayjs';
 
+import { requireDefined } from '../../../../../../../shared/require-defined';
 import { resolveTablePreview } from '../designer/template-model';
 import { documentRows } from './document-layout';
+import { buildPrintBarcode } from './print-barcode';
+import { normalizePrintTextSectionGap } from './print-long-text';
+import {
+  detailRowHeight,
+  headerRowHeight,
+  minimumRowHeight,
+} from './print-row-height';
+import { applyDocumentTableBorders } from './print-table-border';
 import {
   normalizeTableColor,
   resolveTableCellColor,
@@ -14,7 +23,12 @@ import { normalizeWatermarkOptions } from './print-watermark';
 const PX = 96 / 72;
 const pt = (value: number) => `${value}pt`;
 const num = (value: unknown, fallback = 0) =>
-  Number.isFinite(Number(value)) ? Number(value) : fallback;
+  value !== '' &&
+  value !== null &&
+  value !== undefined &&
+  Number.isFinite(Number(value))
+    ? Number(value)
+    : fallback;
 const clone = <T extends Node>(node: T): T => node.cloneNode(true) as T;
 
 function node(tag: string, styles: Partial<CSSStyleDeclaration> = {}) {
@@ -46,6 +60,7 @@ function font(options: Record<string, any>): Partial<CSSStyleDeclaration> {
 async function codeImage(options: Record<string, any>, value: string) {
   const canvas = document.createElement('canvas');
   if (options.textType === 'qrcode') {
+    if (!value.trim()) throw new Error('编码内容为空，请绑定有值的字段。');
     const { default: bwip } = await import('bwip-js');
     bwip.toCanvas(canvas, {
       bcid: 'qrcode',
@@ -58,12 +73,19 @@ async function codeImage(options: Record<string, any>, value: string) {
         ] || 'L',
     });
   } else {
-    const { default: barcode } = await import('jsbarcode');
-    barcode(canvas, value || ' ', {
-      format: options.barcodeMode || 'CODE128',
-      displayValue: false,
-      margin: 0,
+    const result = await buildPrintBarcode(value, options);
+    const image = document.createElement('img');
+    image.src = result.src;
+    image.alt = '条形码';
+    image.dataset.docBarcode = 'true';
+    if (result.warning) image.title = result.warning;
+    Object.assign(image.style, {
+      width: pt(num(options.width, 160)),
+      maxWidth: '100%',
+      height: pt(num(options.height, 40)),
+      display: 'block',
     });
+    return image;
   }
   const image = document.createElement('img');
   image.src = canvas.toDataURL();
@@ -92,9 +114,10 @@ export function renderDocumentTable(
     borderCollapse: 'collapse',
     tableLayout: 'fixed',
     boxSizing: 'border-box',
-    border: options.tableBorder === 'noBorder' ? 'none' : '0.75pt solid #333',
   });
   table.dataset.docTable = 'true';
+  table.dataset.docHeaderRepeat =
+    options.tableHeaderRepeat === 'none' ? 'none' : 'page';
   const total = model.leafCols.reduce((sum, cell) => sum + cell.width, 0) || 1;
   const columns = node('colgroup');
   model.leafCols.forEach((col) =>
@@ -102,19 +125,17 @@ export function renderDocumentTable(
   );
   table.append(columns);
   const head = node('thead');
-  model.headerRows.forEach((row) => {
+  const headerFontSize = num(
+    options.tableHeaderFontSize,
+    num(options.fontSize, 10),
+  );
+  model.headerRows.forEach((row, rowIndex) => {
     const tr = node('tr', {
-      border:
-        options.tableHeaderBorder === 'noBorder' ? 'none' : '0.75pt solid #333',
+      height: pt(headerRowHeight(options, rowIndex)),
     });
     row.forEach((cell) => {
       const td = node('td', {
-        border:
-          options.tableHeaderCellBorder === 'noBorder'
-            ? 'none'
-            : '0.75pt solid #333',
         padding: '2pt',
-        height: pt(num(options.tableHeaderRowHeight, 18)),
         backgroundColor:
           normalizeTableColor(
             cell.backgroundColor ||
@@ -125,8 +146,9 @@ export function renderDocumentTable(
         fontWeight: String(
           cell.fontWeight || options.tableHeaderFontWeight || '700',
         ),
-        fontSize: pt(
-          num(options.tableHeaderFontSize, num(options.fontSize, 10)),
+        fontSize: pt(headerFontSize),
+        lineHeight: pt(
+          Math.max(headerFontSize * 1.25, num(options.lineHeight)),
         ),
         textAlign: cell.align || 'center',
       }) as HTMLTableCellElement;
@@ -135,6 +157,7 @@ export function renderDocumentTable(
       td.textContent = String(cell.title || '');
       // 仅设计器点选：正式打印忽略这些 data-*，不会出现在纸面上
       td.dataset.docHeader = '1';
+      td.dataset.docHeaderRow = String(rowIndex);
       if (Number.isInteger(cell.editorLeafIndex)) {
         td.dataset.docLeafStart = String(cell.editorLeafIndex);
         td.dataset.docLeafEnd = String(
@@ -162,18 +185,19 @@ export function renderDocumentTable(
   table.append(head);
   const body = node('tbody');
   model.bodyRows.forEach((row) => {
-    const tr = node('tr');
+    const tr = node('tr', {
+      height: pt(
+        options.agreeFormGrid
+          ? minimumRowHeight(row[0]?.rawRow.__formHeight, 22)
+          : detailRowHeight(options, row[0]?.rawRow || {}),
+      ),
+    });
     row
       .filter((cell) => !cell.hidden)
       .forEach((cell) => {
         const col = model.leafCols[cell.colIndex] || {};
         const td = node('td', {
-          border:
-            options.tableBodyCellBorder === 'noBorder'
-              ? 'none'
-              : '0.75pt solid #333',
           padding: '2pt',
-          height: pt(num(options.tableBodyRowHeight, 18)),
           textAlign: cell.align || 'center',
           verticalAlign: 'middle',
           color:
@@ -183,30 +207,25 @@ export function renderDocumentTable(
         td.rowSpan = cell.rowspan;
         td.dataset.docCol = String(cell.colIndex);
         td.dataset.docRecord = String(cell.rowIndex);
+        if (typeof cell.rawRow.__agreeRowKey === 'string')
+          td.dataset.docRowKey = cell.rawRow.__agreeRowKey;
         td.textContent = cell.text;
         if (options.agreeFormGrid) {
           Object.assign(
             td.style,
             (cell.rawRow.__formStyles as any[])?.[cell.colIndex],
           );
-          td.style.height = pt(num(cell.rawRow.__formHeight, 22));
+          td.dataset.docTemplateRow = String(cell.rawRow.__formTemplateRow);
         }
         tr.append(td);
       });
     body.append(tr);
   });
   model.footerRows.forEach((row, rowIndex) => {
-    const tr = node('tr', {
-      border:
-        options.tableFooterBorder === 'noBorder' ? 'none' : '0.75pt solid #333',
-    });
+    const tr = node('tr');
     let col = 0;
     row.forEach((cell, cellIndex) => {
       const td = node('td', {
-        border:
-          options.tableFooterCellBorder === 'noBorder'
-            ? 'none'
-            : '0.75pt solid #333',
         padding: '2pt',
         textAlign: cell.align || 'center',
         color: normalizeTableColor(cell.color) || 'inherit',
@@ -223,12 +242,14 @@ export function renderDocumentTable(
     body.append(tr);
   });
   table.append(body);
+  applyDocumentTableBorders(table, options);
   return table;
 }
 
 async function content(
   element: any,
   data: AgreePrintData,
+  design = false,
 ): Promise<HTMLElement> {
   const options = element.options || {};
   const type = element.printElementType?.type;
@@ -238,8 +259,30 @@ async function content(
       visibility: 'hidden',
     });
   if (type === 'table') return renderDocumentTable(options, data);
-  if (['barcode', 'qrcode'].includes(options.textType))
-    return codeImage(options, resolvePrintTextValue(options, data as any));
+  if (['barcode', 'qrcode'].includes(options.textType)) {
+    try {
+      return await codeImage(
+        options,
+        resolvePrintTextValue(options, data as any),
+      );
+    } catch (error) {
+      const message = `${options.title || options.field || '码图'}：${(error as Error).message}`;
+      if (!design) throw new Error(message, { cause: error });
+      const placeholder = node('div', {
+        width: pt(num(options.width, 160)),
+        maxWidth: '100%',
+        minHeight: pt(num(options.height, 40)),
+        border: '1px dashed #f56c6c',
+        padding: '4pt',
+        color: '#c45656',
+        fontSize: '9pt',
+        overflowWrap: 'anywhere',
+      });
+      placeholder.dataset.docCodeError = 'true';
+      placeholder.textContent = message;
+      return placeholder;
+    }
+  }
   if (type === 'image') {
     const image = document.createElement('img');
     const src = String(
@@ -257,10 +300,27 @@ async function content(
     });
     return image;
   }
-  if (['hline', 'oval', 'rect', 'vline'].includes(type))
+  if (type === 'hline' || type === 'vline') {
+    const stroke = Math.max(0.25, num(options.borderWidth, 0.75));
     return node('div', {
       boxSizing: 'border-box',
-      height: pt(type === 'hline' ? 1 : num(options.height, 20)),
+      ...(type === 'hline'
+        ? {
+            height: pt(stroke),
+            width: '100%',
+            borderTop: `${stroke}pt ${options.borderStyle || 'solid'} ${normalizeTableColor(options.color) || '#333'}`,
+          }
+        : {
+            height: pt(num(options.height, 120)),
+            width: pt(stroke),
+            borderLeft: `${stroke}pt ${options.borderStyle || 'solid'} ${normalizeTableColor(options.color) || '#333'}`,
+          }),
+    });
+  }
+  if (['oval', 'rect'].includes(type))
+    return node('div', {
+      boxSizing: 'border-box',
+      height: pt(num(options.height, 20)),
       border: `${Math.max(0.5, num(options.borderWidth, 0.75))}pt ${options.borderStyle || 'solid'} ${normalizeTableColor(options.color) || '#333'}`,
       backgroundColor:
         normalizeTableColor(options.backgroundColor) || 'transparent',
@@ -268,6 +328,22 @@ async function content(
     });
   const text = node('div', font(options));
   text.dataset.docText = 'true';
+  const sectionGap = normalizePrintTextSectionGap(options.agreeTextSectionGap);
+  if (
+    type === 'longText' &&
+    sectionGap !== undefined &&
+    Array.isArray(options.__agreeTextBlocks)
+  ) {
+    options.__agreeTextBlocks.forEach((value: string, index: number) => {
+      const section = node('div', {
+        paddingTop: pt(index === 0 ? 0 : sectionGap),
+      });
+      section.dataset.docTextSection = 'true';
+      section.textContent = value;
+      text.append(section);
+    });
+    return text;
+  }
   const value = resolvePrintTextValue(options, data as any);
   text.textContent =
     options.field || options.agreeValueExpr
@@ -276,17 +352,27 @@ async function content(
   return text;
 }
 
-function fragmentTable(table: HTMLElement, start: number, end: number) {
+export function fragmentTable(
+  table: HTMLElement,
+  start: number,
+  end: number,
+  continued = false,
+) {
   const copy = clone(table);
+  const isContinuation =
+    continued || start > 0 || table.dataset.docContinued === 'true';
+  copy.dataset.docContinued = String(isContinuation);
+  if (isContinuation && table.dataset.docHeaderRepeat === 'none')
+    copy.querySelector('thead')?.remove();
   const rows = [...table.querySelectorAll(':scope > tbody > tr')];
-  const body = copy.querySelector('tbody')!;
+  const body = requireDefined(copy.querySelector('tbody'));
   body.replaceChildren();
   for (let r = start; r < end; r++) {
-    const tr = clone(rows[r]!) as HTMLElement;
+    const tr = clone(requireDefined(rows[r])) as HTMLElement;
     if (r === start) {
       for (let previous = 0; previous < start; previous++)
         for (const cell of [
-          ...rows[previous]!.children,
+          ...requireDefined(rows[previous]).children,
         ] as HTMLTableCellElement[]) {
           if (previous + cell.rowSpan > start) {
             const continued = clone(cell);
@@ -296,7 +382,8 @@ function fragmentTable(table: HTMLElement, start: number, end: number) {
                 num((item as HTMLElement).dataset.docCol) >
                 num(cell.dataset.docCol),
             );
-            tr.insertBefore(continued, before || null);
+            if (before) before.before(continued);
+            else tr.append(continued);
           }
         }
     }
@@ -304,11 +391,32 @@ function fragmentTable(table: HTMLElement, start: number, end: number) {
       cell.rowSpan = Math.min(cell.rowSpan, end - r);
     body.append(tr);
   }
+  applyDocumentTableBorders(copy);
   return copy;
 }
 
 function height(element: HTMLElement) {
   return element.getBoundingClientRect().height;
+}
+
+/** 自定义段距的文本切片保留块结构；续页首块不再保留块前间距。 */
+function sliceSectionText(element: HTMLElement, start: number, end: number) {
+  const result = clone(element);
+  result.replaceChildren();
+  let offset = 0;
+  for (const child of [...element.children] as HTMLElement[]) {
+    const characters = [...(child.textContent || '')];
+    const from = Math.max(0, start - offset);
+    const to = Math.min(characters.length, end - offset);
+    if (from < to) {
+      const section = clone(child);
+      section.textContent = characters.slice(from, to).join('');
+      if (!result.childElementCount) section.style.paddingTop = '0';
+      result.append(section);
+    }
+    offset += characters.length;
+  }
+  return result;
 }
 
 /** 超过一页的文本按真实换行高度拆开；不裁剪、不省略原文。 */
@@ -318,9 +426,10 @@ function splitText(
   width: number,
   measure: HTMLElement,
 ): [HTMLElement, HTMLElement | null] {
-  const first = clone(element);
-  const rest = clone(element);
-  const characters = Array.from(element.textContent || '');
+  let first = clone(element);
+  let rest = clone(element);
+  const characters = [...(element.textContent || '')];
+  const hasSections = !!element.querySelector('[data-doc-text-section]');
   const box = node('div', { width: `${width}px` });
   box.append(first);
   measure.append(box);
@@ -330,16 +439,24 @@ function splitText(
   let high = characters.length;
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
-    first.textContent = characters.slice(0, middle).join('');
+    if (hasSections) {
+      first = sliceSectionText(element, 0, middle);
+      box.replaceChildren(first);
+    } else first.textContent = characters.slice(0, middle).join('');
     if (height(first) <= room + 0.2) low = middle;
     else high = middle - 1;
   }
-  if (!low && characters.length) {
+  if (!low && characters.length > 0) {
     box.remove();
     throw new Error('页面可用高度不足以放下一行文字，请增大纸张或减小字号');
   }
-  first.textContent = characters.slice(0, low).join('');
-  rest.textContent = characters.slice(low).join('');
+  if (hasSections) {
+    first = sliceSectionText(element, 0, low);
+    rest = sliceSectionText(element, low, characters.length);
+  } else {
+    first.textContent = characters.slice(0, low).join('');
+    rest.textContent = characters.slice(low).join('');
+  }
   box.remove();
   return [first, rest.textContent ? rest : null];
 }
@@ -373,13 +490,14 @@ function splitTable(
   }
   // 单条地址等超长内容本身超过一页：逐格拆成延续行，保留全部文字。
   const first = fragmentTable(table, 0, 1);
-  const remainder = clone(table);
+  const remainder = fragmentTable(table, 0, count, true);
   box.replaceChildren(first);
   if (height(first) <= fullRoom && room < fullRoom) {
     box.remove();
     throw new Error('当前页放不下一条完整表格记录，转到下一页');
   }
-  const headHeight = height(first.querySelector('thead') as HTMLElement);
+  const head = first.querySelector('thead') as HTMLElement | null;
+  const headHeight = head ? height(head) : 0;
   const cells = [
     ...first.querySelectorAll('tbody tr:first-child > td'),
   ] as HTMLTableCellElement[];
@@ -387,6 +505,9 @@ function splitTable(
     ...remainder.querySelectorAll('tbody tr:first-child > td'),
   ] as HTMLTableCellElement[];
   let continued = false;
+  // 超长记录拆分时由文字重新决定两段的高度，避免继承整条记录的最小占位。
+  (first.querySelector('tbody tr') as HTMLElement).style.height = 'auto';
+  (remainder.querySelector('tbody tr') as HTMLElement).style.height = 'auto';
   cells.forEach((cell, index) => {
     const computed = getComputedStyle(cell);
     const paragraph = node('div', {
@@ -468,6 +589,7 @@ function splitRow(
 export async function renderDocument(
   template: Record<string, any>,
   data: AgreePrintData,
+  renderOptions: { design?: boolean } = {},
 ): Promise<HTMLElement> {
   const root = node('div');
   root.className = 'agree-document';
@@ -494,7 +616,6 @@ export async function renderDocument(
       const panelNode = node('div');
       panelNode.className = 'hiprint-printPanel';
       root.append(panelNode);
-      let body: HTMLElement;
       let used = 0;
       const newPage = () => {
         const paper = node('section', {
@@ -507,7 +628,7 @@ export async function renderDocument(
         });
         paper.className = 'hiprint-printPaper';
         paper.dataset.panelIndex = String(panelIndex);
-        body = node('div', {
+        const body = node('div', {
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'stretch',
@@ -547,9 +668,9 @@ export async function renderDocument(
           }
           paper.append(layer);
         }
-        return paper;
+        return body;
       };
-      newPage();
+      let body = newPage();
       const rows: HTMLElement[] = [];
       for (const members of documentRows(panel)) {
         const row = node('div', {
@@ -587,21 +708,21 @@ export async function renderDocument(
           cell.dataset.docKey = `${panelIndex}:${options.__documentSourceIndex}`;
           cell.dataset.docField = options.field || '';
           cell.dataset.docType = element.printElementType?.type || 'text';
-          cell.append(await content(element, data));
+          cell.append(await content(element, data, !!renderOptions.design));
           row.append(cell);
           cursor = left + cellWidth;
         }
         rows.push(row);
       }
       // 测量与输出使用同一套字体和实际 DOM；等待字体后再决定分页。
-      body!.append(...rows);
+      body.append(...rows);
       await document.fonts.ready;
       await Promise.all(
-        [...body!.querySelectorAll('img')].map((image) =>
+        [...body.querySelectorAll('img')].map((image) =>
           image.decode().catch(() => {}),
         ),
       );
-      const heights = rows.map(height);
+      const heights = rows.map((row) => height(row));
       const minimums = rows.map((row, index) => {
         if (rows[index - 1]?.dataset.keepNext !== 'true') return 0;
         let minimum = 0;
@@ -626,7 +747,7 @@ export async function renderDocument(
           } else minimum = Math.max(minimum, height(child) + cellGap);
         }
         minimum += Number.parseFloat(getComputedStyle(row).paddingTop) || 0;
-        return minimum > bodyHeight * PX - heights[index - 1]!
+        return minimum > bodyHeight * PX - requireDefined(heights[index - 1])
           ? 80 * PX
           : minimum;
       });
@@ -636,11 +757,12 @@ export async function renderDocument(
         if (
           original.dataset.keepNext === 'true' &&
           used > 0 &&
-          used + heights[index]! + (minimums[index + 1] || 0) > bodyHeight * PX
+          used + requireDefined(heights[index]) + (minimums[index + 1] || 0) >
+            bodyHeight * PX
         )
-          newPage();
+          body = newPage();
         while (row) {
-          body!.append(row);
+          body.append(row);
           const size = height(row);
           if (used + size <= bodyHeight * PX + 0.5) {
             used += size;
@@ -653,12 +775,12 @@ export async function renderDocument(
             !row.querySelector('[data-doc-table]')
           ) {
             row.remove();
-            newPage();
+            body = newPage();
             continue;
           }
           if (used > 0 && bodyHeight * PX - used < 80 * PX) {
             row.remove();
-            newPage();
+            body = newPage();
             continue;
           }
           const room = bodyHeight * PX - used;
@@ -668,7 +790,7 @@ export async function renderDocument(
           } catch (error) {
             if (!used) throw error;
             row.remove();
-            newPage();
+            body = newPage();
             continue;
           }
           const [first, remainder] = parts;
@@ -677,7 +799,7 @@ export async function renderDocument(
           if (used > bodyHeight * PX + 2)
             throw new Error('内容无法在当前纸张内完整排版，请检查字号或行高');
           row = remainder;
-          if (row) newPage();
+          if (row) body = newPage();
         }
       }
     }

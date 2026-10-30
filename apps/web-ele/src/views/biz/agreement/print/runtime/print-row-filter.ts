@@ -252,6 +252,17 @@ export function parseFilterExpr(expr: string): {
     .split(join === 'or' ? '||' : '&&')
     .map((s) => unwrapParens(s))
     .filter(Boolean);
+  const literal =
+    /^(?:[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')$/i;
+  if (
+    chunks.some((chunk) => {
+      const comparison = /^\w+\s*(?:==|!=|>=|<=|>|<)\s*(.+)$/.exec(chunk);
+      const contains = /^CONTAINS\(\w+\s*,\s*(.+)\)$/.exec(chunk);
+      const rhs = comparison?.[1] ?? contains?.[1];
+      return rhs !== undefined && !literal.test(rhs.trim());
+    })
+  )
+    return { conds: [emptyCond()], join: 'and', advanced: true };
   const conds = chunks.map((chunk) => parseOneCond(chunk));
   if (conds.some((c) => !c.field)) {
     return { conds: [emptyCond()], join: 'and', advanced: true };
@@ -539,7 +550,7 @@ export function defaultFilterOp(
 export function condForField(
   expr: string,
   field: string,
-): PrintFilterCond | null {
+): null | PrintFilterCond {
   const key = String(field || '').trim();
   if (!key) return null;
   const parsed = parseFilterExpr(expr);
@@ -571,7 +582,7 @@ export function fieldInFilterExpr(expr: string, field: string) {
 export function upsertFieldFilter(
   expr: string,
   field: string,
-  cond: PrintFilterCond | null,
+  cond: null | PrintFilterCond,
 ): { blocked: boolean; expr: string } {
   const key = String(field || '').trim();
   const raw = String(expr || '').trim();

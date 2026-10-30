@@ -295,7 +295,16 @@ export function printExprVarsReady(
 
 /** 严格求值：供校验器使用，错误直接抛出 */
 function runPrintExpr(code: string, ctx: Record<string, unknown>) {
-  if (isLegacyFlagExpr(code)) return evalLegacyFlag(code, ctx);
+  // 已存在的字段必须返回原值，供单格公式和正文取值；布尔入口会自行转为真/假。
+  // 缺失的旧布尔标记仍按 false 兼容，显式 true / false 则按字面量执行。
+  if (
+    isLegacyFlagExpr(code) &&
+    !['false', 'NaN', 'null', 'true', 'undefined'].includes(
+      code.replace(/^!/, ''),
+    ) &&
+    (code.startsWith('!') || !Object.prototype.hasOwnProperty.call(ctx, code))
+  )
+    return evalLegacyFlag(code, ctx);
   assertSafePrintExpr(code, ctx);
   const scope = createPrintExprScope(ctx);
   const keys = Object.keys(scope);
@@ -456,7 +465,7 @@ export function sortPrintRows<T extends Record<string, unknown>>(
   const list = rows?.length ? [...rows] : [];
   const rules = normalizeAgreeRowSort(sort);
   if (list.length === 0 || rules.length === 0) return list;
-  return list.sort((a, b) => {
+  return list.toSorted((a, b) => {
     for (const rule of rules) {
       const leftEmpty = isPrintSortEmpty(a[rule.field]);
       const rightEmpty = isPrintSortEmpty(b[rule.field]);

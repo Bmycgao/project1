@@ -20,7 +20,9 @@ import {
   sortPrintRows,
 } from '../runtime/print-expr';
 import { projectTableHeaders } from '../runtime/print-header-merge';
+import { maskPrintDisplay } from '../runtime/print-masking';
 import { mmToPt } from '../runtime/print-paper';
+import { identifyPrintRows } from '../runtime/print-row-height';
 import { normalizeAgreeFooters } from '../runtime/print-table-footer';
 import {
   applyAgreeBodyCellExprsToRows,
@@ -449,7 +451,7 @@ export function resolveTablePreview(
   const rootCtx = (sample || {}) as Record<string, unknown>;
   let computedRows = sourceRows;
   if (!runtime?.rowsPrepared) {
-    computedRows = sourceRows.map((row, rowIndex) => {
+    computedRows = identifyPrintRows(sourceRows).map((row, rowIndex) => {
       const patched = { ...row };
       leaves.forEach((col) => {
         if (!col.field || !col.agreeColExpr) return;
@@ -545,7 +547,12 @@ export function resolveTablePreview(
         rowspan,
         text: hideZero
           ? ''
-          : formatPrintValue(value, col.agreeColFormat, rootCtx),
+          : maskPrintDisplay(
+              value,
+              formatPrintValue(value, col.agreeColFormat, rootCtx),
+              { ...rootCtx, row },
+              `${options.field}.${col.field}`,
+            ),
       };
     }),
   );
@@ -594,7 +601,13 @@ export function resolveTablePreview(
           field: '',
           rowIndex: 0,
           // 第一列承担行标题；若第一列本身也需汇总，换行保留其数值。
-          text: `${cellIndex === 0 ? '合计\n' : ''}${total.toFixed(decimals)}`,
+          text: `${cellIndex === 0 ? '合计\n' : ''}${maskPrintDisplay(
+            total,
+            total.toFixed(decimals),
+            rootCtx,
+            '',
+            `SUM(${options.field}, "${col.field}")`,
+          )}`,
         };
       })
     : [];
@@ -611,7 +624,12 @@ export function resolveTablePreview(
       rowIndex,
       text:
         cell.field && rootCtx[cell.field] !== undefined
-          ? String(rootCtx[cell.field] ?? '')
+          ? maskPrintDisplay(
+              rootCtx[cell.field],
+              String(rootCtx[cell.field] ?? ''),
+              rootCtx,
+              cell.field,
+            )
           : String(cell.text || ''),
     })),
   );

@@ -13,6 +13,7 @@ import {
   toTableColumnRows,
 } from '../template/print-element-meta';
 import { evalPrintExpr } from './print-expr';
+import { applyDetailRowHeightRuntime } from './print-row-height';
 import { applyTableColorsRuntime } from './print-table-color';
 import { applyAgreeFootersRuntime } from './print-table-footer';
 
@@ -33,11 +34,15 @@ export function resolveAgreeColumnMergeConfig(
   const field = String(col?.field || '').trim();
   const keyField = String(col?.agreeMergeKey || '').trim() || field;
   const when = String(col?.agreeMergeWhen || '').trim();
-  const mode: AgreeColumnMergeMode = when
-    ? 'condition'
-    : col?.agreeMergeSame || String(col?.agreeMergeKey || '').trim()
-      ? 'same'
-      : 'none';
+  let mode: AgreeColumnMergeMode;
+  if (when) {
+    mode = 'condition';
+  } else {
+    mode =
+      col?.agreeMergeSame || String(col?.agreeMergeKey || '').trim()
+        ? 'same'
+        : 'none';
+  }
   return { keyField, mode, when };
 }
 
@@ -830,8 +835,14 @@ function applyColumnAligns(columns: unknown) {
 export function applyTablePrintRuntime(el: { options?: Record<string, any> }) {
   const opts = el?.options;
   if (!opts) return;
-  /** 兼容旧模板：跨页续表必须重复表头，表尾只在最后一页出现。 */
-  opts.tableHeaderRepeat = opts.agreeFormGrid ? 'none' : 'page';
+  /** 旧明细表默认重复表头；自由表单没有独立表头。 */
+  let headerRepeat;
+  if (opts.agreeFormGrid) {
+    headerRepeat = 'none';
+  } else {
+    headerRepeat = opts.tableHeaderRepeat === 'none' ? 'none' : 'page';
+  }
+  opts.tableHeaderRepeat = headerRepeat;
   opts.tableFooterRepeat = 'last';
   const tableField = String(opts.field || '');
   const leaf = listLeafTableCells(opts.columns);
@@ -876,6 +887,7 @@ export function applyTablePrintRuntime(el: { options?: Record<string, any> }) {
     );
   }
   applyColumnAligns(opts.columns);
+  applyDetailRowHeightRuntime(opts);
   applyColumnFormatters(opts.columns);
   applyTableColorsRuntime(opts);
   applyAgreeFootersRuntime(opts, leaf.length);
